@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from halia.providers.base import Message, ProviderError
+from halia.providers.base import ProviderError
 from halia.providers.openai_compat import OpenAICompatProvider
 
 
@@ -21,26 +21,55 @@ def test_chat_returns_content() -> None:
         body = json.loads(request.content)
         assert body["model"] == "m"
         assert body["stream"] is False
-        return httpx.Response(200, json={"choices": [{"message": {"content": " hi there "}}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "hi there"}}]})
 
-    provider = _provider(handler)
-    messages: list[Message] = [{"role": "user", "content": "hi"}]
-    assert provider.chat(messages) == "hi there"
+    result = _provider(handler).chat([{"role": "user", "content": "hi"}])
+    assert result.content == "hi there"
+    assert result.tool_calls == []
+
+
+def test_chat_parses_tool_calls() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "c1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": '{"path": "x"}',
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+
+    result = _provider(handler).chat([{"role": "user", "content": "hi"}])
+    assert result.content is None
+    assert result.tool_calls[0]["name"] == "read_file"
+    assert result.tool_calls[0]["arguments"] == '{"path": "x"}'
 
 
 def test_non_200_raises() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, text="bad key")
 
-    provider = _provider(handler)
     with pytest.raises(ProviderError, match="401"):
-        provider.chat([{"role": "user", "content": "hi"}])
+        _provider(handler).chat([{"role": "user", "content": "hi"}])
 
 
-def test_unexpected_shape_raises() -> None:
+def test_empty_reply_raises() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"nope": True})
+        return httpx.Response(200, json={"choices": [{"message": {"content": None}}]})
 
-    provider = _provider(handler)
-    with pytest.raises(ProviderError, match="unexpected response shape"):
-        provider.chat([{"role": "user", "content": "hi"}])
+    with pytest.raises(ProviderError, match="no content"):
+        _provider(handler).chat([{"role": "user", "content": "hi"}])
