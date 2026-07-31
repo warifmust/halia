@@ -1,11 +1,11 @@
-"""Durable audit trail — persist each run's provenance to disk.
+"""Durable audit trail — persist each run's provenance to the SQLite store.
 
-A trust product keeps the receipts. Every `halia run` is written to
-`~/.halia/runs/<ts>_<id>.json` so it can be reviewed, reproduced, and (later)
+A trust product keeps the receipts. Every `halia run` is written to the `runs`
+table in `~/.halia/halia.db` so it can be reviewed, reproduced, and (later)
 verified against — the audit layer maturing from "shown once" to "recorded".
 
-`~/.halia` is inside the permission floor, so the agent's own read_file can't
-read the audit logs — the harness records them; the model can't rummage through them.
+`~/.halia` is inside the permission floor, so the agent's own read_file/query_db
+can't read the audit trail — the harness records it; the model can't rummage.
 """
 
 from __future__ import annotations
@@ -18,8 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from halia.audit.trace import Step
-
-RUNS_DIR = Path.home() / ".halia" / "runs"
+from halia.store.database import DB_PATH, connect
 
 
 @dataclass(frozen=True)
@@ -50,31 +49,57 @@ def new_record(
     )
 
 
-def save_run(record: RunRecord, runs_dir: Path = RUNS_DIR) -> Path:
-    """Write a run record to disk; returns the file path."""
-    runs_dir.mkdir(parents=True, exist_ok=True)
-    stamp = record.started_at.replace(":", "-")
-    path = runs_dir / f"{stamp}_{record.id}.json"
-    path.write_text(json.dumps(asdict(record), indent=2))
-    return path
+def save_run(record: RunRecord, db_path: Path = DB_PATH) -> None:
+    """Persist a run record to the database."""
+    steps_json = json.dumps([asdict(step) for step in record.steps])
+    conn = connect(db_path)
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO runs "
+            "(id, started_at, provider, model, prompt, answer, steps_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                record.id,
+                record.started_at,
+                record.provider,
+                record.model,
+                record.prompt,
+                record.answer,
+                steps_json,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
-def list_runs(runs_dir: Path = RUNS_DIR, limit: int = 20) -> list[RunRecord]:
+def list_runs(db_path: Path = DB_PATH, limit: int = 20) -> list[RunRecord]:
     """Load the most recent run records (newest first)."""
-    if not runs_dir.is_dir():
+    if not db_path.exists():
         return []
+    conn = connect(db_path)
+    try:
+        cursor = conn.execute(
+            "SELECT id, started_at, provider, model, prompt, answer, steps_json "
+            "FROM runs ORDER BY started_at DESC LIMIT ?",
+            (limit,),
+        )
+        rows = cursor.fetchall()
+    finally:
+        conn.close()
+
     records: list[RunRecord] = []
-    for file in sorted(runs_dir.glob("*.json"), reverse=True)[:limit]:
-        data: Any = json.loads(file.read_text())
-        steps = [Step(**s) for s in data.get("steps", [])]
+    for row in rows:
+        raw_steps: Any = json.loads(row[6])
+        steps = [Step(**step) for step in raw_steps]
         records.append(
             RunRecord(
-                id=data["id"],
-                started_at=data["started_at"],
-                provider=data["provider"],
-                model=data["model"],
-                prompt=data["prompt"],
-                answer=data["answer"],
+                id=row[0],
+                started_at=row[1],
+                provider=row[2],
+                model=row[3],
+                prompt=row[4],
+                answer=row[5],
                 steps=steps,
             )
         )

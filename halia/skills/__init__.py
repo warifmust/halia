@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from halia.skills.calc import Calculate
+from halia.skills.data import AggregateCsv, ReadCsv
+from halia.skills.db import QueryDb
 from halia.skills.fs import ListFiles, ReadFile
 from halia.skills.registry import SkillRegistry
+from halia.skills.web import FetchUrl
 
 
 def default_registry(allow_commands: bool = False) -> SkillRegistry:
@@ -16,6 +20,11 @@ def default_registry(allow_commands: bool = False) -> SkillRegistry:
     registry = SkillRegistry()
     registry.register(ReadFile())
     registry.register(ListFiles())
+    registry.register(FetchUrl())
+    registry.register(Calculate())
+    registry.register(ReadCsv())
+    registry.register(AggregateCsv())
+    registry.register(QueryDb())
     if allow_commands:
         from halia.skills.exec import RunCommand
 

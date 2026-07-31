@@ -31,8 +31,10 @@ def version() -> None:
 
 @app.command()
 def setup() -> None:
-    """Run the first-time setup wizard (model, provider, permissions)."""
-    console.print("[yellow]setup wizard — not implemented yet.[/yellow]")
+    """Run the first-time setup wizard (provider, model, API key)."""
+    from halia.config.wizard import run_setup
+
+    run_setup(console)
 
 
 @app.command()
