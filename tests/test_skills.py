@@ -7,7 +7,7 @@ import pytest
 
 from halia.permissions.guard import PermissionDenied, check_readable
 from halia.skills.exec import RunCommand
-from halia.skills.fs import ListFiles, ReadFile
+from halia.skills.fs import ListFiles, ReadFile, WriteFile
 
 
 def test_read_file(tmp_path: Any) -> None:
@@ -55,3 +55,30 @@ def test_run_command_requires_command() -> None:
 
 def test_run_command_is_dangerous() -> None:
     assert RunCommand().dangerous is True
+
+
+def test_write_file(tmp_path: Any) -> None:
+    target = tmp_path / "out.txt"
+    out = WriteFile().run({"path": str(target), "content": "hello world"})
+    assert "wrote 11 chars" in out
+    assert target.read_text() == "hello world"
+
+
+def test_write_file_creates_parent_dirs(tmp_path: Any) -> None:
+    target = tmp_path / "sub" / "deep" / "out.txt"
+    WriteFile().run({"path": str(target), "content": "x"})
+    assert target.read_text() == "x"
+
+
+def test_write_file_blocked_sensitive(tmp_path: Any) -> None:
+    with pytest.raises(PermissionDenied):
+        WriteFile().run({"path": str(tmp_path / "config.env"), "content": "x"})
+
+
+def test_write_file_is_dangerous() -> None:
+    assert WriteFile().dangerous is True
+
+
+def test_write_file_requires_args() -> None:
+    assert "required" in WriteFile().run({"content": "x"})
+    assert "required" in WriteFile().run({"path": "x.txt"})

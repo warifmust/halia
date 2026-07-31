@@ -60,11 +60,13 @@ def build_provider(config: Config) -> Provider:
     )
 
 
-def ask(prompt: str, config: Config, provider: Provider | None = None) -> str:
+def ask(
+    prompt: str, config: Config, provider: Provider | None = None, extra_system: str = ""
+) -> str:
     """Answer a single prompt (one-shot, no tools). `provider` is injectable for tests."""
     provider = provider if provider is not None else build_provider(config)
     messages: list[Message] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": SYSTEM_PROMPT + extra_system},
         {"role": "user", "content": prompt},
     ]
     return (provider.chat(messages).content or "").strip()
@@ -78,12 +80,13 @@ def run(
     max_iters: int = DEFAULT_MAX_ITERS,
     observer: Observer | None = None,
     approver: Approver | None = None,
+    extra_system: str = "",
 ) -> RunResult:
     """Run the tool-calling loop until a final answer or the iteration cap."""
     provider = provider if provider is not None else build_provider(config)
     tools = registry.tool_schemas()
     messages: list[Message] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": SYSTEM_PROMPT + extra_system},
         {"role": "user", "content": prompt},
     ]
     steps: list[Step] = []

@@ -19,12 +19,21 @@ _SENSITIVE_DIRS = {".ssh", ".aws", ".gnupg", ".halia"}
 _SENSITIVE_NAME_HINTS = (".env", "id_rsa", "id_ed25519", "credentials", "secret", ".pem")
 
 
-def check_readable(path: Path) -> None:
-    """Raise PermissionDenied if `path` is in the sensitive floor."""
+def _check_floor(path: Path, action: str) -> None:
     resolved = path.expanduser()
     parts = {part.lower() for part in resolved.parts}
     if parts & _SENSITIVE_DIRS:
-        raise PermissionDenied(f"reading '{path}' is blocked (sensitive directory)")
+        raise PermissionDenied(f"{action} '{path}' is blocked (sensitive directory)")
     name = resolved.name.lower()
     if any(hint in name for hint in _SENSITIVE_NAME_HINTS):
-        raise PermissionDenied(f"reading '{path}' is blocked (sensitive file)")
+        raise PermissionDenied(f"{action} '{path}' is blocked (sensitive file)")
+
+
+def check_readable(path: Path) -> None:
+    """Raise PermissionDenied if reading `path` is blocked by the floor."""
+    _check_floor(path, "reading")
+
+
+def check_writable(path: Path) -> None:
+    """Raise PermissionDenied if writing `path` is blocked by the floor."""
+    _check_floor(path, "writing")

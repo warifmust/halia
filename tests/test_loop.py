@@ -107,6 +107,47 @@ def test_dangerous_tool_blocked_without_approver() -> None:
     assert "blocked" in result.steps[0].observation
 
 
+def test_default_write_file_needs_approval(tmp_path: Any) -> None:
+    target = tmp_path / "out.txt"
+    provider = FakeProvider(
+        [
+            ChatResult(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="1",
+                        name="write_file",
+                        arguments=f'{{"path": "{target}", "content": "hi"}}',
+                    )
+                ],
+            ),
+            ChatResult(content="done", tool_calls=[]),
+        ]
+    )
+    # write_file is dangerous and in the DEFAULT registry → blocked without an approver
+    result = run("x", _CFG, default_registry(), provider=provider)
+    assert "blocked" in result.steps[0].observation
+    assert not target.exists()
+    # with an approving approver → it writes
+    provider2 = FakeProvider(
+        [
+            ChatResult(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="1",
+                        name="write_file",
+                        arguments=f'{{"path": "{target}", "content": "hi"}}',
+                    )
+                ],
+            ),
+            ChatResult(content="done", tool_calls=[]),
+        ]
+    )
+    run("x", _CFG, default_registry(), provider=provider2, approver=lambda n, a: True)
+    assert target.read_text() == "hi"
+
+
 def test_dangerous_tool_denied_by_approver() -> None:
     registry = default_registry(allow_commands=True)
     result = run("x", _CFG, registry, provider=_command_run(), approver=lambda n, a: False)

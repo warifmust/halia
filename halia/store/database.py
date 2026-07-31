@@ -24,6 +24,19 @@ CREATE TABLE IF NOT EXISTS runs (
     steps_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs (started_at DESC);
+
+CREATE TABLE IF NOT EXISTS memory (
+    id         TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    content    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS profiles (
+    name         TEXT PRIMARY KEY,
+    skills_json  TEXT NOT NULL,
+    model        TEXT,
+    extra_prompt TEXT NOT NULL DEFAULT ''
+);
 """
 
 

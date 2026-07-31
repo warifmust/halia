@@ -2,31 +2,71 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
+from halia.skills.base import Skill
 from halia.skills.calc import Calculate
 from halia.skills.data import AggregateCsv, ReadCsv
 from halia.skills.db import QueryDb
-from halia.skills.fs import ListFiles, ReadFile
+from halia.skills.excel import ReadExcel
+from halia.skills.exec import RunCommand
+from halia.skills.fs import ListFiles, ReadFile, WriteFile
+from halia.skills.pdf import ReadPdf
 from halia.skills.registry import SkillRegistry
 from halia.skills.web import FetchUrl
 
+# The full catalogue of skills, by name.
+_SKILL_FACTORIES: dict[str, Callable[[], Skill]] = {
+    "read_file": ReadFile,
+    "write_file": WriteFile,
+    "list_files": ListFiles,
+    "fetch_url": FetchUrl,
+    "calculate": Calculate,
+    "read_csv": ReadCsv,
+    "aggregate_csv": AggregateCsv,
+    "read_excel": ReadExcel,
+    "read_pdf": ReadPdf,
+    "query_db": QueryDb,
+    "run_command": RunCommand,
+}
+
+# Always included, regardless of profile: deterministic compute is part of the
+# trust floor — without it the model would do arithmetic in its head.
+_ALWAYS = ["calculate"]
+
+# The default selection (everything safe/useful; run_command is opt-in).
+DEFAULT_SKILLS = [
+    "read_file",
+    "write_file",
+    "list_files",
+    "fetch_url",
+    "calculate",
+    "read_csv",
+    "aggregate_csv",
+    "read_excel",
+    "read_pdf",
+    "query_db",
+]
+
+
+def available_skills() -> list[str]:
+    """All known skill names."""
+    return list(_SKILL_FACTORIES)
+
+
+def build_registry(skill_names: list[str]) -> SkillRegistry:
+    """Build a registry from a list of skill names (`_ALWAYS` prepended, deduped)."""
+    registry = SkillRegistry()
+    for name in dict.fromkeys(_ALWAYS + skill_names):
+        factory = _SKILL_FACTORIES.get(name)
+        if factory is not None:
+            registry.register(factory())
+    return registry
+
 
 def default_registry(allow_commands: bool = False) -> SkillRegistry:
-    """Build the skill registry.
-
-    Safe read-only skills are always included. `run_command` is *opt-in*
-    (`allow_commands=True`) because it is dangerous — and even then, the loop
-    still requires per-call approval before it runs.
-    """
-    registry = SkillRegistry()
-    registry.register(ReadFile())
-    registry.register(ListFiles())
-    registry.register(FetchUrl())
-    registry.register(Calculate())
-    registry.register(ReadCsv())
-    registry.register(AggregateCsv())
-    registry.register(QueryDb())
+    """The default registry — safe skills always, run_command only if allowed."""
+    names = list(DEFAULT_SKILLS)
     if allow_commands:
-        from halia.skills.exec import RunCommand
-
-        registry.register(RunCommand())
-    return registry
+        names.append("run_command")
+    return build_registry(names)

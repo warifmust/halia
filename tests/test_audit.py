@@ -7,13 +7,13 @@ from halia.audit.trace import Step
 
 
 def test_save_and_list_roundtrip(tmp_path: Any) -> None:
+    db = tmp_path / "halia.db"
     record = new_record(
-        "deepseek", "deepseek-chat", "hi", "hello", [Step("list_files", "{}", "a\nb")]
+        "deepseek", "deepseek-v4-flash", "hi", "hello", [Step("list_files", "{}", "a\nb")]
     )
-    path = save_run(record, runs_dir=tmp_path)
-    assert path.exists()
+    save_run(record, db_path=db)
 
-    loaded = list_runs(runs_dir=tmp_path)
+    loaded = list_runs(db_path=db)
     assert len(loaded) == 1
     assert loaded[0].id == record.id
     assert loaded[0].prompt == "hi"
@@ -22,15 +22,15 @@ def test_save_and_list_roundtrip(tmp_path: Any) -> None:
     assert loaded[0].steps[0].observation == "a\nb"
 
 
-def test_list_runs_newest_first(tmp_path: Any) -> None:
+def test_list_runs_limit_respected(tmp_path: Any) -> None:
+    db = tmp_path / "halia.db"
     for prompt in ("first", "second", "third"):
-        save_run(new_record("p", "m", prompt, "a", []), runs_dir=tmp_path)
-    loaded = list_runs(runs_dir=tmp_path, limit=2)
-    assert len(loaded) == 2  # limit respected
+        save_run(new_record("p", "m", prompt, "a", []), db_path=db)
+    assert len(list_runs(db_path=db, limit=2)) == 2
 
 
 def test_list_runs_empty(tmp_path: Any) -> None:
-    assert list_runs(runs_dir=tmp_path / "nope") == []
+    assert list_runs(db_path=tmp_path / "nope.db") == []
 
 
 def test_step_preview_truncates() -> None:
