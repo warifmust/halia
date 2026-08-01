@@ -7,6 +7,7 @@ this module just wires the commands. Commands are added as the layers land —
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Annotated
 
 import typer
@@ -61,21 +62,10 @@ def ask(prompt: Annotated[str, typer.Argument(help="What to ask halia.")]) -> No
     console.print(answer)
 
 
-@app.command()
-def run(
-    prompt: Annotated[str, typer.Argument(help="The task for halia to work on.")],
-    max_iters: Annotated[int, typer.Option(help="Max tool-call iterations.")] = 8,
-    quiet: Annotated[bool, typer.Option("--quiet", "-q", help="Hide the tool-call trace.")] = False,
-    allow_commands: Annotated[
-        bool,
-        typer.Option("--allow-commands", help="Enable shell commands (gated by approval)."),
-    ] = False,
-    profile: Annotated[
-        str | None,
-        typer.Option("--profile", help="Use a named profile (per-vertical skills/model/prompt)."),
-    ] = None,
+def _execute_run(
+    prompt: str, max_iters: int, quiet: bool, allow_commands: bool, profile: str | None
 ) -> None:
-    """Run halia's agent loop on a task (can use tools)."""
+    """Shared body for `run` and the persona-preset commands (`halia finance`, …)."""
     from dataclasses import replace
 
     from halia.audit.trace import Step
@@ -83,7 +73,7 @@ def run(
     from halia.core.agent import RunLimitError
     from halia.core.agent import run as run_agent
     from halia.memory.facts import memory_block
-    from halia.profiles import get_profile
+    from halia.presets import resolve_profile
     from halia.providers.base import ProviderError
     from halia.skills import build_registry, default_registry
 
@@ -103,9 +93,12 @@ def run(
 
     extra_system = memory_block()
     if profile is not None:
-        prof = get_profile(profile)
+        prof = resolve_profile(profile)  # user profile wins, else a built-in preset
         if prof is None:
-            console.print(f"[red]error:[/red] no profile '{profile}' (see `halia profile list`).")
+            console.print(
+                f"[red]error:[/red] no profile or preset '{profile}' "
+                f"(see `halia profile list`)."
+            )
             raise typer.Exit(1)
         skills = [*prof.skills, "run_command"] if allow_commands else list(prof.skills)
         registry = build_registry(skills)
@@ -137,6 +130,11 @@ def run(
         console.print(
             f"[yellow]⚠ Unverified figures[/yellow] (not produced by a tool): {figures}"
         )
+    elif result.corrections:
+        console.print(
+            f"[green]✓ regrounded[/green] [dim](conscience bounced back "
+            f"{result.corrections}× to recompute figures via tools)[/dim]"
+        )
 
     from halia.audit.record import new_record, save_run
 
@@ -144,6 +142,56 @@ def run(
     save_run(record)
     if not quiet:
         console.print(f"[dim](run {record.id} recorded)[/dim]")
+
+
+@app.command()
+def run(
+    prompt: Annotated[str, typer.Argument(help="The task for halia to work on.")],
+    max_iters: Annotated[int, typer.Option(help="Max tool-call iterations.")] = 8,
+    quiet: Annotated[bool, typer.Option("--quiet", "-q", help="Hide the tool-call trace.")] = False,
+    allow_commands: Annotated[
+        bool,
+        typer.Option("--allow-commands", help="Enable shell commands (gated by approval)."),
+    ] = False,
+    profile: Annotated[
+        str | None,
+        typer.Option("--profile", help="Use a named profile or preset (e.g. finance)."),
+    ] = None,
+) -> None:
+    """Run halia's agent loop on a task (can use tools)."""
+    _execute_run(prompt, max_iters, quiet, allow_commands, profile)
+
+
+def _make_preset_command(preset_name: str) -> Callable[..., None]:
+    """Build a `run`-style command bound to one preset (own scope → no late-binding)."""
+
+    def _cmd(
+        prompt: Annotated[str, typer.Argument(help="The task for halia to work on.")],
+        max_iters: Annotated[int, typer.Option(help="Max tool-call iterations.")] = 8,
+        quiet: Annotated[
+            bool, typer.Option("--quiet", "-q", help="Hide the tool-call trace.")
+        ] = False,
+        allow_commands: Annotated[
+            bool,
+            typer.Option("--allow-commands", help="Enable shell commands (gated by approval)."),
+        ] = False,
+    ) -> None:
+        _execute_run(prompt, max_iters, quiet, allow_commands, preset_name)
+
+    return _cmd
+
+
+def _register_preset_commands() -> None:
+    """Register one command per built-in preset, so `halia finance "…"` works directly."""
+    from halia.presets import BUILTIN_PRESETS
+
+    for preset_name in BUILTIN_PRESETS:
+        app.command(name=preset_name, help=f"Run halia in the '{preset_name}' persona.")(
+            _make_preset_command(preset_name)
+        )
+
+
+_register_preset_commands()
 
 
 @app.command()
@@ -232,16 +280,25 @@ def profile_create(
 
 @profile_app.command("list")
 def profile_list() -> None:
-    """List profiles."""
+    """List profiles (yours + built-in persona presets)."""
+    from halia.presets import BUILTIN_PRESETS
     from halia.profiles import list_profiles
 
-    profiles = list_profiles()
-    if not profiles:
-        console.print("[dim]no profiles yet — create one with `halia profile create`.[/dim]")
+    user = list_profiles()
+    user_names = {p.name for p in user}
+
+    console.print("[bold]built-in presets[/bold] [dim](run as `halia <name> \"…\"`)[/dim]")
+    for name, prof in sorted(BUILTIN_PRESETS.items()):
+        tag = " [dim](overridden by your profile)[/dim]" if name in user_names else ""
+        console.print(f"  [bold]{name}[/bold]{tag}  [dim]{len(prof.skills)} skills[/dim]")
+
+    console.print("[bold]your profiles[/bold]")
+    if not user:
+        console.print("  [dim]none yet — create one with `halia profile create`.[/dim]")
         return
-    for prof in profiles:
-        console.print(f"[bold]{prof.name}[/bold]  [dim]{prof.model or '(default model)'}[/dim]")
-        console.print(f"  skills: {', '.join(prof.skills) or '(calculate only)'}")
+    for prof in user:
+        console.print(f"  [bold]{prof.name}[/bold]  [dim]{prof.model or '(default model)'}[/dim]")
+        console.print(f"    skills: {', '.join(prof.skills) or '(calculate only)'}")
 
 
 @profile_app.command("delete")

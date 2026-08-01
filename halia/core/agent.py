@@ -33,6 +33,20 @@ SYSTEM_PROMPT = (
 
 DEFAULT_MAX_ITERS = 8
 
+# How many times the conscience may bounce an answer back to reground flagged figures.
+DEFAULT_MAX_CORRECTIONS = 1
+
+# Injected when the number-grounding check finds figures no tool produced. The model
+# gets one chance to recompute them through tools (calculate/aggregate/reconcile) or
+# drop them — turning a warning into a grounded answer.
+_CORRECTION_TEMPLATE = (
+    "STOP. These figures in your answer were not produced by any tool: {figures}. "
+    "You may have computed them in your head, which is not allowed. Recompute each one "
+    "using the tools (calculate, aggregate_csv, reconcile_csv, …), then give the "
+    "corrected final answer. If a figure cannot be grounded in a tool result, remove it "
+    "rather than assert it."
+)
+
 # Called with each Step as it happens (for live display); does not affect the run.
 Observer = Callable[[Step], None]
 
@@ -48,6 +62,8 @@ class RunResult:
     steps: list[Step] = field(default_factory=list)
     # Figures in the answer that did NOT come from a tool (number-grounding check).
     unverified: list[str] = field(default_factory=list)
+    # How many corrective passes the conscience triggered to reground flagged figures.
+    corrections: int = 0
 
 
 class RunLimitError(RuntimeError):
@@ -81,11 +97,17 @@ def run(
     registry: SkillRegistry,
     provider: Provider | None = None,
     max_iters: int = DEFAULT_MAX_ITERS,
+    max_corrections: int = DEFAULT_MAX_CORRECTIONS,
     observer: Observer | None = None,
     approver: Approver | None = None,
     extra_system: str = "",
 ) -> RunResult:
-    """Run the tool-calling loop until a final answer or the iteration cap."""
+    """Run the tool-calling loop until a final answer or the iteration cap.
+
+    When a final answer contains figures no tool produced, the conscience bounces it
+    back (up to `max_corrections` times) with the offending figures named, so the model
+    regrounds them through tools instead of asserting head-math.
+    """
     provider = provider if provider is not None else build_provider(config)
     tools = registry.tool_schemas()
     messages: list[Message] = [
@@ -93,15 +115,28 @@ def run(
         {"role": "user", "content": prompt},
     ]
     steps: list[Step] = []
+    corrections = 0
 
     for _ in range(max_iters):
         result = provider.chat(messages, tools=tools or None)
         if not result.tool_calls:
             answer = (result.content or "").strip()
+            unverified = ungrounded_numbers(answer, steps)
+            if unverified and corrections < max_corrections:
+                corrections += 1
+                messages.append({"role": "assistant", "content": answer})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": _CORRECTION_TEMPLATE.format(figures=", ".join(unverified)),
+                    }
+                )
+                continue
             return RunResult(
                 answer=answer,
                 steps=steps,
-                unverified=ungrounded_numbers(answer, steps),
+                unverified=unverified,
+                corrections=corrections,
             )
 
         # Record the assistant's tool-call turn, then execute each call and feed

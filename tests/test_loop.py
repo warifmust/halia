@@ -159,3 +159,59 @@ def test_dangerous_tool_allowed_by_approver() -> None:
     result = run("x", _CFG, registry, provider=_command_run(), approver=lambda n, a: True)
     assert "exit_code: 0" in result.steps[0].observation
     assert "hi" in result.steps[0].observation
+
+
+def test_conscience_corrects_ungrounded_figure(tmp_path: Any) -> None:
+    # A tool observation grounds the *correct* number; the model first invents a wrong one.
+    note = tmp_path / "note.txt"
+    note.write_text("audited total 550.50")
+    provider = FakeProvider(
+        [
+            # 1) invented figure, no tool used → conscience bounces it back
+            ChatResult(content="Bank total is 730.50.", tool_calls=[]),
+            # 2) after the bounce, the model grounds it via a tool
+            ChatResult(
+                content=None,
+                tool_calls=[ToolCall(id="1", name="read_file", arguments=f'{{"path": "{note}"}}')],
+            ),
+            # 3) corrected answer, now traceable to the observation
+            ChatResult(content="Corrected: the total is 550.50.", tool_calls=[]),
+        ]
+    )
+    result = run("total it", _CFG, default_registry(), provider=provider)
+    assert "550.50" in result.answer
+    assert result.unverified == []  # regrounded
+    assert result.corrections == 1
+    assert provider.calls == 3
+
+
+def test_conscience_bounces_only_up_to_the_budget() -> None:
+    # The model refuses to ground it; with a 1-correction budget it's returned still-flagged.
+    provider = FakeProvider(
+        [
+            ChatResult(content="Total is 730.50.", tool_calls=[]),
+            ChatResult(content="Still 730.50, trust me.", tool_calls=[]),
+        ]
+    )
+    result = run("total it", _CFG, default_registry(), provider=provider, max_corrections=1)
+    assert result.unverified == ["730.50"]
+    assert result.corrections == 1
+    assert provider.calls == 2
+
+
+def test_no_correction_when_grounded(tmp_path: Any) -> None:
+    note = tmp_path / "n.txt"
+    note.write_text("balance 42.00")
+    provider = FakeProvider(
+        [
+            ChatResult(
+                content=None,
+                tool_calls=[ToolCall(id="1", name="read_file", arguments=f'{{"path": "{note}"}}')],
+            ),
+            ChatResult(content="The balance is 42.00.", tool_calls=[]),
+        ]
+    )
+    result = run("x", _CFG, default_registry(), provider=provider)
+    assert result.unverified == []
+    assert result.corrections == 0
+    assert provider.calls == 2  # no extra bounce
