@@ -24,6 +24,23 @@ app = typer.Typer(
 console = Console()
 
 
+def _version_callback(value: bool) -> None:
+    if value:
+        console.print(f"halia [bold]{__version__}[/bold]")
+        raise typer.Exit()
+
+
+@app.callback()
+def _main(
+    version: Annotated[
+        bool,
+        typer.Option("--version", callback=_version_callback, is_eager=True,
+                     help="Show the halia version and exit."),
+    ] = False,
+) -> None:
+    """halia — a trust-first general agent."""
+
+
 @app.command()
 def version() -> None:
     """Show the halia version."""
