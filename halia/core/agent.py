@@ -17,6 +17,7 @@ from typing import Any
 from halia.audit.trace import Step
 from halia.config.settings import Config
 from halia.conscience.verify import ungrounded_numbers
+from halia.core.planner import make_plan
 from halia.providers.base import Message, Provider
 from halia.providers.openai_compat import OpenAICompatProvider
 from halia.skills.registry import SkillRegistry
@@ -50,6 +51,9 @@ _CORRECTION_TEMPLATE = (
 # Called with each Step as it happens (for live display); does not affect the run.
 Observer = Callable[[Step], None]
 
+# Called once with the drafted plan text (for live display), before the loop runs.
+PlanObserver = Callable[[str], None]
+
 # Asked (tool name, raw arguments) before a DANGEROUS tool runs; return True to allow.
 Approver = Callable[[str, str], bool]
 
@@ -64,6 +68,8 @@ class RunResult:
     unverified: list[str] = field(default_factory=list)
     # How many corrective passes the conscience triggered to reground flagged figures.
     corrections: int = 0
+    # The up-front plan, if planning was enabled (empty otherwise).
+    plan: str = ""
 
 
 class RunLimitError(RuntimeError):
@@ -101,17 +107,35 @@ def run(
     observer: Observer | None = None,
     approver: Approver | None = None,
     extra_system: str = "",
+    plan: bool = False,
+    on_plan: PlanObserver | None = None,
 ) -> RunResult:
     """Run the tool-calling loop until a final answer or the iteration cap.
 
-    When a final answer contains figures no tool produced, the conscience bounces it
-    back (up to `max_corrections` times) with the offending figures named, so the model
-    regrounds them through tools instead of asserting head-math.
+    With `plan=True`, halia drafts a short plan first (one extra call) and follows it
+    as *guidance* — the loop still adapts. When a final answer contains figures no tool
+    produced, the conscience bounces it back (up to `max_corrections` times) with the
+    offending figures named, so the model regrounds them through tools instead of
+    asserting head-math.
     """
     provider = provider if provider is not None else build_provider(config)
     tools = registry.tool_schemas()
+
+    plan_text = ""
+    system_content = SYSTEM_PROMPT + extra_system
+    if plan:
+        plan_text = make_plan(prompt, config, provider, extra_system=extra_system)
+        if plan_text:
+            if on_plan is not None:
+                on_plan(plan_text)
+            system_content += (
+                "\n\nYou drafted this plan for the task:\n"
+                f"{plan_text}\n\n"
+                "Follow it, adapting as needed. Execute now using tools; do not restate the plan."
+            )
+
     messages: list[Message] = [
-        {"role": "system", "content": SYSTEM_PROMPT + extra_system},
+        {"role": "system", "content": system_content},
         {"role": "user", "content": prompt},
     ]
     steps: list[Step] = []
@@ -137,6 +161,7 @@ def run(
                 steps=steps,
                 unverified=unverified,
                 corrections=corrections,
+                plan=plan_text,
             )
 
         # Record the assistant's tool-call turn, then execute each call and feed

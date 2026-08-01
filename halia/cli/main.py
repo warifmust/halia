@@ -63,7 +63,12 @@ def ask(prompt: Annotated[str, typer.Argument(help="What to ask halia.")]) -> No
 
 
 def _execute_run(
-    prompt: str, max_iters: int, quiet: bool, allow_commands: bool, profile: str | None
+    prompt: str,
+    max_iters: int,
+    quiet: bool,
+    allow_commands: bool,
+    profile: str | None,
+    plan: bool = False,
 ) -> None:
     """Shared body for `run` and the persona-preset commands (`halia finance`, …)."""
     from dataclasses import replace
@@ -80,6 +85,10 @@ def _execute_run(
     def show(step: Step) -> None:
         console.print(f"[dim]→ {step.tool}({step.arguments})[/dim]")
         console.print(f"[dim]  ↳ {step.preview()}[/dim]")
+
+    def show_plan(text: str) -> None:
+        console.print("[cyan]plan[/cyan]")
+        console.print(f"[dim]{text}[/dim]\n")
 
     def approve(name: str, arguments: str) -> bool:
         console.print(f"[yellow]halia wants to run[/yellow] [bold]{name}[/bold]: {arguments}")
@@ -118,6 +127,8 @@ def _execute_run(
             observer=None if quiet else show,
             approver=approve,  # always gate dangerous skills (write_file, run_command)
             extra_system=extra_system,
+            plan=plan,
+            on_plan=None if quiet else show_plan,
         )
     except (ProviderError, RunLimitError) as exc:
         console.print(f"[red]error:[/red] {exc}")
@@ -157,9 +168,13 @@ def run(
         str | None,
         typer.Option("--profile", help="Use a named profile or preset (e.g. finance)."),
     ] = None,
+    plan: Annotated[
+        bool,
+        typer.Option("--plan", help="Draft a short plan before executing (one extra call)."),
+    ] = False,
 ) -> None:
     """Run halia's agent loop on a task (can use tools)."""
-    _execute_run(prompt, max_iters, quiet, allow_commands, profile)
+    _execute_run(prompt, max_iters, quiet, allow_commands, profile, plan)
 
 
 def _make_preset_command(preset_name: str) -> Callable[..., None]:
@@ -175,8 +190,12 @@ def _make_preset_command(preset_name: str) -> Callable[..., None]:
             bool,
             typer.Option("--allow-commands", help="Enable shell commands (gated by approval)."),
         ] = False,
+        plan: Annotated[
+            bool,
+            typer.Option("--plan", help="Draft a short plan before executing (one extra call)."),
+        ] = False,
     ) -> None:
-        _execute_run(prompt, max_iters, quiet, allow_commands, preset_name)
+        _execute_run(prompt, max_iters, quiet, allow_commands, preset_name, plan)
 
     return _cmd
 
