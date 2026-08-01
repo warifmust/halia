@@ -12,6 +12,7 @@ from halia.skills.excel import ReadExcel
 from halia.skills.exec import RunCommand
 from halia.skills.fs import ListFiles, ReadFile, WriteFile
 from halia.skills.pdf import ReadPdf
+from halia.skills.reconcile import ReconcileCsv
 from halia.skills.registry import SkillRegistry
 from halia.skills.web import FetchUrl
 
@@ -26,6 +27,7 @@ _SKILL_FACTORIES: dict[str, Callable[[], Skill]] = {
     "aggregate_csv": AggregateCsv,
     "read_excel": ReadExcel,
     "read_pdf": ReadPdf,
+    "reconcile_csv": ReconcileCsv,
     "query_db": QueryDb,
     "run_command": RunCommand,
 }
@@ -45,6 +47,7 @@ DEFAULT_SKILLS = [
     "aggregate_csv",
     "read_excel",
     "read_pdf",
+    "reconcile_csv",
     "query_db",
 ]
 

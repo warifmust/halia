@@ -16,6 +16,7 @@ from typing import Any
 
 from halia.audit.trace import Step
 from halia.config.settings import Config
+from halia.conscience.verify import ungrounded_numbers
 from halia.providers.base import Message, Provider
 from halia.providers.openai_compat import OpenAICompatProvider
 from halia.skills.registry import SkillRegistry
@@ -45,6 +46,8 @@ class RunResult:
 
     answer: str
     steps: list[Step] = field(default_factory=list)
+    # Figures in the answer that did NOT come from a tool (number-grounding check).
+    unverified: list[str] = field(default_factory=list)
 
 
 class RunLimitError(RuntimeError):
@@ -94,7 +97,12 @@ def run(
     for _ in range(max_iters):
         result = provider.chat(messages, tools=tools or None)
         if not result.tool_calls:
-            return RunResult(answer=(result.content or "").strip(), steps=steps)
+            answer = (result.content or "").strip()
+            return RunResult(
+                answer=answer,
+                steps=steps,
+                unverified=ungrounded_numbers(answer, steps),
+            )
 
         # Record the assistant's tool-call turn, then execute each call and feed
         # the observations back as `tool` messages.

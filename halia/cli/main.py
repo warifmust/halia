@@ -132,6 +132,12 @@ def run(
 
     console.print(result.answer)
 
+    if result.unverified:
+        figures = ", ".join(result.unverified)
+        console.print(
+            f"[yellow]⚠ Unverified figures[/yellow] (not produced by a tool): {figures}"
+        )
+
     from halia.audit.record import new_record, save_run
 
     record = new_record(config.provider, config.model, prompt, result.answer, result.steps)
