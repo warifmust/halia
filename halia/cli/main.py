@@ -270,6 +270,23 @@ def _chat_footer(result: Any) -> None:
         console.print(f"[dim]✓ regrounded ×{result.corrections}[/dim]")
 
 
+def _resumed_age_note(updated_at: str) -> str:
+    """A human hint of how stale a resumed session is (old context can drift)."""
+    from datetime import UTC, datetime
+
+    try:
+        then = datetime.fromisoformat(updated_at)
+    except ValueError:
+        return ""
+    delta = datetime.now(UTC) - then
+    hours = delta.total_seconds() / 3600
+    if hours < 1:
+        return "just now"
+    if hours < 24:
+        return f"{int(hours)}h ago"
+    return f"{int(hours // 24)}d ago"
+
+
 @app.command()
 def chat(
     profile: Annotated[
@@ -278,26 +295,60 @@ def chat(
     allow_commands: Annotated[
         bool, typer.Option("--allow-commands", help="Enable shell commands (gated by approval).")
     ] = False,
+    resume: Annotated[
+        str | None,
+        typer.Option("--resume", help="Resume a saved session by id/prefix (`halia sessions`)."),
+    ] = None,
 ) -> None:
-    """Talk to halia in a multi-turn conversation (context persists across turns)."""
+    """Talk to halia in a multi-turn conversation (context persists, and survives a restart)."""
+    from dataclasses import replace
+
     from halia.audit.record import new_record, save_run
     from halia.core.agent import SYSTEM_PROMPT, RunLimitError, converse
     from halia.core.checkpoint import list_checkpoints
+    from halia.core.session import get_session, new_session, save_session
     from halia.providers.base import Message, ProviderError
 
-    config, registry, extra_system = _prepare_context(profile, allow_commands)
-    messages: list[Message] = [{"role": "system", "content": SYSTEM_PROMPT + extra_system}]
+    if resume is not None:
+        session = get_session(resume)
+        if session is None:
+            console.print(
+                f"[yellow]no session matching '{resume}'[/yellow] (ambiguous or not found). "
+                "See `halia sessions`."
+            )
+            raise typer.Exit(1)
+        # Rebuild the tools from the session's own profile/allow_commands; keep its model.
+        config, registry, _ = _prepare_context(session.profile, session.allow_commands)
+        config = replace(config, model=session.model)
+        messages: list[Message] = list(session.messages)
+    else:
+        config, registry, extra_system = _prepare_context(profile, allow_commands)
+        messages = [{"role": "system", "content": SYSTEM_PROMPT + extra_system}]
+        session = new_session(config.provider, config.model, profile, allow_commands, messages)
+        save_session(session)  # persist immediately so it shows up in `halia sessions`
 
     console.print(
         "[bold]halia[/bold] — chat. [dim]/exit to quit · /clear to reset context · "
-        "/resume <id> to continue a paused run[/dim]\n"
+        "/resume <id> to continue a paused run[/dim]"
     )
+    if resume is not None:
+        console.print(
+            f"[dim]resumed session [bold]{session.id}[/bold] — {session.turn_count()} turns, "
+            f"last active {_resumed_age_note(session.updated_at)}[/dim]\n"
+        )
+    else:
+        console.print(f"[dim]session [bold]{session.id}[/bold] — resume later with "
+                      f"`halia chat --resume {session.id}`[/dim]\n")
+
     pending = list_checkpoints(limit=3)
     if pending:
         console.print(f"[yellow]⏸ {len(pending)} paused run(s) awaiting a decision:[/yellow]")
         for cp in pending:
             console.print(f"  [bold]{cp.id}[/bold] [dim]{cp.reason}[/dim] — /resume {cp.id}")
         console.print()
+
+    def persist() -> None:
+        save_session(replace(session, messages=list(messages)))
 
     while True:
         try:
@@ -312,6 +363,7 @@ def chat(
             break
         if user_input.lower() == "/clear":
             del messages[1:]  # keep the system prompt
+            persist()
             console.print("[dim]context cleared.[/dim]\n")
             continue
         if user_input.lower().startswith("/resume"):
@@ -328,6 +380,7 @@ def chat(
             messages.pop()  # drop the failed user turn so history stays clean
             continue
         messages.append({"role": "assistant", "content": result.answer})
+        persist()  # conversation survives a restart from here
         console.print(f"[bold]halia ›[/bold] {result.answer}")
         _chat_footer(result)
         console.print()
@@ -358,6 +411,27 @@ def _chat_resume(command: str, config: Any, registry: Any) -> None:
     _present_result(config, cp.prompt, result, quiet=False)
     delete_checkpoint(cp.id)
     console.print()
+
+
+@app.command()
+def sessions(
+    limit: Annotated[int, typer.Option(help="How many recent sessions to show.")] = 20,
+) -> None:
+    """List saved chat sessions — resume one with `halia chat --resume <id>`."""
+    from halia.core.session import list_sessions
+
+    items = list_sessions(limit=limit)
+    if not items:
+        console.print("[dim]no saved sessions yet — start one with `halia chat`.[/dim]")
+        return
+    for s in items:
+        persona = f" [dim]({s.profile})[/dim]" if s.profile else ""
+        console.print(
+            f"[bold]{s.id}[/bold] [dim]{_resumed_age_note(s.updated_at)}[/dim] "
+            f"[dim]· {s.turn_count()} turns[/dim]{persona}"
+        )
+        console.print(f"  [cyan]{s.title or '(empty)'}[/cyan]")
+        console.print(f"  [dim]resume:[/dim] halia chat --resume {s.id}")
 
 
 @app.command()

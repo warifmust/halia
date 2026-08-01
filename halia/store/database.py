@@ -58,6 +58,19 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     reason        TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_checkpoints_created_at ON checkpoints (created_at DESC);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id             TEXT PRIMARY KEY,
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    title          TEXT NOT NULL DEFAULT '',
+    provider       TEXT NOT NULL,
+    model          TEXT NOT NULL,
+    profile        TEXT,
+    allow_commands INTEGER NOT NULL DEFAULT 0,
+    messages_json  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions (updated_at DESC);
 """
 
 
