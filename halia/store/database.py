@@ -40,6 +40,24 @@ CREATE TABLE IF NOT EXISTS profiles (
     model        TEXT,
     extra_prompt TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS checkpoints (
+    id            TEXT PRIMARY KEY,
+    created_at    TEXT NOT NULL,
+    prompt        TEXT NOT NULL,
+    provider      TEXT NOT NULL,
+    model         TEXT NOT NULL,
+    skills_json   TEXT NOT NULL,
+    extra_system  TEXT NOT NULL DEFAULT '',
+    plan          TEXT NOT NULL DEFAULT '',
+    messages_json TEXT NOT NULL,
+    steps_json    TEXT NOT NULL,
+    pending_json  TEXT NOT NULL,
+    iters_used    INTEGER NOT NULL DEFAULT 0,
+    corrections   INTEGER NOT NULL DEFAULT 0,
+    reason        TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_created_at ON checkpoints (created_at DESC);
 """
 
 

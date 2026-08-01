@@ -12,15 +12,18 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from halia.audit.trace import Step
 from halia.config.settings import Config
 from halia.conscience.verify import ungrounded_numbers
+from halia.core.checkpoint import Checkpoint
 from halia.core.planner import make_plan
-from halia.providers.base import Message, Provider
+from halia.providers.base import ChatResult, Message, Provider, ToolCall
 from halia.providers.openai_compat import OpenAICompatProvider
 from halia.skills.registry import SkillRegistry
+from halia.store.database import DB_PATH
 
 SYSTEM_PROMPT = (
     "You are halia, a careful, trustworthy assistant. "
@@ -70,6 +73,9 @@ class RunResult:
     corrections: int = 0
     # The up-front plan, if planning was enabled (empty otherwise).
     plan: str = ""
+    # Set when the run paused for approval instead of finishing (answer is empty then).
+    paused: bool = False
+    checkpoint_id: str = ""
 
 
 class RunLimitError(RuntimeError):
@@ -97,6 +103,135 @@ def ask(
     return (provider.chat(messages).content or "").strip()
 
 
+@dataclass
+class _Ctx:
+    """Everything the loop needs to run, pause, and (later) resume."""
+
+    provider: Provider
+    config: Config
+    registry: SkillRegistry
+    prompt: str
+    extra_system: str
+    plan: str
+    max_iters: int
+    max_corrections: int
+    observer: Observer | None
+    approver: Approver | None
+    pause_on_approval: bool
+    checkpoint_db: Path = DB_PATH
+
+
+def _is_dangerous(registry: SkillRegistry, name: str) -> bool:
+    skill = registry.get(name)
+    return skill is not None and skill.dangerous
+
+
+def _assistant_tool_msg(result: ChatResult) -> Message:
+    """The assistant turn recording the tool calls it wants executed."""
+    return {
+        "role": "assistant",
+        "content": result.content,
+        "tool_calls": [
+            {
+                "id": tc["id"],
+                "type": "function",
+                "function": {"name": tc["name"], "arguments": tc["arguments"]},
+            }
+            for tc in result.tool_calls
+        ],
+    }
+
+
+def _execute_batch(
+    ctx: _Ctx, calls: list[ToolCall], messages: list[Message], steps: list[Step]
+) -> None:
+    """Run a tool-call batch, appending each step + its `tool` message (in place)."""
+    for tc in calls:
+        observation = _run_tool(ctx.registry, tc["name"], tc["arguments"], ctx.approver)
+        step = Step(tool=tc["name"], arguments=tc["arguments"], observation=observation)
+        steps.append(step)
+        if ctx.observer is not None:
+            ctx.observer(step)
+        messages.append({"role": "tool", "tool_call_id": tc["id"], "content": observation})
+
+
+def _pause(
+    ctx: _Ctx,
+    messages: list[Message],
+    steps: list[Step],
+    pending: list[ToolCall],
+    iters_used: int,
+    corrections: int,
+) -> RunResult:
+    """Freeze the loop into a checkpoint and return a paused result."""
+    from halia.core.checkpoint import new_checkpoint, save_checkpoint
+
+    dangerous = [tc["name"] for tc in pending if _is_dangerous(ctx.registry, tc["name"])]
+    cp = new_checkpoint(
+        prompt=ctx.prompt,
+        provider=ctx.config.provider,
+        model=ctx.config.model,
+        skills=[s.name for s in ctx.registry.all()],
+        extra_system=ctx.extra_system,
+        plan=ctx.plan,
+        messages=messages,
+        steps=steps,
+        pending=pending,
+        iters_used=iters_used,
+        corrections=corrections,
+        reason="approval required: " + ", ".join(dangerous),
+    )
+    save_checkpoint(cp, db_path=ctx.checkpoint_db)
+    return RunResult(
+        answer="", steps=steps, corrections=corrections, plan=ctx.plan,
+        paused=True, checkpoint_id=cp.id,
+    )
+
+
+def _loop(
+    ctx: _Ctx,
+    messages: list[Message],
+    steps: list[Step],
+    corrections: int,
+    iters_used: int,
+) -> RunResult:
+    """The ReAct loop, shared by `run` and `resume`. Returns a final or paused result."""
+    tools = ctx.registry.tool_schemas() or None
+    while iters_used < ctx.max_iters:
+        iters_used += 1
+        result = ctx.provider.chat(messages, tools=tools)
+
+        if not result.tool_calls:
+            answer = (result.content or "").strip()
+            unverified = ungrounded_numbers(answer, steps)
+            if unverified and corrections < ctx.max_corrections:
+                corrections += 1
+                messages.append({"role": "assistant", "content": answer})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": _CORRECTION_TEMPLATE.format(figures=", ".join(unverified)),
+                    }
+                )
+                continue
+            return RunResult(
+                answer=answer, steps=steps, unverified=unverified,
+                corrections=corrections, plan=ctx.plan,
+            )
+
+        # A dangerous tool with pausing on ⇒ freeze here for a human decision.
+        if ctx.pause_on_approval and any(
+            _is_dangerous(ctx.registry, tc["name"]) for tc in result.tool_calls
+        ):
+            messages.append(_assistant_tool_msg(result))
+            return _pause(ctx, messages, steps, result.tool_calls, iters_used, corrections)
+
+        messages.append(_assistant_tool_msg(result))
+        _execute_batch(ctx, result.tool_calls, messages, steps)
+
+    raise RunLimitError(f"hit iteration cap ({ctx.max_iters}) without a final answer")
+
+
 def run(
     prompt: str,
     config: Config,
@@ -109,17 +244,18 @@ def run(
     extra_system: str = "",
     plan: bool = False,
     on_plan: PlanObserver | None = None,
+    pause_on_approval: bool = False,
+    checkpoint_db: Path = DB_PATH,
 ) -> RunResult:
-    """Run the tool-calling loop until a final answer or the iteration cap.
+    """Run the tool-calling loop until a final answer, the iteration cap, or a pause.
 
     With `plan=True`, halia drafts a short plan first (one extra call) and follows it
     as *guidance* — the loop still adapts. When a final answer contains figures no tool
-    produced, the conscience bounces it back (up to `max_corrections` times) with the
-    offending figures named, so the model regrounds them through tools instead of
-    asserting head-math.
+    produced, the conscience bounces it back (up to `max_corrections` times). With
+    `pause_on_approval=True`, a dangerous tool freezes the run into a checkpoint instead
+    of prompting — resume it later with `resume()`.
     """
     provider = provider if provider is not None else build_provider(config)
-    tools = registry.tool_schemas()
 
     plan_text = ""
     system_content = SYSTEM_PROMPT + extra_system
@@ -138,57 +274,50 @@ def run(
         {"role": "system", "content": system_content},
         {"role": "user", "content": prompt},
     ]
-    steps: list[Step] = []
-    corrections = 0
+    ctx = _Ctx(
+        provider=provider, config=config, registry=registry, prompt=prompt,
+        extra_system=extra_system, plan=plan_text, max_iters=max_iters,
+        max_corrections=max_corrections, observer=observer, approver=approver,
+        pause_on_approval=pause_on_approval, checkpoint_db=checkpoint_db,
+    )
+    return _loop(ctx, messages, [], 0, 0)
 
-    for _ in range(max_iters):
-        result = provider.chat(messages, tools=tools or None)
-        if not result.tool_calls:
-            answer = (result.content or "").strip()
-            unverified = ungrounded_numbers(answer, steps)
-            if unverified and corrections < max_corrections:
-                corrections += 1
-                messages.append({"role": "assistant", "content": answer})
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": _CORRECTION_TEMPLATE.format(figures=", ".join(unverified)),
-                    }
-                )
-                continue
-            return RunResult(
-                answer=answer,
-                steps=steps,
-                unverified=unverified,
-                corrections=corrections,
-                plan=plan_text,
-            )
 
-        # Record the assistant's tool-call turn, then execute each call and feed
-        # the observations back as `tool` messages.
-        messages.append(
-            {
-                "role": "assistant",
-                "content": result.content,
-                "tool_calls": [
-                    {
-                        "id": tc["id"],
-                        "type": "function",
-                        "function": {"name": tc["name"], "arguments": tc["arguments"]},
-                    }
-                    for tc in result.tool_calls
-                ],
-            }
-        )
-        for tc in result.tool_calls:
-            observation = _run_tool(registry, tc["name"], tc["arguments"], approver)
-            step = Step(tool=tc["name"], arguments=tc["arguments"], observation=observation)
-            steps.append(step)
-            if observer is not None:
-                observer(step)
-            messages.append({"role": "tool", "tool_call_id": tc["id"], "content": observation})
+def resume(
+    checkpoint: Checkpoint,
+    config: Config,
+    approve: bool,
+    provider: Provider | None = None,
+    registry: SkillRegistry | None = None,
+    observer: Observer | None = None,
+    max_iters: int = DEFAULT_MAX_ITERS,
+    pause_on_approval: bool = True,
+    checkpoint_db: Path = DB_PATH,
+) -> RunResult:
+    """Resume a paused run: apply the approve/deny decision to the pending batch, continue.
 
-    raise RunLimitError(f"hit iteration cap ({max_iters}) without a final answer")
+    `config` supplies the api key (never stored in the checkpoint). The registry is
+    rebuilt from the checkpoint's skills unless one is passed in.
+    """
+    from halia.skills import build_registry
+
+    provider = provider if provider is not None else build_provider(config)
+    registry = registry if registry is not None else build_registry(checkpoint.skills)
+
+    ctx = _Ctx(
+        provider=provider, config=config, registry=registry, prompt=checkpoint.prompt,
+        extra_system=checkpoint.extra_system, plan=checkpoint.plan, max_iters=max_iters,
+        max_corrections=DEFAULT_MAX_CORRECTIONS,
+        observer=observer,
+        approver=lambda name, args: approve,  # the human's decision, applied to the batch
+        pause_on_approval=pause_on_approval, checkpoint_db=checkpoint_db,
+    )
+
+    messages = list(checkpoint.messages)
+    steps = list(checkpoint.steps)
+    # Complete the frozen tool batch with the decision applied, then continue the loop.
+    _execute_batch(ctx, checkpoint.pending, messages, steps)
+    return _loop(ctx, messages, steps, checkpoint.corrections, checkpoint.iters_used)
 
 
 def _run_tool(

@@ -8,7 +8,7 @@ this module just wires the commands. Commands are added as the layers land —
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
@@ -69,6 +69,7 @@ def _execute_run(
     allow_commands: bool,
     profile: str | None,
     plan: bool = False,
+    pause_for_approval: bool = False,
 ) -> None:
     """Shared body for `run` and the persona-preset commands (`halia finance`, …)."""
     from dataclasses import replace
@@ -129,10 +130,29 @@ def _execute_run(
             extra_system=extra_system,
             plan=plan,
             on_plan=None if quiet else show_plan,
+            pause_on_approval=pause_for_approval,
         )
     except (ProviderError, RunLimitError) as exc:
         console.print(f"[red]error:[/red] {exc}")
         raise typer.Exit(1) from exc
+
+    _present_result(config, prompt, result, quiet)
+
+
+def _present_result(config: Any, prompt: str, result: Any, quiet: bool) -> None:
+    """Render a finished-or-paused result: paused → checkpoint notice; done → answer + record."""
+    if result.paused:
+        from halia.core.checkpoint import get_checkpoint
+
+        cp = get_checkpoint(result.checkpoint_id)
+        reason = cp.reason if cp else "approval required"
+        console.print(f"\n[yellow]⏸ paused[/yellow] — {reason}")
+        console.print(f"  checkpoint [bold]{result.checkpoint_id}[/bold]")
+        console.print(
+            f"  [dim]resume with[/dim] halia resume {result.checkpoint_id} --approve"
+            f"  [dim]/[/dim] --deny"
+        )
+        return
 
     console.print(result.answer)
 
@@ -181,9 +201,17 @@ def run(
         bool,
         typer.Option("--plan", help="Draft a short plan before executing (one extra call)."),
     ] = False,
+    pause_for_approval: Annotated[
+        bool,
+        typer.Option(
+            "--pause-for-approval",
+            help="Unattended mode: freeze into a checkpoint at a dangerous tool instead "
+            "of prompting (resume later with `halia resume`).",
+        ),
+    ] = False,
 ) -> None:
     """Run halia's agent loop on a task (can use tools)."""
-    _execute_run(prompt, max_iters, quiet, allow_commands, profile, plan)
+    _execute_run(prompt, max_iters, quiet, allow_commands, profile, plan, pause_for_approval)
 
 
 def _make_preset_command(preset_name: str) -> Callable[..., None]:
@@ -299,6 +327,78 @@ def show(
         )
     elif not record.corrections:
         console.print("\n[dim]✓ all figures grounded in tool output.[/dim]")
+
+
+@app.command()
+def checkpoints(
+    limit: Annotated[int, typer.Option(help="How many recent checkpoints to show.")] = 20,
+) -> None:
+    """List paused runs awaiting a decision (the HITL approval queue)."""
+    from halia.core.checkpoint import list_checkpoints
+
+    cps = list_checkpoints(limit=limit)
+    if not cps:
+        console.print("[dim]no paused runs.[/dim]")
+        return
+    for cp in cps:
+        console.print(
+            f"[bold]{cp.id}[/bold] [dim]{cp.created_at}[/dim] "
+            f"[yellow]{cp.reason}[/yellow]"
+        )
+        console.print(f"  [cyan]q[/cyan] {cp.prompt[:80]}")
+        console.print(f"  [dim]resume:[/dim] halia resume {cp.id} --approve  [dim]/[/dim] --deny")
+
+
+@app.command()
+def resume(
+    checkpoint_id: Annotated[str, typer.Argument(help="A checkpoint id (or prefix).")],
+    approve: Annotated[
+        bool,
+        typer.Option("--approve/--deny", help="Approve or deny the pending action."),
+    ] = False,
+    quiet: Annotated[bool, typer.Option("--quiet", "-q", help="Hide the tool-call trace.")] = False,
+) -> None:
+    """Resume a paused run, applying your approve/deny decision to the pending action."""
+    from dataclasses import replace
+
+    from halia.audit.trace import Step
+    from halia.config.settings import ConfigError, load_config
+    from halia.core.agent import RunLimitError
+    from halia.core.agent import resume as resume_run
+    from halia.core.checkpoint import delete_checkpoint, get_checkpoint
+    from halia.providers.base import ProviderError
+
+    cp = get_checkpoint(checkpoint_id)
+    if cp is None:
+        console.print(
+            f"[yellow]no checkpoint matching '{checkpoint_id}'[/yellow] (ambiguous or not found)."
+        )
+        raise typer.Exit(1)
+
+    try:
+        config = load_config()
+    except ConfigError as exc:
+        console.print(f"[red]config error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    config = replace(config, model=cp.model)  # honor the model the run started with
+
+    def show(step: Step) -> None:
+        console.print(f"[dim]→ {step.tool}({step.arguments})[/dim]")
+        console.print(f"[dim]  ↳ {step.preview()}[/dim]")
+
+    decision = "approved" if approve else "denied"
+    console.print(f"[dim]{decision} — resuming {cp.id}[/dim]\n")
+    try:
+        result = resume_run(
+            cp, config, approve, observer=None if quiet else show
+        )
+    except (ProviderError, RunLimitError) as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    _present_result(config, cp.prompt, result, quiet)
+    # This checkpoint is spent — the run either finished or minted a new checkpoint.
+    delete_checkpoint(cp.id)
 
 
 @app.command()
