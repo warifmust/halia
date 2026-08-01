@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from halia.audit.record import list_runs, new_record, save_run
+from halia.audit.record import RunRecord, get_run, list_runs, new_record, save_run
 from halia.audit.trace import Step
 
 
@@ -56,6 +56,44 @@ def test_receipts_default_to_empty(tmp_path: Any) -> None:
     assert loaded.plan == ""
     assert loaded.unverified == []
     assert loaded.corrections == 0
+
+
+def test_list_runs_only_unverified(tmp_path: Any) -> None:
+    db = tmp_path / "halia.db"
+    save_run(new_record("p", "m", "clean", "a", []), db_path=db)  # grounded
+    save_run(
+        new_record("p", "m", "healed", "a", [], corrections=1),  # self-corrected → clean
+        db_path=db,
+    )
+    save_run(
+        new_record("p", "m", "flagged", "a", [], unverified=["730.50"]),  # needs review
+        db_path=db,
+    )
+    review = list_runs(db_path=db, only_unverified=True)
+    assert [r.prompt for r in review] == ["flagged"]  # only the still-flagged run
+    assert len(list_runs(db_path=db)) == 3  # unfiltered still sees all
+
+
+def test_get_run_by_full_id_and_prefix(tmp_path: Any) -> None:
+    db = tmp_path / "halia.db"
+    rec = RunRecord("abc123def456", "2026-01-01", "p", "m", "q", "a", [], plan="plan x")
+    save_run(rec, db_path=db)
+    assert get_run("abc123def456", db_path=db) is not None
+    got = get_run("abc12", db_path=db)  # prefix
+    assert got is not None and got.plan == "plan x"
+
+
+def test_get_run_missing_and_ambiguous(tmp_path: Any) -> None:
+    db = tmp_path / "halia.db"
+    save_run(RunRecord("aa11", "2026-01-01", "p", "m", "q", "a", []), db_path=db)
+    save_run(RunRecord("aa22", "2026-01-02", "p", "m", "q", "a", []), db_path=db)
+    assert get_run("zz", db_path=db) is None  # no match
+    assert get_run("aa", db_path=db) is None  # ambiguous prefix → refuse to guess
+    assert get_run("aa11", db_path=db) is not None  # exact still resolves
+
+
+def test_get_run_no_db(tmp_path: Any) -> None:
+    assert get_run("anything", db_path=tmp_path / "nope.db") is None
 
 
 def test_migration_adds_columns_to_old_db(tmp_path: Any) -> None:

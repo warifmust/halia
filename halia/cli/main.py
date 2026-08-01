@@ -225,13 +225,22 @@ _register_preset_commands()
 @app.command()
 def runs(
     limit: Annotated[int, typer.Option(help="How many recent runs to show.")] = 20,
+    unverified: Annotated[
+        bool,
+        typer.Option(
+            "--unverified", help="Only runs that shipped a figure no tool verified (review set)."
+        ),
+    ] = False,
 ) -> None:
     """List recent runs — the durable audit trail."""
     from halia.audit.record import list_runs
 
-    records = list_runs(limit=limit)
+    records = list_runs(limit=limit, only_unverified=unverified)
     if not records:
-        console.print("[dim]no runs recorded yet.[/dim]")
+        if unverified:
+            console.print("[green]✓ no runs with unverified figures.[/green]")
+        else:
+            console.print("[dim]no runs recorded yet.[/dim]")
         return
     for r in records:
         tags = []
@@ -248,6 +257,48 @@ def runs(
         )
         console.print(f"  [cyan]q[/cyan] {r.prompt[:80]}")
         console.print(f"  [green]a[/green] {r.answer[:80]}")
+
+
+@app.command()
+def show(
+    run_id: Annotated[str, typer.Argument(help="A run id (or unique prefix) from `halia runs`.")],
+) -> None:
+    """Show one run's full receipts: plan, every step, and the conscience outcome."""
+    from halia.audit.record import get_run
+
+    record = get_run(run_id)
+    if record is None:
+        console.print(f"[yellow]no run matching '{run_id}'[/yellow] (ambiguous or not found).")
+        raise typer.Exit(1)
+
+    console.print(f"[bold]{record.id}[/bold] [dim]{record.started_at}[/dim]")
+    console.print(f"[dim]{record.provider}/{record.model}[/dim]")
+    console.print(f"\n[cyan]prompt[/cyan]\n{record.prompt}")
+
+    if record.plan:
+        console.print(f"\n[cyan]plan[/cyan]\n[dim]{record.plan}[/dim]")
+
+    console.print(f"\n[cyan]steps[/cyan] [dim]({len(record.steps)})[/dim]")
+    if not record.steps:
+        console.print("  [dim](no tool calls)[/dim]")
+    for i, step in enumerate(record.steps, 1):
+        console.print(f"  [bold]{i}.[/bold] {step.tool}[dim]({step.arguments})[/dim]")
+        console.print(f"     [dim]↳ {step.preview(300)}[/dim]")
+
+    console.print(f"\n[green]answer[/green]\n{record.answer}")
+
+    if record.corrections:
+        console.print(
+            f"\n[green]✓ regrounded[/green] [dim]({record.corrections} corrective "
+            f"pass(es) to recompute figures via tools)[/dim]"
+        )
+    if record.unverified:
+        figures = ", ".join(record.unverified)
+        console.print(
+            f"\n[yellow]⚠ unverified figures[/yellow] (not produced by a tool): {figures}"
+        )
+    elif not record.corrections:
+        console.print("\n[dim]✓ all figures grounded in tool output.[/dim]")
 
 
 @app.command()

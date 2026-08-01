@@ -90,39 +90,64 @@ def save_run(record: RunRecord, db_path: Path = DB_PATH) -> None:
         conn.close()
 
 
-def list_runs(db_path: Path = DB_PATH, limit: int = 20) -> list[RunRecord]:
-    """Load the most recent run records (newest first)."""
+def _row_to_record(row: Any) -> RunRecord:
+    raw_steps: Any = json.loads(row[6])
+    raw_unverified: Any = json.loads(row[8])
+    return RunRecord(
+        id=row[0],
+        started_at=row[1],
+        provider=row[2],
+        model=row[3],
+        prompt=row[4],
+        answer=row[5],
+        steps=[Step(**step) for step in raw_steps],
+        plan=row[7],
+        unverified=list(raw_unverified),
+        corrections=row[9],
+    )
+
+
+_COLUMNS = (
+    "id, started_at, provider, model, prompt, answer, steps_json, "
+    "plan, unverified_json, corrections"
+)
+
+
+def get_run(run_id: str, db_path: Path = DB_PATH) -> RunRecord | None:
+    """Load one run by id or unique id-prefix; None if no match or the prefix is ambiguous."""
     if not db_path.exists():
-        return []
+        return None
     conn = connect(db_path)
     try:
-        cursor = conn.execute(
-            "SELECT id, started_at, provider, model, prompt, answer, steps_json, "
-            "plan, unverified_json, corrections "
-            "FROM runs ORDER BY started_at DESC LIMIT ?",
-            (limit,),
-        )
-        rows = cursor.fetchall()
+        rows = conn.execute(
+            f"SELECT {_COLUMNS} FROM runs WHERE id LIKE ? ORDER BY started_at DESC LIMIT 2",
+            (run_id + "%",),
+        ).fetchall()
     finally:
         conn.close()
+    if len(rows) != 1:  # 0 = no match, >1 = ambiguous prefix
+        return None
+    return _row_to_record(rows[0])
 
-    records: list[RunRecord] = []
-    for row in rows:
-        raw_steps: Any = json.loads(row[6])
-        steps = [Step(**step) for step in raw_steps]
-        raw_unverified: Any = json.loads(row[8])
-        records.append(
-            RunRecord(
-                id=row[0],
-                started_at=row[1],
-                provider=row[2],
-                model=row[3],
-                prompt=row[4],
-                answer=row[5],
-                steps=steps,
-                plan=row[7],
-                unverified=list(raw_unverified),
-                corrections=row[9],
-            )
-        )
-    return records
+
+def list_runs(
+    db_path: Path = DB_PATH, limit: int = 20, only_unverified: bool = False
+) -> list[RunRecord]:
+    """Load the most recent run records (newest first).
+
+    `only_unverified` narrows to the trust-review set: runs whose final answer still
+    carried a figure no tool produced (self-corrected runs ended clean, so excluded).
+    """
+    if not db_path.exists():
+        return []
+    # unverified_json is '[]' when every figure was grounded (incl. after self-heal).
+    where = "WHERE unverified_json != '[]' " if only_unverified else ""
+    conn = connect(db_path)
+    try:
+        rows = conn.execute(
+            f"SELECT {_COLUMNS} FROM runs {where}ORDER BY started_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [_row_to_record(row) for row in rows]
