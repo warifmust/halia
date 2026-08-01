@@ -62,38 +62,24 @@ def ask(prompt: Annotated[str, typer.Argument(help="What to ask halia.")]) -> No
     console.print(answer)
 
 
-def _execute_run(
-    prompt: str,
-    max_iters: int,
-    quiet: bool,
-    allow_commands: bool,
-    profile: str | None,
-    plan: bool = False,
-    pause_for_approval: bool = False,
-) -> None:
-    """Shared body for `run` and the persona-preset commands (`halia finance`, …)."""
+def _show_step(step: Any) -> None:
+    console.print(f"[dim]→ {step.tool}({step.arguments})[/dim]")
+    console.print(f"[dim]  ↳ {step.preview()}[/dim]")
+
+
+def _approve(name: str, arguments: str) -> bool:
+    console.print(f"[yellow]halia wants to run[/yellow] [bold]{name}[/bold]: {arguments}")
+    return typer.confirm("Allow?", default=False)
+
+
+def _prepare_context(profile: str | None, allow_commands: bool) -> tuple[Any, Any, str]:
+    """Resolve (config, registry, extra_system) from a profile/preset + memory. Exits on error."""
     from dataclasses import replace
 
-    from halia.audit.trace import Step
     from halia.config.settings import ConfigError, load_config
-    from halia.core.agent import RunLimitError
-    from halia.core.agent import run as run_agent
     from halia.memory.facts import memory_block
     from halia.presets import resolve_profile
-    from halia.providers.base import ProviderError
     from halia.skills import build_registry, default_registry
-
-    def show(step: Step) -> None:
-        console.print(f"[dim]→ {step.tool}({step.arguments})[/dim]")
-        console.print(f"[dim]  ↳ {step.preview()}[/dim]")
-
-    def show_plan(text: str) -> None:
-        console.print("[cyan]plan[/cyan]")
-        console.print(f"[dim]{text}[/dim]\n")
-
-    def approve(name: str, arguments: str) -> bool:
-        console.print(f"[yellow]halia wants to run[/yellow] [bold]{name}[/bold]: {arguments}")
-        return typer.confirm("Allow?", default=False)
 
     try:
         config = load_config()
@@ -118,6 +104,31 @@ def _execute_run(
             extra_system = f"{extra_system}\n\n{prof.extra_prompt}"
     else:
         registry = default_registry(allow_commands=allow_commands)
+    return config, registry, extra_system
+
+
+def _execute_run(
+    prompt: str,
+    max_iters: int,
+    quiet: bool,
+    allow_commands: bool,
+    profile: str | None,
+    plan: bool = False,
+    pause_for_approval: bool = False,
+) -> None:
+    """Shared body for `run` and the persona-preset commands (`halia finance`, …)."""
+    from halia.core.agent import RunLimitError
+    from halia.core.agent import run as run_agent
+    from halia.providers.base import ProviderError
+
+    show = _show_step
+    approve = _approve
+
+    def show_plan(text: str) -> None:
+        console.print("[cyan]plan[/cyan]")
+        console.print(f"[dim]{text}[/dim]\n")
+
+    config, registry, extra_system = _prepare_context(profile, allow_commands)
 
     try:
         result = run_agent(
@@ -248,6 +259,105 @@ def _register_preset_commands() -> None:
 
 
 _register_preset_commands()
+
+
+def _chat_footer(result: Any) -> None:
+    """Per-turn trust readout in chat (no run record here — the loop records the turn)."""
+    if result.unverified:
+        figures = ", ".join(result.unverified)
+        console.print(f"[yellow]⚠ unverified:[/yellow] {figures}")
+    elif result.corrections:
+        console.print(f"[dim]✓ regrounded ×{result.corrections}[/dim]")
+
+
+@app.command()
+def chat(
+    profile: Annotated[
+        str | None, typer.Option("--profile", help="Use a named profile or preset (e.g. finance).")
+    ] = None,
+    allow_commands: Annotated[
+        bool, typer.Option("--allow-commands", help="Enable shell commands (gated by approval).")
+    ] = False,
+) -> None:
+    """Talk to halia in a multi-turn conversation (context persists across turns)."""
+    from halia.audit.record import new_record, save_run
+    from halia.core.agent import SYSTEM_PROMPT, RunLimitError, converse
+    from halia.core.checkpoint import list_checkpoints
+    from halia.providers.base import Message, ProviderError
+
+    config, registry, extra_system = _prepare_context(profile, allow_commands)
+    messages: list[Message] = [{"role": "system", "content": SYSTEM_PROMPT + extra_system}]
+
+    console.print(
+        "[bold]halia[/bold] — chat. [dim]/exit to quit · /clear to reset context · "
+        "/resume <id> to continue a paused run[/dim]\n"
+    )
+    pending = list_checkpoints(limit=3)
+    if pending:
+        console.print(f"[yellow]⏸ {len(pending)} paused run(s) awaiting a decision:[/yellow]")
+        for cp in pending:
+            console.print(f"  [bold]{cp.id}[/bold] [dim]{cp.reason}[/dim] — /resume {cp.id}")
+        console.print()
+
+    while True:
+        try:
+            user_input = console.input("[cyan]you ›[/cyan] ").strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]bye.[/dim]")
+            break
+        if not user_input:
+            continue
+        if user_input.lower() in ("/exit", "/quit"):
+            console.print("[dim]bye.[/dim]")
+            break
+        if user_input.lower() == "/clear":
+            del messages[1:]  # keep the system prompt
+            console.print("[dim]context cleared.[/dim]\n")
+            continue
+        if user_input.lower().startswith("/resume"):
+            _chat_resume(user_input, config, registry)
+            continue
+
+        messages.append({"role": "user", "content": user_input})
+        try:
+            result = converse(
+                messages, config, registry, observer=_show_step, approver=_approve
+            )
+        except (ProviderError, RunLimitError) as exc:
+            console.print(f"[red]error:[/red] {exc}\n")
+            messages.pop()  # drop the failed user turn so history stays clean
+            continue
+        messages.append({"role": "assistant", "content": result.answer})
+        console.print(f"[bold]halia ›[/bold] {result.answer}")
+        _chat_footer(result)
+        console.print()
+
+        record = new_record(
+            config.provider, config.model, user_input, result.answer, result.steps,
+            unverified=result.unverified, corrections=result.corrections,
+        )
+        save_run(record)
+
+
+def _chat_resume(command: str, config: Any, registry: Any) -> None:
+    """Handle `/resume <id> [approve|deny]` inside chat."""
+    from halia.core.agent import resume as resume_run
+    from halia.core.checkpoint import delete_checkpoint, get_checkpoint
+
+    parts = command.split()
+    if len(parts) < 2:
+        console.print("[dim]usage: /resume <checkpoint-id> [approve|deny][/dim]\n")
+        return
+    cp = get_checkpoint(parts[1])
+    if cp is None:
+        console.print(f"[yellow]no checkpoint matching '{parts[1]}'[/yellow]\n")
+        return
+    approve = not (len(parts) >= 3 and parts[2].lower() in ("deny", "no", "n"))
+    console.print(f"[dim]{'approved' if approve else 'denied'} — resuming {cp.id}[/dim]")
+    result = resume_run(cp, config, approve, observer=_show_step)
+    _present_result(config, cp.prompt, result, quiet=False)
+    delete_checkpoint(cp.id)
+    console.print()
 
 
 @app.command()

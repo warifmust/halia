@@ -320,6 +320,35 @@ def resume(
     return _loop(ctx, messages, steps, checkpoint.corrections, checkpoint.iters_used)
 
 
+def converse(
+    messages: list[Message],
+    config: Config,
+    registry: SkillRegistry,
+    provider: Provider | None = None,
+    max_iters: int = DEFAULT_MAX_ITERS,
+    observer: Observer | None = None,
+    approver: Approver | None = None,
+) -> RunResult:
+    """Run one chat turn over an existing conversation (the multi-turn / chat primitive).
+
+    Unlike `run` (which builds a fresh [system, user] pair), `converse` continues the
+    caller-owned `messages` — which must already hold the system prompt, prior turns,
+    and the latest user message. The list is extended in place with the turn's tool
+    exchanges; the caller appends the returned answer as the next assistant turn.
+
+    Approval is synchronous here (interactive human present) — no checkpointing.
+    """
+    provider = provider if provider is not None else build_provider(config)
+    prompt = str(messages[-1].get("content", "")) if messages else ""
+    ctx = _Ctx(
+        provider=provider, config=config, registry=registry, prompt=prompt,
+        extra_system="", plan="", max_iters=max_iters,
+        max_corrections=DEFAULT_MAX_CORRECTIONS, observer=observer, approver=approver,
+        pause_on_approval=False,
+    )
+    return _loop(ctx, messages, [], 0, 0)
+
+
 def _run_tool(
     registry: SkillRegistry, name: str, arguments: str, approver: Approver | None
 ) -> str:
