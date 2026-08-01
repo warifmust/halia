@@ -149,7 +149,16 @@ def _execute_run(
 
     from halia.audit.record import new_record, save_run
 
-    record = new_record(config.provider, config.model, prompt, result.answer, result.steps)
+    record = new_record(
+        config.provider,
+        config.model,
+        prompt,
+        result.answer,
+        result.steps,
+        plan=result.plan,
+        unverified=result.unverified,
+        corrections=result.corrections,
+    )
     save_run(record)
     if not quiet:
         console.print(f"[dim](run {record.id} recorded)[/dim]")
@@ -225,9 +234,17 @@ def runs(
         console.print("[dim]no runs recorded yet.[/dim]")
         return
     for r in records:
+        tags = []
+        if r.plan:
+            tags.append("planned")
+        if r.corrections:
+            tags.append(f"regrounded×{r.corrections}")
+        if r.unverified:
+            tags.append(f"[yellow]⚠{len(r.unverified)} unverified[/yellow]")
+        tag_str = f" [dim]·[/dim] {' '.join(tags)}" if tags else ""
         console.print(
             f"[bold]{r.id}[/bold] [dim]{r.started_at}[/dim] "
-            f"{r.provider}/{r.model} [dim]({len(r.steps)} steps)[/dim]"
+            f"{r.provider}/{r.model} [dim]({len(r.steps)} steps)[/dim]{tag_str}"
         )
         console.print(f"  [cyan]q[/cyan] {r.prompt[:80]}")
         console.print(f"  [green]a[/green] {r.answer[:80]}")

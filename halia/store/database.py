@@ -15,13 +15,16 @@ DB_PATH = Path.home() / ".halia" / "halia.db"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
-    id         TEXT PRIMARY KEY,
-    started_at TEXT NOT NULL,
-    provider   TEXT NOT NULL,
-    model      TEXT NOT NULL,
-    prompt     TEXT NOT NULL,
-    answer     TEXT NOT NULL,
-    steps_json TEXT NOT NULL
+    id              TEXT PRIMARY KEY,
+    started_at      TEXT NOT NULL,
+    provider        TEXT NOT NULL,
+    model           TEXT NOT NULL,
+    prompt          TEXT NOT NULL,
+    answer          TEXT NOT NULL,
+    steps_json      TEXT NOT NULL,
+    plan            TEXT NOT NULL DEFAULT '',
+    unverified_json TEXT NOT NULL DEFAULT '[]',
+    corrections     INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs (started_at DESC);
 
@@ -40,9 +43,28 @@ CREATE TABLE IF NOT EXISTS profiles (
 """
 
 
+# Columns added to `runs` after its first release — applied to pre-existing DBs on
+# open (CREATE TABLE IF NOT EXISTS won't add columns to a table that already exists).
+_RUNS_MIGRATIONS = {
+    "plan": "TEXT NOT NULL DEFAULT ''",
+    "unverified_json": "TEXT NOT NULL DEFAULT '[]'",
+    "corrections": "INTEGER NOT NULL DEFAULT 0",
+}
+
+
+def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    """Add any missing columns to `table` (idempotent, additive-only migration)."""
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    for name, ddl in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+
+
 def connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
-    """Open the database (creating the dir + schema on first use)."""
+    """Open the database (creating the dir + schema, migrating older DBs, on first use)."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.executescript(_SCHEMA)
+    _ensure_columns(conn, "runs", _RUNS_MIGRATIONS)
+    conn.commit()
     return conn
