@@ -390,3 +390,23 @@ halia marketing 'Write 3 Meta ad headline options for an eco water bottle. Each 
   `platform`: twitter/sms/google_ads/meta/…); counts are tool figures the conscience then
   grounds. Unit-tested in `tests/test_textmetrics.py`.
 - **Verticals now: finance · research · education · marketing** — all on one engine.
+
+## 23. Fifth vertical — `compliance` (requirement coverage, cite-or-flag)
+
+**Goal:** check documents (contracts/policies) against requirements, cite the clause, flag
+gaps — a strong-verification vertical. Closes the read/write asymmetry (`read_docx`).
+
+```bash
+printf 'a\n' | halia compliance 'Check /tmp/privacy_policy.docx against: "data retention period", "right to access", "right to erasure", "encryption at rest", "breach notification within 72 hours", "lawful basis for processing". Use check_requirements. Then write a gap-analysis to /tmp/gap_analysis.docx.'
+```
+
+- **Result:** ✅ `read_docx` extracted the Word policy; `check_requirements` verified each
+  requirement against the **real document** (3 covered with cited snippets, 3 missing:
+  erasure / breach-notification / lawful basis); wrote an editable gap-analysis Word report
+  + markdown master. Presence is tool-verified; adequacy flagged as judgment.
+- **`read_docx`** (python-docx, existing dep) — closes the write-but-can't-read gap; added
+  to DEFAULT_SKILLS (horizontal). **`check_requirements`** reads the *file itself* (not
+  model-relayed text) so the coverage check is against ground truth; exact-phrase match
+  (deterministic, no false "yes"), model interprets phrasing/adequacy on top.
+- Unit-tested in `tests/test_compliance.py`. **Verticals: finance · research · education ·
+  marketing · compliance (5).**

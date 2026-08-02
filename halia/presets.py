@@ -67,6 +67,19 @@ _MARKETING_PROMPT = (
     "make_pdf / make_docx / make_pptx for briefs and decks."
 )
 
+_COMPLIANCE_PROMPT = (
+    "You are halia in COMPLIANCE mode — an assistant for checking documents (contracts, "
+    "policies, procedures) against requirements and standards. Discipline: (1) NEVER "
+    "assert a document is compliant or a requirement is met from memory — use "
+    "check_requirements to verify each required clause is actually present, and CITE the "
+    "exact text you found. (2) Report every gap explicitly (what is MISSING). (3) Carefully "
+    "distinguish PRESENCE from ADEQUACY: 'the policy mentions data retention' (found, "
+    "deterministic) is not 'the retention clause meets the standard' (your judgment — say "
+    "so, and explain your reasoning). (4) Read the actual documents (read_docx / read_pdf / "
+    "read_file); do not rely on assumptions about their contents. Produce gap analyses and "
+    "reports with make_docx / make_pdf / make_excel."
+)
+
 # Built-in presets, keyed by the name a user invokes (`halia finance …`, `halia research …`).
 # A user profile saved under the same name in the DB overrides the built-in (customization).
 BUILTIN_PRESETS: dict[str, Profile] = {
@@ -147,6 +160,24 @@ BUILTIN_PRESETS: dict[str, Profile] = {
         ],
         model=None,
         extra_prompt=_MARKETING_PROMPT,
+    ),
+    "compliance": Profile(
+        name="compliance",
+        skills=[
+            "check_requirements",  # verify required clauses are present + cite (the hook)
+            "read_docx",  # contracts/policies are Word
+            "read_pdf",
+            "read_file",
+            "list_files",
+            "web_search",  # look up the standard/regulation
+            "fetch_url",
+            "write_file",
+            "make_docx",  # gap-analysis reports
+            "make_pdf",
+            "make_excel",  # requirement/coverage matrices
+        ],
+        model=None,
+        extra_prompt=_COMPLIANCE_PROMPT,
     ),
 }
 

@@ -7,6 +7,7 @@ from collections.abc import Callable
 from halia.skills.base import Skill
 from halia.skills.calc import Calculate
 from halia.skills.chart import MakeChart
+from halia.skills.compliance import CheckRequirements
 from halia.skills.data import AggregateCsv, ReadCsv
 from halia.skills.db import QueryDb
 from halia.skills.excel import ReadExcel
@@ -20,6 +21,7 @@ from halia.skills.registry import SkillRegistry
 from halia.skills.spreadsheet import MakeExcel
 from halia.skills.textmetrics import CountText
 from halia.skills.web import FetchUrl, WebSearch
+from halia.skills.word import ReadDocx
 
 # The full catalogue of skills, by name.
 _SKILL_FACTORIES: dict[str, Callable[[], Skill]] = {
@@ -33,6 +35,8 @@ _SKILL_FACTORIES: dict[str, Callable[[], Skill]] = {
     "aggregate_csv": AggregateCsv,
     "read_excel": ReadExcel,
     "read_pdf": ReadPdf,
+    "read_docx": ReadDocx,
+    "check_requirements": CheckRequirements,
     "reconcile_csv": ReconcileCsv,
     "query_db": QueryDb,
     "readability": Readability,
@@ -61,6 +65,7 @@ DEFAULT_SKILLS = [
     "aggregate_csv",
     "read_excel",
     "read_pdf",
+    "read_docx",
     "reconcile_csv",
     "query_db",
 ]
