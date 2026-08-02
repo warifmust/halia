@@ -161,3 +161,162 @@ class MakePdf:
         except OSError as exc:
             return f"error writing {path}: {exc}"
         return f"wrote PDF to {pdf_path} (editable markdown source kept at {md_path})"
+
+
+# --- PPTX: markdown -> slides -----------------------------------------------------
+# Same master model: `---` on its own line separates slides (else split on # / ##
+# headings). Each slide's first heading is its title; bullets/paragraphs/tables become
+# the body. python-pptx is XML/UTF-8 based, so full Unicode works here (unlike PDF).
+
+
+def _strip_md(text: str) -> str:
+    return text.replace("**", "").replace("__", "")
+
+
+def _split_slides(content: str) -> list[str]:
+    lines = content.replace("\r\n", "\n").split("\n")
+    if any(re.match(r"^-{3,}$", ln.strip()) for ln in lines):
+        chunks, cur = [], []  # type: list[str], list[str]
+        for ln in lines:
+            if re.match(r"^-{3,}$", ln.strip()):
+                chunks.append("\n".join(cur))
+                cur = []
+            else:
+                cur.append(ln)
+        chunks.append("\n".join(cur))
+    else:
+        chunks, cur = [], []
+        for ln in lines:
+            if re.match(r"^#{1,2}\s+", ln) and any(x.strip() for x in cur):
+                chunks.append("\n".join(cur))
+                cur = [ln]
+            else:
+                cur.append(ln)
+        chunks.append("\n".join(cur))
+    return [c for c in chunks if c.strip()] or [content]
+
+
+def _parse_chunk(chunk: str) -> tuple[str, list[tuple[str, Any]]]:
+    lines = chunk.split("\n")
+    title = ""
+    body: list[str] = []
+    for ln in lines:
+        head = re.match(r"^#{1,6}\s+(.*)", ln.strip())
+        if head and not title:
+            title = _strip_md(head.group(1))
+        else:
+            body.append(ln)
+
+    blocks: list[tuple[str, Any]] = []
+    i = 0
+    while i < len(body):
+        s = body[i].strip()
+        if s.startswith("|") and s.endswith("|"):
+            table: list[list[str]] = []
+            while i < len(body) and body[i].strip().startswith("|"):
+                row = body[i].strip()
+                if not re.match(r"^\|[\s:|-]+\|$", row):
+                    table.append([_strip_md(c.strip()) for c in row.strip("|").split("|")])
+                i += 1
+            if table:
+                blocks.append(("table", table))
+            continue
+        i += 1
+        if not s:
+            continue
+        bullet = re.match(r"^[-*]\s+(.*)", s)
+        blocks.append(("bullet", _strip_md(bullet.group(1))) if bullet else ("para", _strip_md(s)))
+    return title, blocks
+
+
+def render_markdown_pptx(content: str) -> Any:
+    """Render a markdown subset to a python-pptx Presentation (title + bullets + tables)."""
+    from pptx import Presentation
+    from pptx.util import Inches, Pt
+
+    prs = Presentation()
+    for chunk in _split_slides(content):
+        title, blocks = _parse_chunk(chunk)
+        tables = [b[1] for b in blocks if b[0] == "table"]
+        text_blocks = [b for b in blocks if b[0] in ("bullet", "para")]
+        slide = prs.slides.add_slide(prs.slide_layouts[5])  # Title Only
+        slide.shapes.title.text = title or "Slide"
+
+        top = 1.7
+        if text_blocks:
+            box = slide.shapes.add_textbox(Inches(0.6), Inches(top), Inches(8.8), Inches(4))
+            frame = box.text_frame
+            frame.word_wrap = True
+            for idx, (kind, text) in enumerate(text_blocks):
+                para = frame.paragraphs[0] if idx == 0 else frame.add_paragraph()
+                para.text = f"• {text}" if kind == "bullet" else text
+                para.font.size = Pt(18)
+            top += 0.45 * len(text_blocks) + 0.3
+        for table in tables:
+            top = _add_pptx_table(slide, table, top, Inches, Pt)
+    return prs
+
+
+def _add_pptx_table(slide: Any, rows: list[list[str]], top: float, Inches: Any, Pt: Any) -> float:
+    n_rows = len(rows)
+    n_cols = max(len(r) for r in rows)
+    height = 0.4 * n_rows
+    shape = slide.shapes.add_table(n_rows, n_cols, Inches(0.6), Inches(top), Inches(8.8),
+                                   Inches(height))
+    table = shape.table
+    for r, row in enumerate(rows):
+        for c in range(n_cols):
+            cell = table.cell(r, c)
+            cell.text = row[c] if c < len(row) else ""
+            for para in cell.text_frame.paragraphs:
+                para.font.size = Pt(12)
+                para.font.bold = r == 0
+    return top + height + 0.3
+
+
+class MakePptx:
+    name = "make_pptx"
+    description = (
+        "Render markdown content to a PowerPoint (.pptx) deck of structured content slides "
+        "(title + bullets + simple tables). Use '---' on its own line to separate slides. "
+        "Produces clean CONTENT and arrangement; the user styles the design in PowerPoint. "
+        "The editable markdown source is saved alongside."
+    )
+    dangerous = True  # writes files
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "path": {"type": "string", "description": "Output .pptx file path."},
+            "content": {
+                "type": "string",
+                "description": "Markdown content; '---' on its own line starts a new slide.",
+            },
+        },
+        "required": ["path", "content"],
+    }
+
+    def run(self, args: dict[str, Any]) -> str:
+        path = args.get("path")
+        content = args.get("content")
+        if not isinstance(path, str) or not path.strip():
+            return "error: 'path' is required"
+        if not isinstance(content, str) or not content.strip():
+            return "error: 'content' is required and must be non-empty"
+
+        pptx_path = Path(path).expanduser()
+        md_path = pptx_path.with_suffix(".md")
+        try:
+            check_writable(pptx_path)
+            check_writable(md_path)
+        except PermissionDenied as exc:
+            return f"blocked: {exc}"
+
+        deck = render_markdown_pptx(content)
+        n = len(deck.slides)
+        try:
+            deck.save(str(pptx_path))
+            md_path.write_text(content, encoding="utf-8")
+        except OSError as exc:
+            return f"error writing {path}: {exc}"
+        return f"wrote {n}-slide deck to {pptx_path} (editable markdown source kept at {md_path})"

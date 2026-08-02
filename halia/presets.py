@@ -87,6 +87,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "aggregate_csv",
             "write_file",  # for saving notes / a research brief; approval-gated
             "make_pdf",  # render a brief to PDF
+            "make_pptx",  # or a slide deck
         ],
         model=None,
         extra_prompt=_RESEARCH_PROMPT,
@@ -106,6 +107,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "fetch_url",
             "write_file",  # produce class lists, reports, worksheets; approval-gated
             "make_pdf",  # render materials/reports to printable PDF
+            "make_pptx",  # or slide decks for teaching
         ],
         model=None,
         extra_prompt=_EDUCATION_PROMPT,

@@ -278,5 +278,22 @@ printf 'a\n' | halia education 'Read /tmp/pupils.csv, compute each student avera
   no browser). Edit the `.md` and re-render; the PDF is a disposable print product.
 - Unit-tested in `tests/test_export.py` (incl. a markdown→PDF→text round-trip, unicode
   safety, and the permission floor). `make_pdf` added to finance/research/education presets.
-- Follow-ups (deferred): `make_pptx` (python-pptx, new dep), embedding charts in the PDF,
-  full-Unicode output (bundle a TTF — currently latin-1 with typographic sanitisation).
+- Follow-ups (deferred): embedding charts in the PDF, full-Unicode PDF output (bundle a TTF
+  — currently latin-1 with typographic sanitisation).
+
+## 18. `make_pptx` — slide decks (same markdown-master model)
+
+**Goal:** turn content into a PowerPoint deck of clean content slides; human owns design.
+
+```bash
+printf 'a\n' | halia education 'Create a 3-slide teaching deck on the water cycle as a pptx at /tmp/water_cycle.pptx. Title + intro; the three stages as bullets; a small markdown table of stage vs description. Grade-6 friendly. Use --- between slides.'
+```
+
+- **Result:** ✅ wrote a valid 3-slide `.pptx` (titles: *The Water Cycle / Three Main Stages
+  / Stage Snapshots*), bullets + a real table, **plus the `.md` master**. `---` separates
+  slides (else split on `#`/`##`). The run also **measured each slide's reading level** with
+  the `readability` tool (6.1 / 9.9 / 8.2) and explained the science-vocab bump — the
+  verification pack in action.
+- **Full Unicode** here (python-pptx is XML/UTF-8), unlike the latin-1 PDF path — Malay/CJK
+  render fine. Scope = content + arrangement; the educator styles the design in PowerPoint.
+- Unit-tested in `tests/test_pptx.py` (reopen-and-verify slides/titles/table, unicode, floor).

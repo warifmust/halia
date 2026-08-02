@@ -11,7 +11,7 @@ from halia.skills.data import AggregateCsv, ReadCsv
 from halia.skills.db import QueryDb
 from halia.skills.excel import ReadExcel
 from halia.skills.exec import RunCommand
-from halia.skills.export import MakePdf
+from halia.skills.export import MakePdf, MakePptx
 from halia.skills.fs import ListFiles, ReadFile, WriteFile
 from halia.skills.pdf import ReadPdf
 from halia.skills.readability import Readability
@@ -36,6 +36,7 @@ _SKILL_FACTORIES: dict[str, Callable[[], Skill]] = {
     "readability": Readability,
     "make_chart": MakeChart,
     "make_pdf": MakePdf,
+    "make_pptx": MakePptx,
     "run_command": RunCommand,
 }
 
