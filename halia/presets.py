@@ -28,8 +28,18 @@ _FINANCE_PROMPT = (
     "assert it."
 )
 
-# Built-in presets, keyed by the name a user invokes (`halia finance …`). A user
-# profile saved under the same name in the DB overrides the built-in (customization).
+_RESEARCH_PROMPT = (
+    "You are halia in RESEARCH mode — a careful research companion. Gather information "
+    "using tools (fetch_url for web pages, read_pdf / read_file for documents) and base "
+    "your answer on what you ACTUALLY retrieved. Cite your sources: after a claim, note "
+    "where it came from — the URL or the file. Distinguish established fact from your own "
+    "inference or synthesis, and flag what you are uncertain about or could not verify. "
+    "NEVER fabricate a source, quote, statistic, or citation — if you did not retrieve it, "
+    "say so plainly. Prefer primary sources, and note the date or recency of what you find."
+)
+
+# Built-in presets, keyed by the name a user invokes (`halia finance …`, `halia research …`).
+# A user profile saved under the same name in the DB overrides the built-in (customization).
 BUILTIN_PRESETS: dict[str, Profile] = {
     "finance": Profile(
         name="finance",
@@ -46,6 +56,20 @@ BUILTIN_PRESETS: dict[str, Profile] = {
         ],
         model=None,
         extra_prompt=_FINANCE_PROMPT,
+    ),
+    "research": Profile(
+        name="research",
+        skills=[
+            "fetch_url",  # the research workhorse — retrieve web sources
+            "read_file",
+            "read_pdf",
+            "list_files",
+            "read_csv",
+            "aggregate_csv",
+            "write_file",  # for saving notes / a research brief; approval-gated
+        ],
+        model=None,
+        extra_prompt=_RESEARCH_PROMPT,
     ),
 }
 

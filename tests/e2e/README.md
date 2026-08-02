@@ -194,3 +194,21 @@ printf 'a\n' | halia run "Write 'alpha' to /tmp/trust_a.txt and 'beta' to /tmp/t
   "all" trusts the directory for the session, so the second write runs without a re-prompt.
   Session-scoped (never persisted); the permission floor still denies sensitive paths
   regardless. Logic unit-tested in `tests/test_approver.py`.
+
+## 13. Second vertical — `research` (breadth: halia is not finance-only)
+
+**Goal:** a second built-in vertical on the same horizontal engine, to prove the platform
+is general. Research's trust angle is *cite your sources, don't fabricate*.
+
+```bash
+halia profile list      # shows finance + research
+halia research --max-iters 6 -q 'Fetch https://example.com and tell me, in one sentence, what the site says this domain is for. Cite your source.'
+```
+
+- **Result:** ✅ `research` ships alongside `finance`; `halia research …` fetched the page
+  (`fetch_url`), summarised, and cited the source URL. A completely different vertical
+  (web/document gathering vs. reconciliation), same engine + conscience + audit.
+- **Known limitation:** research has `fetch_url` (retrieve a *given* URL) but **no web
+  search** — the model must already know the URL. A `web_search` skill is the natural next
+  addition for this vertical. And like every preset, its real *verification pack*
+  (claim→source grounding, analogous to number-grounding) is future depth, not yet built.

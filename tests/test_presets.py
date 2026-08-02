@@ -17,6 +17,22 @@ def test_finance_preset_exists_and_is_wired() -> None:
     assert "finance" in preset_names()
 
 
+def test_research_preset_exists_and_is_wired() -> None:
+    research = get_preset("research")
+    assert research is not None
+    assert research.name == "research"
+    assert "fetch_url" in research.skills  # the research workhorse
+    assert "reconcile_csv" not in research.skills  # not a finance tool
+    assert research.extra_prompt  # has a persona
+    assert "research" in preset_names()
+
+
+def test_presets_are_distinct_verticals() -> None:
+    # halia is a general framework: more than one vertical ships out of the box.
+    assert {"finance", "research"} <= set(preset_names())
+    assert get_preset("finance").extra_prompt != get_preset("research").extra_prompt
+
+
 def test_preset_skills_are_all_real() -> None:
     valid = set(available_skills())
     for preset in BUILTIN_PRESETS.values():
