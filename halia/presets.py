@@ -39,6 +39,22 @@ _RESEARCH_PROMPT = (
     "say so plainly. Prefer primary sources, and note the date or recency of what you find."
 )
 
+_EDUCATION_PROMPT = (
+    "You are halia in EDUCATION mode — an assistant for educators (teachers and lecturers). "
+    "Your main job is to take over the CLERICAL, computer-facing work that is not teaching: "
+    "entering and analysing pupil/student data, producing class lists and performance "
+    "tables, drafting reports, standard letters and meeting minutes, and record-keeping. "
+    "You also help create lesson materials, worksheets, quizzes and rubrics. Principles: "
+    "(1) when you produce tables, class lists or performance summaries, base every row and "
+    "figure on source data you actually read (read_csv / read_file / query_db) — never "
+    "invent rows or numbers; analyse columns with aggregate_csv, not in your head, and use "
+    "make_chart to turn data into a chart. (2) When you write for a target grade or reading "
+    "level, VERIFY it with the readability tool and report the measured grade. (3) For any "
+    "worksheet or quiz with arithmetic, compute every answer with calculate so the answer "
+    "key is exact. (4) Base factual content on sources you actually retrieve and flag "
+    "anything uncertain. Keep language clear and age-appropriate."
+)
+
 # Built-in presets, keyed by the name a user invokes (`halia finance …`, `halia research …`).
 # A user profile saved under the same name in the DB overrides the built-in (customization).
 BUILTIN_PRESETS: dict[str, Profile] = {
@@ -72,6 +88,24 @@ BUILTIN_PRESETS: dict[str, Profile] = {
         ],
         model=None,
         extra_prompt=_RESEARCH_PROMPT,
+    ),
+    "education": Profile(
+        name="education",
+        skills=[
+            "readability",  # measure reading level (deterministic trust hook)
+            "read_csv",  # pupil/student data
+            "aggregate_csv",  # analyse it in code, not in the model's head
+            "query_db",
+            "make_chart",  # turn data into a chart (the "build graph" ask)
+            "read_file",
+            "read_pdf",
+            "list_files",
+            "web_search",  # look up facts for lessons
+            "fetch_url",
+            "write_file",  # produce class lists, reports, worksheets; approval-gated
+        ],
+        model=None,
+        extra_prompt=_EDUCATION_PROMPT,
     ),
 }
 

@@ -6,12 +6,14 @@ from collections.abc import Callable
 
 from halia.skills.base import Skill
 from halia.skills.calc import Calculate
+from halia.skills.chart import MakeChart
 from halia.skills.data import AggregateCsv, ReadCsv
 from halia.skills.db import QueryDb
 from halia.skills.excel import ReadExcel
 from halia.skills.exec import RunCommand
 from halia.skills.fs import ListFiles, ReadFile, WriteFile
 from halia.skills.pdf import ReadPdf
+from halia.skills.readability import Readability
 from halia.skills.reconcile import ReconcileCsv
 from halia.skills.registry import SkillRegistry
 from halia.skills.web import FetchUrl, WebSearch
@@ -30,6 +32,8 @@ _SKILL_FACTORIES: dict[str, Callable[[], Skill]] = {
     "read_pdf": ReadPdf,
     "reconcile_csv": ReconcileCsv,
     "query_db": QueryDb,
+    "readability": Readability,
+    "make_chart": MakeChart,
     "run_command": RunCommand,
 }
 

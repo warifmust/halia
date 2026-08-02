@@ -242,3 +242,23 @@ uv run python -c "from halia.skills.web import FetchUrl; print(FetchUrl().run({'
 - **Coarse per-profile egress already exists** via skill selection (the `finance` preset has
   no `fetch_url`/`web_search` → no network at all). The finer **per-profile domain
   allow/deny** list is the deferred next layer (needs run-scoped policy injected into skills).
+
+## 16. Third vertical — `education` (clerical relief, with a thin real pack)
+
+**Goal:** relieve educators' clerical burden (pupil-data → tables/charts/reports), with
+deterministic trust hooks even in a "soft" domain.
+
+```bash
+printf 'a\n' | halia education 'Read /tmp/pupils.csv, compute each student average across the three terms (use calculate), then make a bar chart of the averages saved to /tmp/averages.svg. One-line summary of top and bottom performer.'
+```
+
+- **Result:** ✅ `read_csv` → per-student averages via `calculate` (grounded) → `make_chart`
+  wrote a valid 5-bar SVG (scaled correctly) → clean class table + summary. Real clerical
+  output, every figure tool-computed.
+- **Thin real verification pack** (not just a persona): `readability` (Flesch-Kincaid grade,
+  dependency-free) so reading-level claims are measured + number-grounded; worksheet math
+  routed through `calculate` for an exact answer key.
+- **`make_chart`** = the "build graph" capability — dependency-free SVG (no matplotlib),
+  gated + floor-checked like any file write. Horizontal (finance/research can chart too).
+- **Fix surfaced:** the trust-a-directory approval scope now covers *any* file-writing tool
+  (make_chart, not just write_file).

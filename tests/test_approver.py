@@ -11,6 +11,11 @@ def test_write_target_dir_resolves_write_file() -> None:
     assert d == "/tmp/reports"
 
 
+def test_write_target_dir_covers_any_path_writer() -> None:
+    # not just write_file — make_chart and any future path-writing tool too
+    assert _write_target_dir("make_chart", '{"path": "/tmp/out/c.svg"}') == "/tmp/out"
+
+
 def test_write_target_dir_none_for_other_tools() -> None:
     assert _write_target_dir("run_command", '{"command": "ls"}') is None
     assert _write_target_dir("write_file", "not json") is None

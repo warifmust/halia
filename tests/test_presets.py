@@ -27,10 +27,20 @@ def test_research_preset_exists_and_is_wired() -> None:
     assert "research" in preset_names()
 
 
+def test_education_preset_exists_and_is_wired() -> None:
+    edu = get_preset("education")
+    assert edu is not None
+    assert "readability" in edu.skills  # deterministic reading-level hook
+    assert "make_chart" in edu.skills  # the "build graph" clerical capability
+    assert "aggregate_csv" in edu.skills  # pupil-data analysis, not head-math
+    assert edu.extra_prompt
+
+
 def test_presets_are_distinct_verticals() -> None:
-    # halia is a general framework: more than one vertical ships out of the box.
-    assert {"finance", "research"} <= set(preset_names())
-    assert get_preset("finance").extra_prompt != get_preset("research").extra_prompt
+    # halia is a general framework: several verticals ship out of the box.
+    assert {"finance", "research", "education"} <= set(preset_names())
+    prompts = {p: get_preset(p).extra_prompt for p in ("finance", "research", "education")}
+    assert len(set(prompts.values())) == 3  # each has its own persona
 
 
 def test_preset_skills_are_all_real() -> None:

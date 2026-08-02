@@ -85,9 +85,11 @@ def _show_step(step: Any) -> None:
 
 
 def _write_target_dir(name: str, arguments: str) -> str | None:
-    """The absolute directory a write_file call targets, or None for non-write tools."""
-    if name != "write_file":
-        return None
+    """The absolute directory a file-writing tool targets, or None.
+
+    Covers any tool that writes to a `path` argument (write_file, make_chart, …) — the
+    ones consulted here are always dangerous, so read tools with a path never reach this.
+    """
     import json
     import os
 
@@ -95,7 +97,7 @@ def _write_target_dir(name: str, arguments: str) -> str | None:
         path = json.loads(arguments).get("path")
     except (json.JSONDecodeError, AttributeError):
         return None
-    return os.path.dirname(os.path.abspath(path)) if path else None
+    return os.path.dirname(os.path.abspath(path)) if isinstance(path, str) and path else None
 
 
 def _make_approver() -> Any:
