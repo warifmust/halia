@@ -1,14 +1,17 @@
-"""Web research skill — fetch a page and return its readable text.
+"""Web research skills — search for sources, and fetch a page's readable text.
 
-Safe (read-only). Uses the existing httpx dependency + stdlib html.parser to
-strip tags/scripts, so no new dependency. Network egress is a future leash
-concern (data-stays-local); for now this GETs public pages only.
+Safe (read-only). Uses the existing httpx dependency + stdlib parsing, so no new
+dependency. Network egress is a future leash concern (data-stays-local); for now
+these GET public pages only.
 """
 
 from __future__ import annotations
 
+import html
+import re
 from html.parser import HTMLParser
 from typing import Any
+from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 
@@ -90,3 +93,92 @@ class FetchUrl:
         if len(text) > max_chars:
             text = text[:max_chars] + "… [truncated]"
         return text or "(no text content)"
+
+
+_SEARCH_URL = "https://html.duckduckgo.com/html/"
+_DEFAULT_MAX_RESULTS = 5
+_RESULT_A = re.compile(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.DOTALL)
+_SNIPPET = re.compile(r'class="result__snippet"[^>]*>(.*?)</a>', re.DOTALL)
+
+
+def _strip_tags(fragment: str) -> str:
+    """Turn an HTML fragment into plain text (drop tags, unescape entities, collapse space)."""
+    return " ".join(html.unescape(re.sub(r"<[^>]+>", "", fragment)).split())
+
+
+def _real_url(href: str) -> str:
+    """Resolve a DuckDuckGo `/l/?uddg=…` redirect to the actual target URL."""
+    href = html.unescape(href)
+    if href.startswith("//"):
+        href = "https:" + href
+    parsed = urlparse(href)
+    if "duckduckgo.com" in parsed.netloc and parsed.path.startswith("/l/"):
+        target = parse_qs(parsed.query).get("uddg")
+        if target:
+            return unquote(target[0])
+    return href
+
+
+def parse_search_results(document: str, max_results: int) -> list[tuple[str, str, str]]:
+    """Parse (title, url, snippet) tuples from a DuckDuckGo HTML results page."""
+    anchors = _RESULT_A.findall(document)
+    snippets = _SNIPPET.findall(document)
+    results: list[tuple[str, str, str]] = []
+    for i, (href, title_html) in enumerate(anchors[:max_results]):
+        title = _strip_tags(title_html)
+        snippet = _strip_tags(snippets[i]) if i < len(snippets) else ""
+        results.append((title, _real_url(href), snippet))
+    return results
+
+
+class WebSearch:
+    name = "web_search"
+    description = (
+        "Search the web (via DuckDuckGo) and return the top results as title, URL, and "
+        "snippet. Use this to DISCOVER sources, then fetch_url to read a promising result."
+    )
+    dangerous = False
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "query": {"type": "string", "description": "What to search for."},
+            "max_results": {
+                "type": "integer",
+                "description": "How many results to return (default 5).",
+            },
+        },
+        "required": ["query"],
+    }
+
+    def __init__(self, client: httpx.Client | None = None) -> None:
+        self._client = (
+            client if client is not None else httpx.Client(timeout=_TIMEOUT, follow_redirects=True)
+        )
+
+    def run(self, args: dict[str, Any]) -> str:
+        raw = args.get("query")
+        if not isinstance(raw, str) or not raw.strip():
+            return "error: 'query' is required and must be a non-empty string"
+        query = raw.strip()
+
+        max_results = args.get("max_results", _DEFAULT_MAX_RESULTS)
+        if not isinstance(max_results, int) or max_results <= 0:
+            max_results = _DEFAULT_MAX_RESULTS
+
+        try:
+            resp = self._client.get(
+                _SEARCH_URL, params={"q": query}, headers={"User-Agent": "Mozilla/5.0 (halia)"}
+            )
+        except httpx.HTTPError as exc:
+            return f"error searching for {query!r}: {exc}"
+        if resp.status_code != 200:
+            return f"error: HTTP {resp.status_code} from the search endpoint"
+
+        results = parse_search_results(resp.text, max_results)
+        if not results:
+            return f"no results for {query!r}"
+        lines = [f"{len(results)} result(s) for {query!r}:"]
+        for i, (title, url, snippet) in enumerate(results, 1):
+            lines.append(f"{i}. {title}\n   {url}\n   {snippet}")
+        return "\n".join(lines)

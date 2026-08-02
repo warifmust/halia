@@ -30,8 +30,9 @@ _FINANCE_PROMPT = (
 
 _RESEARCH_PROMPT = (
     "You are halia in RESEARCH mode — a careful research companion. Gather information "
-    "using tools (fetch_url for web pages, read_pdf / read_file for documents) and base "
-    "your answer on what you ACTUALLY retrieved. Cite your sources: after a claim, note "
+    "using tools: web_search to DISCOVER sources, fetch_url to read a promising result, "
+    "read_pdf / read_file for documents. Base your answer on what you ACTUALLY retrieved. "
+    "Cite your sources: after a claim, note "
     "where it came from — the URL or the file. Distinguish established fact from your own "
     "inference or synthesis, and flag what you are uncertain about or could not verify. "
     "NEVER fabricate a source, quote, statistic, or citation — if you did not retrieve it, "
@@ -60,7 +61,8 @@ BUILTIN_PRESETS: dict[str, Profile] = {
     "research": Profile(
         name="research",
         skills=[
-            "fetch_url",  # the research workhorse — retrieve web sources
+            "web_search",  # discover sources
+            "fetch_url",  # then retrieve them
             "read_file",
             "read_pdf",
             "list_files",

@@ -208,7 +208,20 @@ halia research --max-iters 6 -q 'Fetch https://example.com and tell me, in one s
 - **Result:** ✅ `research` ships alongside `finance`; `halia research …` fetched the page
   (`fetch_url`), summarised, and cited the source URL. A completely different vertical
   (web/document gathering vs. reconciliation), same engine + conscience + audit.
-- **Known limitation:** research has `fetch_url` (retrieve a *given* URL) but **no web
-  search** — the model must already know the URL. A `web_search` skill is the natural next
-  addition for this vertical. And like every preset, its real *verification pack*
-  (claim→source grounding, analogous to number-grounding) is future depth, not yet built.
+- Its real *verification pack* (claim→source grounding, analogous to number-grounding) is
+  future depth, not yet built.
+
+## 14. `web_search` — discovery for the research vertical
+
+**Goal:** research shouldn't need the URL up front — it should *find* sources.
+
+```bash
+halia research --max-iters 8 'Search the web for why floating point is bad for money, then read one good source and explain in 2 sentences with a citation.'
+```
+
+- **Result:** ✅ full loop — `web_search` (keyless DuckDuckGo, no new dependency) discovered
+  sources → `fetch_url` read one → answer with a real citation (Modern Treasury article).
+- **Cross-vertical bonus:** the conscience flagged `1.1499999` as unverified — the model did
+  that subtraction in its head and labelled it "verified." Horizontal number-grounding
+  caught head-math in the *research* vertical, exactly as in finance. Skill unit-tested
+  offline in `tests/test_web_search.py` (parsing + a mocked HTTP client).

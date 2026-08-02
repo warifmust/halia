@@ -14,7 +14,7 @@ from halia.skills.fs import ListFiles, ReadFile, WriteFile
 from halia.skills.pdf import ReadPdf
 from halia.skills.reconcile import ReconcileCsv
 from halia.skills.registry import SkillRegistry
-from halia.skills.web import FetchUrl
+from halia.skills.web import FetchUrl, WebSearch
 
 # The full catalogue of skills, by name.
 _SKILL_FACTORIES: dict[str, Callable[[], Skill]] = {
@@ -22,6 +22,7 @@ _SKILL_FACTORIES: dict[str, Callable[[], Skill]] = {
     "write_file": WriteFile,
     "list_files": ListFiles,
     "fetch_url": FetchUrl,
+    "web_search": WebSearch,
     "calculate": Calculate,
     "read_csv": ReadCsv,
     "aggregate_csv": AggregateCsv,
@@ -42,6 +43,7 @@ DEFAULT_SKILLS = [
     "write_file",
     "list_files",
     "fetch_url",
+    "web_search",
     "calculate",
     "read_csv",
     "aggregate_csv",
