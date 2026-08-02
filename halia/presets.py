@@ -72,6 +72,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "write_file",  # for report deliverables; still approval-gated
             "make_pdf",  # render the report to a printable PDF
             "make_docx",  # or an editable Word report
+            "make_excel",  # or a spreadsheet of the data
         ],
         model=None,
         extra_prompt=_FINANCE_PROMPT,
@@ -111,6 +112,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "make_pdf",  # render materials/reports to printable PDF
             "make_pptx",  # or slide decks for teaching
             "make_docx",  # or editable Word materials
+            "make_excel",  # or a spreadsheet (grades, attendance)
         ],
         model=None,
         extra_prompt=_EDUCATION_PROMPT,

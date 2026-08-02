@@ -17,6 +17,7 @@ from halia.skills.pdf import ReadPdf
 from halia.skills.readability import Readability
 from halia.skills.reconcile import ReconcileCsv
 from halia.skills.registry import SkillRegistry
+from halia.skills.spreadsheet import MakeExcel
 from halia.skills.web import FetchUrl, WebSearch
 
 # The full catalogue of skills, by name.
@@ -38,6 +39,7 @@ _SKILL_FACTORIES: dict[str, Callable[[], Skill]] = {
     "make_pdf": MakePdf,
     "make_pptx": MakePptx,
     "make_docx": MakeDocx,
+    "make_excel": MakeExcel,
     "run_command": RunCommand,
 }
 

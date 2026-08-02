@@ -327,3 +327,28 @@ printf 'a\n' | halia education 'Read /tmp/pupils.csv, compute each average (calc
   (native chart shape).
 - **Output story complete:** grounded content → tables, **embedded charts**, PDF + PPTX +
   txt/md, all from one editable markdown master.
+
+## 20. `make_docx` + `make_excel` — Word and Excel deliverables
+
+**make_docx** (Word, markdown-master render, python-docx):
+
+```bash
+printf 'a\n' | halia education 'Draft a short parent letter about a conference (15 Aug, 4-7pm) as a Word doc at /tmp/letter.docx: heading, two paragraphs, a bulleted list of what to bring.'
+```
+
+- **Result:** ✅ editable `.docx` (heading styles, bold runs, bullets) + `.md` master; full
+  Unicode. Unlike PDF, the Word file itself is editable. Tests: `tests/test_docx.py`.
+
+**make_excel** (Excel, DATA-master not markdown, existing openpyxl — no new dep):
+
+```bash
+printf 'a\n' | halia finance 'Read /tmp/acme_ledger.csv and export to /tmp/ledger.xlsx, adding a TOTAL row with the sum of the amount column (via aggregate_csv).'
+```
+
+- **Result:** ✅ typed `.xlsx` — numbers stored as **numbers** (2500, 340.5 …) so they're
+  summable/pivotable, bold frozen header, grounded TOTAL row (6856.25). Opens in Excel and
+  Google Sheets. IDs like `CHK-1042` stay text; `$1,200.50` coerces to 1200.5.
+- Different model: a spreadsheet's master is tabular data (`rows`/`sheets`), not markdown.
+  Same trust division — halia hands over grounded data, the analyst drives in Excel. v1 =
+  values, not formulas. Tests: `tests/test_make_excel.py`.
+- **Office quartet complete:** PDF · PPTX · DOCX · XLSX (+ charts, + txt/md).
