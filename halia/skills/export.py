@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from fpdf import FPDF
+from fpdf.enums import XPos, YPos
 
 from halia.permissions.guard import PermissionDenied, check_writable
 from halia.skills.chart import parse_chart_block
@@ -29,7 +30,24 @@ _REPLACEMENTS = {
 }
 
 
+# Bundled Unicode font so PDFs render non-Latin text (Malay, accents, Cyrillic, …).
+# If the asset is somehow missing, fall back to a core font + latin-1 sanitisation.
+_FONT_DIR = Path(__file__).resolve().parent.parent / "assets" / "fonts"
+_FONT_REGULAR = _FONT_DIR / "DejaVuSans.ttf"
+_FONT_BOLD = _FONT_DIR / "DejaVuSans-Bold.ttf"
+_UNICODE = _FONT_REGULAR.exists() and _FONT_BOLD.exists()
+_FONT = "DejaVu" if _UNICODE else "Helvetica"
+
+
+def _register_fonts(pdf: FPDF) -> None:
+    if _UNICODE:
+        pdf.add_font("DejaVu", "", str(_FONT_REGULAR))
+        pdf.add_font("DejaVu", "B", str(_FONT_BOLD))
+
+
 def _s(text: str) -> str:
+    if _UNICODE:
+        return text  # DejaVu handles Unicode natively — no sanitisation needed
     for uni, ascii_ in _REPLACEMENTS.items():
         text = text.replace(uni, ascii_)
     return text.encode("latin-1", "replace").decode("latin-1")
@@ -55,7 +73,7 @@ def _render_table(pdf: FPDF, block: list[str]) -> None:
     col_w = (pdf.w - pdf.l_margin - pdf.r_margin) / ncols
     for i, row in enumerate(rows):
         cells = row + [""] * (ncols - len(row))
-        pdf.set_font("Helvetica", "B" if i == 0 else "", 10)
+        pdf.set_font(_FONT, "B" if i == 0 else "", 10)
         for cell in cells:
             pdf.cell(col_w, 8, _truncate(pdf, _s(cell), col_w - 2), border=1)
         pdf.ln()
@@ -73,8 +91,8 @@ def _draw_bar_chart_pdf(pdf: FPDF, title: str, labels: list[str], values: list[f
         pdf.add_page()
     pdf.ln(2)
     if title:
-        pdf.set_font("Helvetica", "B", 11)
-        pdf.multi_cell(0, 6, _s(title))
+        pdf.set_font(_FONT, "B", 11)
+        pdf.multi_cell(pdf.epw, 6, _s(title), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     left = pdf.l_margin
     usable = pdf.w - pdf.l_margin - pdf.r_margin
     top = pdf.get_y() + 6
@@ -83,7 +101,7 @@ def _draw_bar_chart_pdf(pdf: FPDF, title: str, labels: list[str], values: list[f
     slot = usable / len(values)
     bar_w = slot * 0.6
     pdf.set_fill_color(79, 124, 255)
-    pdf.set_font("Helvetica", "", 8)
+    pdf.set_font(_FONT, "", 8)
     for i, (label, value) in enumerate(zip(labels, values, strict=True)):
         bar_h = (value / max_v) * chart_h
         x = left + i * slot + (slot - bar_w) / 2
@@ -101,6 +119,7 @@ def _draw_bar_chart_pdf(pdf: FPDF, title: str, labels: list[str], values: list[f
 def render_markdown_pdf(content: str) -> FPDF:
     """Render a markdown subset to a clean FPDF document (pure — caller does the I/O)."""
     pdf = FPDF()
+    _register_fonts(pdf)
     pdf.set_margins(20, 20, 20)
     pdf.set_auto_page_break(True, margin=18)
     pdf.add_page()
@@ -139,8 +158,9 @@ def render_markdown_pdf(content: str) -> FPDF:
         if heading:
             level = len(heading.group(1))
             pdf.ln(2)
-            pdf.set_font("Helvetica", "B", _HEADING_SIZES.get(level, 12))
-            pdf.multi_cell(0, _HEADING_SIZES.get(level, 12) * 0.5 + 2, _s(heading.group(2)))
+            pdf.set_font(_FONT, "B", _HEADING_SIZES.get(level, 12))
+            pdf.multi_cell(pdf.epw, _HEADING_SIZES.get(level, 12) * 0.5 + 2,
+                           _s(heading.group(2)), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             pdf.ln(1)
             continue
 
@@ -153,15 +173,18 @@ def render_markdown_pdf(content: str) -> FPDF:
 
         bullet = re.match(r"^[-*]\s+(.*)", stripped)
         numbered = re.match(r"^(\d+)\.\s+(.*)", stripped)
-        pdf.set_font("Helvetica", "", 11)
+        pdf.set_font(_FONT, "", 11)
         if bullet:
             pdf.set_x(pdf.l_margin + 6)
-            pdf.multi_cell(0, 6, _s("- " + bullet.group(1)), markdown=True)
+            pdf.multi_cell(pdf.epw - 6, 6, _s("- " + bullet.group(1)),
+                           markdown=True, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         elif numbered:
             pdf.set_x(pdf.l_margin + 6)
-            pdf.multi_cell(0, 6, _s(f"{numbered.group(1)}. {numbered.group(2)}"), markdown=True)
+            pdf.multi_cell(pdf.epw - 6, 6, _s(f"{numbered.group(1)}. {numbered.group(2)}"),
+                           markdown=True, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         else:
-            pdf.multi_cell(0, 6, _s(stripped), markdown=True)
+            pdf.multi_cell(pdf.epw, 6, _s(stripped),
+                           markdown=True, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             pdf.ln(1)
     return pdf
 

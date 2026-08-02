@@ -57,11 +57,15 @@ def test_make_pdf_title_is_prepended(tmp_path: Any) -> None:
     assert (tmp_path / "t.md").read_text().startswith("# My Title")
 
 
-def test_make_pdf_handles_unicode_without_crashing(tmp_path: Any) -> None:
+def test_make_pdf_renders_unicode(tmp_path: Any) -> None:
+    from halia.skills.pdf import ReadPdf
+
     out = tmp_path / "u.pdf"
-    r = MakePdf().run({"path": str(out), "content": "Dash — and “curly” quotes… ok"})
+    r = MakePdf().run({"path": str(out), "content": "# Café\n\nZürich — naïve … Привет"})
     assert "wrote PDF" in r
-    assert out.read_bytes().startswith(b"%PDF")
+    text = ReadPdf().run({"path": str(out)})
+    # bundled DejaVu font preserves the characters instead of sanitising to '?'
+    assert "Café" in text and "Zürich" in text and "Привет" in text
 
 
 def test_make_pdf_validates(tmp_path: Any) -> None:

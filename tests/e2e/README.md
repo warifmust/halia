@@ -352,3 +352,21 @@ printf 'a\n' | halia finance 'Read /tmp/acme_ledger.csv and export to /tmp/ledge
   Same trust division — halia hands over grounded data, the analyst drives in Excel. v1 =
   values, not formulas. Tests: `tests/test_make_excel.py`.
 - **Office quartet complete:** PDF · PPTX · DOCX · XLSX (+ charts, + txt/md).
+
+## 21. Full-Unicode PDF
+
+**Goal:** non-Latin text (Malay names, accents, Cyrillic) should render in PDFs, not get
+sanitised to `?`.
+
+```bash
+printf 'a\n' | halia education 'Tuliskan surat ringkas dalam Bahasa Melayu kepada ibu bapa … sebagai PDF di /tmp/surat.pdf.'
+```
+
+- **Result:** ✅ the Malay letter renders with correct characters (round-trips through
+  `read_pdf`). Bundled **DejaVuSans** (regular + bold, ~1.4 MB, permissive licence) is
+  registered with fpdf2; the latin-1 sanitisation is now only a fallback if the font asset
+  is missing. PPTX/DOCX/XLSX already did Unicode (XML/UTF-8) — this closes the PDF gap.
+- **Note:** fpdf2's `multi_cell(0, …)` crashes with a subsetted TTF, so the renderer now
+  passes explicit widths (`pdf.epw`). Font bundled in the wheel via hatch `artifacts`.
+- **CJK still deferred** (Chinese/Japanese/Korean need a much larger font, ~10 MB+).
+  Unit-tested in `tests/test_export.py` (Unicode round-trip).
