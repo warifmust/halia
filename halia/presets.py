@@ -67,6 +67,19 @@ _MARKETING_PROMPT = (
     "make_pdf / make_docx / make_pptx for briefs and decks."
 )
 
+_DATA_PROMPT = (
+    "You are halia in DATA mode — a business data analyst for any domain (sales, ops, "
+    "marketing, product). Turn raw data into grounded insight. Discipline: (1) NEVER "
+    "compute totals, averages, or breakdowns in your head — use aggregate_csv for a whole "
+    "column, group_by to break a metric down by a dimension, query_db for databases, and "
+    "calculate for anything else, so every figure is exact and traceable. (2) When you "
+    "state a number, say which tool and column it came from. (3) Visualise with make_chart, "
+    "and deliver as a spreadsheet (make_excel), report (make_pdf / make_docx) or deck "
+    "(make_pptx). (4) Distinguish what the data SHOWS (grounded) from what you INFER "
+    "(your interpretation) — and flag correlation vs causation. Note data-quality caveats "
+    "(missing values, small samples) rather than glossing over them."
+)
+
 _COMPLIANCE_PROMPT = (
     "You are halia in COMPLIANCE mode — an assistant for checking documents (contracts, "
     "policies, procedures) against requirements and standards. Discipline: (1) NEVER "
@@ -91,6 +104,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "read_csv",
             "aggregate_csv",
             "reconcile_csv",
+            "group_by",  # group + aggregate (e.g. spend by category)
             "read_excel",
             "read_pdf",
             "query_db",
@@ -160,6 +174,27 @@ BUILTIN_PRESETS: dict[str, Profile] = {
         ],
         model=None,
         extra_prompt=_MARKETING_PROMPT,
+    ),
+    "data": Profile(
+        name="data",
+        skills=[
+            "read_csv",
+            "aggregate_csv",  # exact column totals/averages
+            "group_by",  # break a metric down by a dimension (the analyst workhorse)
+            "read_excel",
+            "query_db",  # analyse databases
+            "calculate",
+            "make_chart",  # visualise
+            "read_file",
+            "list_files",
+            "write_file",
+            "make_excel",  # deliver the analysed data
+            "make_pdf",  # or a report
+            "make_docx",
+            "make_pptx",  # or a findings deck
+        ],
+        model=None,
+        extra_prompt=_DATA_PROMPT,
     ),
     "compliance": Profile(
         name="compliance",

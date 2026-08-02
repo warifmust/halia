@@ -165,3 +165,109 @@ class AggregateCsv:
 
         note = f" ({skipped} non-numeric skipped)" if skipped else ""
         return f"{operation}({column}) = {result} over {len(values)} values{note}"
+
+
+def _aggregate(op: str, values: list[Decimal]) -> Decimal:
+    if op == "sum":
+        return _decimal_sum(values)
+    if op == "mean":
+        return _decimal_sum(values) / Decimal(len(values))
+    if op == "min":
+        return min(values)
+    return max(values)
+
+
+_DEFAULT_GROUP_LIMIT = 50
+
+
+class GroupByCsv:
+    name = "group_by"
+    description = (
+        "Group a CSV by a key column and aggregate a value column per group "
+        "(sum/mean/min/max, or count of rows), in exact decimal math over ALL rows. "
+        "The data-analysis workhorse — use this instead of eyeballing groups. Results are "
+        "sorted by the aggregate, largest first."
+    )
+    dangerous = False
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "path": {"type": "string", "description": "Path to the CSV file."},
+            "group_by": {"type": "string", "description": "The key column to group by."},
+            "operation": {
+                "type": "string",
+                "enum": list(_AGG_OPS),
+                "description": "Aggregation per group. 'count' needs no value column.",
+            },
+            "value": {
+                "type": "string",
+                "description": "Numeric column to aggregate (not needed for count).",
+            },
+            "limit": {"type": "integer", "description": "Max groups to show (default 50)."},
+        },
+        "required": ["path", "group_by", "operation"],
+    }
+
+    def run(self, args: dict[str, Any]) -> str:
+        raw_path = args.get("path")
+        key_col = args.get("group_by")
+        operation = args.get("operation")
+        value_col = args.get("value")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            return "error: 'path' is required"
+        if not isinstance(key_col, str) or not key_col.strip():
+            return "error: 'group_by' is required"
+        if operation not in _AGG_OPS:
+            return f"error: 'operation' must be one of: {', '.join(_AGG_OPS)}"
+        if operation != "count" and (not isinstance(value_col, str) or not value_col.strip()):
+            return "error: 'value' (numeric column) is required for that operation"
+
+        limit = args.get("limit", _DEFAULT_GROUP_LIMIT)
+        if not isinstance(limit, int) or limit <= 0:
+            limit = _DEFAULT_GROUP_LIMIT
+
+        path = Path(raw_path).expanduser()
+        check_readable(path)
+        if not path.is_file():
+            return f"error: not a file: {path}"
+
+        groups: dict[str, list[Decimal]] = {}
+        counts: dict[str, int] = {}
+        try:
+            with path.open(newline="", encoding="utf-8", errors="replace") as handle:
+                reader = csv.DictReader(handle)
+                fields = reader.fieldnames or []
+                if key_col not in fields:
+                    return f"error: column '{key_col}' not found. Columns: {', '.join(fields)}"
+                if operation != "count" and value_col not in fields:
+                    return f"error: column '{value_col}' not found. Columns: {', '.join(fields)}"
+                for i, row in enumerate(reader):
+                    if i >= _MAX_ROWS:
+                        return f"error: file too large (> {_MAX_ROWS} rows) to group safely"
+                    key = (row.get(key_col) or "").strip() or "(blank)"
+                    counts[key] = counts.get(key, 0) + 1
+                    if operation != "count":
+                        cell = (row.get(value_col) or "").strip().lstrip("$").replace(",", "")
+                        try:
+                            groups.setdefault(key, []).append(Decimal(cell))
+                        except InvalidOperation:
+                            pass
+        except (OSError, csv.Error) as exc:
+            return f"error reading CSV: {exc}"
+
+        if operation == "count":
+            results = [(key, Decimal(n)) for key, n in counts.items()]
+            header = f"group_by '{key_col}' → count"
+        else:
+            results = [(key, _aggregate(operation, vals)) for key, vals in groups.items() if vals]
+            header = f"group_by '{key_col}' → {operation}({value_col})"
+        if not results:
+            return "no groups with numeric values found."
+
+        results.sort(key=lambda kv: kv[1], reverse=True)
+        shown = results[:limit]
+        more = f" (top {limit} of {len(results)} shown)" if len(results) > limit else ""
+        lines = [f"{header} — {len(results)} groups{more}:"]
+        lines.extend(f"{key} | {format(val, 'f')}" for key, val in shown)
+        return "\n".join(lines)

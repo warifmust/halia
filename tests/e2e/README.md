@@ -410,3 +410,24 @@ printf 'a\n' | halia compliance 'Check /tmp/privacy_policy.docx against: "data r
   (deterministic, no false "yes"), model interprets phrasing/adequacy on top.
 - Unit-tested in `tests/test_compliance.py`. **Verticals: finance · research · education ·
   marketing · compliance (5).**
+
+## 24. Sixth vertical — `data` (business analyst; cross-domain, not "IT")
+
+**Goal:** the sleeper — the finance *engine* (read → aggregate → chart → grounded numbers)
+pointed at general business data. Cheapest to build (reuses ~everything), broad demand.
+
+```bash
+printf 'a\n' | halia data 'Analyze /tmp/sales_q2.csv. Total sales by region (group_by) and overall (aggregate_csv). Identify the top region. Produce /tmp/sales_report.pdf with a summary, a table, and an EMBEDDED bar chart (```chart).'
+```
+
+- **Result:** ✅ `group_by` computed sales by region in exact decimal (North $27,959 top),
+  derived shares, embedded a chart in the findings PDF — and flagged **sample-size +
+  correlation-vs-causation caveats** unprompted (persona's data-honesty discipline).
+- **`group_by`** (new): group a CSV by a key column, aggregate a value per group
+  (sum/mean/min/max/count), exact Decimal over all rows, sorted by aggregate. The analyst
+  workhorse; added to DEFAULT_SKILLS + finance/data presets. Unit-tested in
+  `tests/test_groupby.py`.
+- Taxonomy note: `data` is a **flat, cross-domain** profile (finance/marketing/ops analysts
+  do the same core work) — deliberately *not* filed under an "IT" umbrella. See req doc
+  §"Vertical taxonomy & positioning". **Verticals: finance · research · education ·
+  marketing · compliance · data (6).**

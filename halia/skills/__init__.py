@@ -8,7 +8,7 @@ from halia.skills.base import Skill
 from halia.skills.calc import Calculate
 from halia.skills.chart import MakeChart
 from halia.skills.compliance import CheckRequirements
-from halia.skills.data import AggregateCsv, ReadCsv
+from halia.skills.data import AggregateCsv, GroupByCsv, ReadCsv
 from halia.skills.db import QueryDb
 from halia.skills.excel import ReadExcel
 from halia.skills.exec import RunCommand
@@ -33,6 +33,7 @@ _SKILL_FACTORIES: dict[str, Callable[[], Skill]] = {
     "calculate": Calculate,
     "read_csv": ReadCsv,
     "aggregate_csv": AggregateCsv,
+    "group_by": GroupByCsv,
     "read_excel": ReadExcel,
     "read_pdf": ReadPdf,
     "read_docx": ReadDocx,
@@ -63,6 +64,7 @@ DEFAULT_SKILLS = [
     "calculate",
     "read_csv",
     "aggregate_csv",
+    "group_by",
     "read_excel",
     "read_pdf",
     "read_docx",
