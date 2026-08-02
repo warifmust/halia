@@ -15,6 +15,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 
+from halia.permissions.network import EgressDenied, check_egress
+
 _DEFAULT_MAX_CHARS = 5000
 _TIMEOUT = 20.0
 
@@ -75,6 +77,10 @@ class FetchUrl:
         url = raw.strip()
         if not url.startswith(("http://", "https://")):
             return "error: url must start with http:// or https://"
+        try:
+            check_egress(url)
+        except EgressDenied as exc:
+            return f"blocked: {exc}"
 
         max_chars = args.get("max_chars", _DEFAULT_MAX_CHARS)
         if not isinstance(max_chars, int) or max_chars <= 0:

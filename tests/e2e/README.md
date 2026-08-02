@@ -225,3 +225,20 @@ halia research --max-iters 8 'Search the web for why floating point is bad for m
   that subtraction in its head and labelled it "verified." Horizontal number-grounding
   caught head-math in the *research* vertical, exactly as in finance. Skill unit-tested
   offline in `tests/test_web_search.py` (parsing + a mocked HTTP client).
+
+## 15. Egress floor — SSRF protection for web skills
+
+**Goal:** the web access we just added must not be steerable into *internal* addresses.
+
+```bash
+uv run python -c "from halia.skills.web import FetchUrl; print(FetchUrl().run({'url':'http://169.254.169.254/latest/meta-data/'}))"
+```
+
+- **Result:** ✅ `blocked: … internal address 169.254.169.254 (SSRF floor)`. `fetch_url` now
+  resolves the host and refuses loopback / link-local (incl. the cloud **metadata endpoint**)
+  / private / reserved IPs and non-http(s) schemes — closing an SSRF hole a prompt-injected
+  page could otherwise exploit. Public URLs (example.com) still work. Non-removable floor,
+  mirrors the filesystem `permissions/guard.py`. Unit-tested in `tests/test_egress.py`.
+- **Coarse per-profile egress already exists** via skill selection (the `finance` preset has
+  no `fetch_url`/`web_search` → no network at all). The finer **per-profile domain
+  allow/deny** list is the deferred next layer (needs run-scoped policy injected into skills).
