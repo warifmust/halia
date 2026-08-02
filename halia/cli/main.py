@@ -84,9 +84,47 @@ def _show_step(step: Any) -> None:
     console.print(f"[dim]  ↳ {step.preview()}[/dim]")
 
 
-def _approve(name: str, arguments: str) -> bool:
-    console.print(f"[yellow]halia wants to run[/yellow] [bold]{name}[/bold]: {arguments}")
-    return typer.confirm("Allow?", default=False)
+def _write_target_dir(name: str, arguments: str) -> str | None:
+    """The absolute directory a write_file call targets, or None for non-write tools."""
+    if name != "write_file":
+        return None
+    import json
+    import os
+
+    try:
+        path = json.loads(arguments).get("path")
+    except (json.JSONDecodeError, AttributeError):
+        return None
+    return os.path.dirname(os.path.abspath(path)) if path else None
+
+
+def _make_approver() -> Any:
+    """A stateful approver: approve once, or trust all writes to a directory this session.
+
+    Trusting a directory only skips the *prompt* — the permission floor still applies, so
+    sensitive paths (.ssh, .env, credentials, …) are denied regardless. Session-scoped;
+    nothing is persisted.
+    """
+    trusted_dirs: set[str] = set()
+
+    def approve(name: str, arguments: str) -> bool:
+        target_dir = _write_target_dir(name, arguments)
+        if target_dir is not None and target_dir in trusted_dirs:
+            return True  # already trusted this dir this session — no re-prompt
+        console.print(f"[yellow]halia wants to run[/yellow] [bold]{name}[/bold]: {arguments}")
+        if target_dir is not None:
+            choice = console.input(
+                "Allow? [bold]y[/bold]es / [bold]a[/bold]ll writes to this folder / "
+                "[bold]N[/bold]o: "
+            ).strip().lower()
+            if choice in ("a", "all"):
+                trusted_dirs.add(target_dir)
+                console.print(f"[dim]trusting writes to {target_dir} for this session[/dim]")
+                return True
+            return choice in ("y", "yes")
+        return typer.confirm("Allow?", default=False)
+
+    return approve
 
 
 def _prepare_context(profile: str | None, allow_commands: bool) -> tuple[Any, Any, str]:
@@ -139,7 +177,7 @@ def _execute_run(
     from halia.providers.base import ProviderError
 
     show = _show_step
-    approve = _approve
+    approve = _make_approver()
 
     def show_plan(text: str) -> None:
         console.print("[cyan]plan[/cyan]")
@@ -367,6 +405,8 @@ def chat(
     def persist() -> None:
         save_session(replace(session, messages=list(messages)))
 
+    approve = _make_approver()  # one trust scope for the whole chat session
+
     while True:
         try:
             user_input = console.input("[cyan]you ›[/cyan] ").strip()
@@ -390,7 +430,7 @@ def chat(
         messages.append({"role": "user", "content": user_input})
         try:
             result = converse(
-                messages, config, registry, observer=_show_step, approver=_approve
+                messages, config, registry, observer=_show_step, approver=approve
             )
         except (ProviderError, RunLimitError) as exc:
             console.print(f"[red]error:[/red] {exc}\n")

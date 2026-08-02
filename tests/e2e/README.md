@@ -177,7 +177,20 @@ After the fix, the same figures ground; only genuine head-math (an intermediate 
 the model didn't route through `calculate`) is flagged — the conscience working as intended.
 
 **Open follow-ups (not blocking):**
-- Multi-approval UX: a finance task hits several `write_file` prompts — consider a
-  per-session "trust this directory for writes" scope.
 - `reconcile_csv` matching leans on the model to normalize keys; a deterministic
   fuzzy / amount+date match would harden it against weaker models.
+
+---
+
+## 12. Multi-approval UX — trust a directory for the session
+
+**Goal:** a multi-step task shouldn't prompt on *every* write to the same folder.
+
+```bash
+printf 'a\n' | halia run "Write 'alpha' to /tmp/trust_a.txt and 'beta' to /tmp/trust_b.txt using write_file."
+```
+
+- **Result:** ✅ first write prompts `Allow? yes / all writes to this folder / No`; choosing
+  "all" trusts the directory for the session, so the second write runs without a re-prompt.
+  Session-scoped (never persisted); the permission floor still denies sensitive paths
+  regardless. Logic unit-tested in `tests/test_approver.py`.
