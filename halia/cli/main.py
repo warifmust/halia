@@ -713,10 +713,16 @@ def profile_list() -> None:
     """List profiles (yours + built-in persona presets)."""
     from halia.presets import BUILTIN_PRESETS
     from halia.profiles import list_profiles
+    from halia.skills import DEFAULT_SKILLS
 
     user = list_profiles()
     user_names = {p.name for p in user}
 
+    console.print("[bold]default[/bold] [dim](no profile)[/dim]")
+    console.print(
+        f"  [bold]general assistant[/bold]  [dim]all {len(DEFAULT_SKILLS)} tools — "
+        f"just `halia run \"…\"` or `halia chat`[/dim]"
+    )
     console.print("[bold]built-in presets[/bold] [dim](run as `halia <name> \"…\"`)[/dim]")
     for name, prof in sorted(BUILTIN_PRESETS.items()):
         tag = " [dim](overridden by your profile)[/dim]" if name in user_names else ""

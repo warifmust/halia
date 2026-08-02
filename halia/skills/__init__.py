@@ -57,24 +57,11 @@ _SKILL_FACTORIES: dict[str, Callable[[], Skill]] = {
 # trust floor — without it the model would do arithmetic in its head.
 _ALWAYS = ["calculate"]
 
-# The default selection (everything safe/useful; run_command is opt-in).
-DEFAULT_SKILLS = [
-    "read_file",
-    "write_file",
-    "list_files",
-    "fetch_url",
-    "web_search",
-    "calculate",
-    "read_csv",
-    "aggregate_csv",
-    "group_by",
-    "read_excel",
-    "read_pdf",
-    "read_docx",
-    "reconcile_csv",
-    "query_db",
-    "query_data",
-]
+# The default (no-profile) agent is the full generalist: EVERY safe skill. Only
+# run_command is held back (opt-in via --allow-commands). Deriving this from the
+# catalogue means any new skill auto-joins the default — it can't silently drift
+# behind the verticals again.
+DEFAULT_SKILLS = [name for name in _SKILL_FACTORIES if name != "run_command"]
 
 
 def available_skills() -> list[str]:
