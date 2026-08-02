@@ -76,6 +76,13 @@ def test_make_pdf_honors_permission_floor(tmp_path: Any) -> None:
     assert not blocked.exists()
 
 
+def test_pdf_embeds_a_chart_block(tmp_path: Any) -> None:
+    md = "# Report\n\nIntro.\n\n```chart\ntitle: Scores\nA: 10\nB: 20\n```\n\nAfter."
+    out = tmp_path / "c.pdf"
+    render_markdown_pdf(md).output(str(out))  # native bars drawn — must not crash
+    assert out.read_bytes().startswith(b"%PDF")
+
+
 def test_make_pdf_is_dangerous() -> None:
     assert MakePdf().dangerous is True
 

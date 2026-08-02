@@ -297,3 +297,33 @@ printf 'a\n' | halia education 'Create a 3-slide teaching deck on the water cycl
 - **Full Unicode** here (python-pptx is XML/UTF-8), unlike the latin-1 PDF path — Malay/CJK
   render fine. Scope = content + arrangement; the educator styles the design in PowerPoint.
 - Unit-tested in `tests/test_pptx.py` (reopen-and-verify slides/titles/table, unicode, floor).
+
+## 19. Embedded charts in PDF + PPTX (native, no rasterizer)
+
+**Goal:** put a chart *inside* the deliverable, not as a separate file — without adding a
+heavy SVG→PNG rasterizer.
+
+Approach: **chart data is the master**, rendered natively per format. A fenced block in the
+markdown master:
+
+    ```chart
+    title: Averages
+    Aisha: 78.3
+    Chong: 90
+    ```
+
+- **PDF:** drawn with fpdf2 primitives (rects/lines/text) — **vector**, crisp, no image.
+- **PPTX:** a **native, editable PowerPoint chart** (`add_chart`) — the teacher can restyle it.
+- No new dependency; no rasterizer (cairo/PNG) needed. Parser `chart.parse_chart_block`
+  shared by both renderers (`$`/comma tolerant).
+
+```bash
+printf 'a\n' | halia education 'Read /tmp/pupils.csv, compute each average (calculate), produce /tmp/report_v2.pdf with intro, a table, and an EMBEDDED bar chart (```chart block).'
+```
+
+- **Result:** ✅ the report PDF contains the bar chart inline (the `.md` master shows the
+  `chart` block); the same block yields a native chart in a deck. Unit-tested in
+  `tests/test_chart.py` (parse), `tests/test_export.py` (PDF embed), `tests/test_pptx.py`
+  (native chart shape).
+- **Output story complete:** grounded content → tables, **embedded charts**, PDF + PPTX +
+  txt/md, all from one editable markdown master.

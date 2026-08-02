@@ -18,6 +18,7 @@ from typing import Any
 from fpdf import FPDF
 
 from halia.permissions.guard import PermissionDenied, check_writable
+from halia.skills.chart import parse_chart_block
 
 _HEADING_SIZES = {1: 20, 2: 16, 3: 14, 4: 12, 5: 11, 6: 11}
 # Core PDF fonts are latin-1 only; map common typographic characters so content
@@ -61,6 +62,42 @@ def _render_table(pdf: FPDF, block: list[str]) -> None:
     pdf.ln(2)
 
 
+def _num(value: float) -> str:
+    return str(int(value)) if float(value).is_integer() else f"{value:.1f}"
+
+
+def _draw_bar_chart_pdf(pdf: FPDF, title: str, labels: list[str], values: list[float]) -> None:
+    """Draw a bar chart natively with fpdf2 primitives (vector, no image/raster)."""
+    chart_h = 55.0  # mm
+    if pdf.get_y() + chart_h + 22 > pdf.h - pdf.b_margin:
+        pdf.add_page()
+    pdf.ln(2)
+    if title:
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.multi_cell(0, 6, _s(title))
+    left = pdf.l_margin
+    usable = pdf.w - pdf.l_margin - pdf.r_margin
+    top = pdf.get_y() + 6
+    baseline = top + chart_h
+    max_v = max(values) or 1
+    slot = usable / len(values)
+    bar_w = slot * 0.6
+    pdf.set_fill_color(79, 124, 255)
+    pdf.set_font("Helvetica", "", 8)
+    for i, (label, value) in enumerate(zip(labels, values, strict=True)):
+        bar_h = (value / max_v) * chart_h
+        x = left + i * slot + (slot - bar_w) / 2
+        y = baseline - bar_h
+        pdf.rect(x, y, bar_w, bar_h, style="F")
+        pdf.set_xy(x, y - 4)
+        pdf.cell(bar_w, 4, _s(_num(value)), align="C")
+        pdf.set_xy(x, baseline + 1)
+        pdf.cell(bar_w, 4, _s(label[:14]), align="C")
+    pdf.line(left, baseline, left + usable, baseline)
+    pdf.set_y(baseline + 8)
+    pdf.ln(2)
+
+
 def render_markdown_pdf(content: str) -> FPDF:
     """Render a markdown subset to a clean FPDF document (pure — caller does the I/O)."""
     pdf = FPDF()
@@ -73,12 +110,24 @@ def render_markdown_pdf(content: str) -> FPDF:
     while i < len(lines):
         stripped = lines[i].strip()
 
-        if stripped.startswith("|") and stripped.endswith("|"):
-            block: list[str] = []
-            while i < len(lines) and lines[i].strip().startswith("|"):
-                block.append(lines[i].strip())
+        if stripped.startswith("```chart"):
+            i += 1
+            chart_lines: list[str] = []
+            while i < len(lines) and not lines[i].strip().startswith("```"):
+                chart_lines.append(lines[i])
                 i += 1
-            _render_table(pdf, block)
+            i += 1  # consume the closing fence
+            spec = parse_chart_block("\n".join(chart_lines))
+            if spec:
+                _draw_bar_chart_pdf(pdf, *spec)
+            continue
+
+        if stripped.startswith("|") and stripped.endswith("|"):
+            table_block: list[str] = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                table_block.append(lines[i].strip())
+                i += 1
+            _render_table(pdf, table_block)
             continue
         i += 1
 
@@ -121,8 +170,9 @@ class MakePdf:
     name = "make_pdf"
     description = (
         "Render markdown/text content to a clean, printable PDF (headings, bold, bullet "
-        "and numbered lists, simple tables). The editable markdown source is saved "
-        "alongside the PDF — edit that and re-render rather than editing the PDF."
+        "and numbered lists, simple tables). To embed a bar chart, include a fenced block:\n"
+        "```chart\ntitle: My Chart\nLabel A: 12\nLabel B: 8\n```\n"
+        "The editable markdown source is saved alongside the PDF — edit that and re-render."
     )
     dangerous = True  # writes files
     parameters: dict[str, Any] = {
@@ -211,6 +261,17 @@ def _parse_chunk(chunk: str) -> tuple[str, list[tuple[str, Any]]]:
     i = 0
     while i < len(body):
         s = body[i].strip()
+        if s.startswith("```chart"):
+            i += 1
+            chart_lines: list[str] = []
+            while i < len(body) and not body[i].strip().startswith("```"):
+                chart_lines.append(body[i])
+                i += 1
+            i += 1  # consume closing fence
+            spec = parse_chart_block("\n".join(chart_lines))
+            if spec:
+                blocks.append(("chart", spec))
+            continue
         if s.startswith("|") and s.endswith("|"):
             table: list[list[str]] = []
             while i < len(body) and body[i].strip().startswith("|"):
@@ -238,6 +299,7 @@ def render_markdown_pptx(content: str) -> Any:
     for chunk in _split_slides(content):
         title, blocks = _parse_chunk(chunk)
         tables = [b[1] for b in blocks if b[0] == "table"]
+        charts = [b[1] for b in blocks if b[0] == "chart"]
         text_blocks = [b for b in blocks if b[0] in ("bullet", "para")]
         slide = prs.slides.add_slide(prs.slide_layouts[5])  # Title Only
         slide.shapes.title.text = title or "Slide"
@@ -254,7 +316,30 @@ def render_markdown_pptx(content: str) -> Any:
             top += 0.45 * len(text_blocks) + 0.3
         for table in tables:
             top = _add_pptx_table(slide, table, top, Inches, Pt)
+        for chart in charts:
+            top = _add_pptx_chart(slide, chart, top, Inches)
     return prs
+
+
+def _add_pptx_chart(slide: Any, spec: tuple[str, list[str], list[float]], top: float,
+                    Inches: Any) -> float:
+    """Add a native, editable PowerPoint column chart from (title, labels, values)."""
+    from pptx.chart.data import CategoryChartData
+    from pptx.enum.chart import XL_CHART_TYPE
+
+    title, labels, values = spec
+    data = CategoryChartData()  # type: ignore[no-untyped-call]
+    data.categories = labels
+    data.add_series(title or "Values", values)  # type: ignore[no-untyped-call]
+    height = 4.2
+    frame = slide.shapes.add_chart(
+        XL_CHART_TYPE.COLUMN_CLUSTERED,
+        Inches(0.6), Inches(top), Inches(8.8), Inches(height), data,
+    )
+    if title:
+        frame.chart.has_title = True
+        frame.chart.chart_title.text_frame.text = title
+    return top + height + 0.3
 
 
 def _add_pptx_table(slide: Any, rows: list[list[str]], top: float, Inches: Any, Pt: Any) -> float:
@@ -278,7 +363,9 @@ class MakePptx:
     name = "make_pptx"
     description = (
         "Render markdown content to a PowerPoint (.pptx) deck of structured content slides "
-        "(title + bullets + simple tables). Use '---' on its own line to separate slides. "
+        "(title + bullets + simple tables + native editable charts). Use '---' on its own "
+        "line to separate slides. Embed a chart with a fenced block:\n"
+        "```chart\ntitle: My Chart\nLabel A: 12\nLabel B: 8\n```\n"
         "Produces clean CONTENT and arrangement; the user styles the design in PowerPoint. "
         "The editable markdown source is saved alongside."
     )

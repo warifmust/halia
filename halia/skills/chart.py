@@ -62,6 +62,36 @@ def _fmt(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else f"{value:.2f}"
 
 
+def parse_chart_block(text: str) -> tuple[str, list[str], list[float]] | None:
+    """Parse a ```chart block body into (title, labels, values), or None if empty.
+
+    Format (one per line): `title: <title>` (optional), then `<label>: <number>`.
+    Shared by the PDF and PPTX renderers so a chart in the markdown master renders
+    natively in each format (no SVG→raster).
+    """
+    title = ""
+    labels: list[str] = []
+    values: list[float] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.lower().startswith("title:"):
+            title = line.split(":", 1)[1].strip()
+            continue
+        label, sep, raw = line.rpartition(":")
+        if not sep:
+            continue
+        try:
+            values.append(float(raw.strip().lstrip("$").replace(",", "")))
+        except ValueError:
+            continue
+        labels.append(label.strip())
+    if not values:
+        return None
+    return (title, labels, values)
+
+
 class MakeChart:
     name = "make_chart"
     description = (

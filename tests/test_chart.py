@@ -2,7 +2,27 @@
 
 from typing import Any
 
-from halia.skills.chart import MakeChart, render_bar_svg
+from halia.skills.chart import MakeChart, parse_chart_block, render_bar_svg
+
+
+def test_parse_chart_block_reads_title_labels_values() -> None:
+    spec = parse_chart_block("title: Averages\nAisha: 78.3\nChong: 90\nDan: 58.3")
+    assert spec is not None
+    title, labels, values = spec
+    assert title == "Averages"
+    assert labels == ["Aisha", "Chong", "Dan"]
+    assert values == [78.3, 90.0, 58.3]
+
+
+def test_parse_chart_block_title_optional_and_money() -> None:
+    spec = parse_chart_block("Q1: $1,200\nQ2: $980")
+    assert spec is not None
+    assert spec[0] == ""  # no title
+    assert spec[2] == [1200.0, 980.0]  # $ and comma stripped
+
+
+def test_parse_chart_block_empty_is_none() -> None:
+    assert parse_chart_block("title: nothing here\njust prose") is None
 
 
 def test_render_produces_svg_with_bars() -> None:

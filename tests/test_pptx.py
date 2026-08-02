@@ -71,6 +71,13 @@ def test_make_pptx_supports_unicode(tmp_path: Any) -> None:
     assert Presentation(str(out)).slides[0].shapes.title.text == "Ringkasan"
 
 
+def test_pptx_embeds_a_native_chart() -> None:
+    md = "# Metrics\n\n```chart\ntitle: Scores\nA: 10\nB: 20\nC: 15\n```"
+    prs = render_markdown_pptx(md)
+    charts = [sh for s in prs.slides for sh in s.shapes if sh.has_chart]
+    assert len(charts) == 1  # a real, editable PowerPoint chart (not an image)
+
+
 def test_make_pptx_validates(tmp_path: Any) -> None:
     assert "content" in MakePptx().run({"path": str(tmp_path / "x.pptx"), "content": " "})
 
