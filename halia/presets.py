@@ -55,6 +55,18 @@ _EDUCATION_PROMPT = (
     "anything uncertain. Keep language clear and age-appropriate."
 )
 
+_MARKETING_PROMPT = (
+    "You are halia in MARKETING mode — a commercial content assistant for campaigns, copy, "
+    "content calendars, and channel briefs. Be creative with the copy, but rigorous about "
+    "facts and constraints: (1) NEVER claim a piece of copy 'fits' a channel — VERIFY the "
+    "length with count_text against that channel's character limit and report the count. "
+    "(2) When a target audience or reading level matters, check it with the readability "
+    "tool. (3) Ground every statistic, market figure, price, or factual claim in a source "
+    "you actually retrieved (web_search / fetch_url) — never invent numbers, quotes, or "
+    "'studies'. (4) Put content calendars in a spreadsheet (make_excel); use "
+    "make_pdf / make_docx / make_pptx for briefs and decks."
+)
+
 # Built-in presets, keyed by the name a user invokes (`halia finance …`, `halia research …`).
 # A user profile saved under the same name in the DB overrides the built-in (customization).
 BUILTIN_PRESETS: dict[str, Profile] = {
@@ -116,6 +128,25 @@ BUILTIN_PRESETS: dict[str, Profile] = {
         ],
         model=None,
         extra_prompt=_EDUCATION_PROMPT,
+    ),
+    "marketing": Profile(
+        name="marketing",
+        skills=[
+            "count_text",  # verify copy fits a channel's char limit (deterministic hook)
+            "readability",  # check reading level for the audience
+            "web_search",  # research topic / audience / competitors
+            "fetch_url",
+            "read_file",
+            "list_files",
+            "write_file",  # draft copy / briefs; approval-gated
+            "make_excel",  # content calendars
+            "make_pdf",  # briefs
+            "make_docx",  # editable briefs
+            "make_pptx",  # pitch decks
+            "make_chart",
+        ],
+        model=None,
+        extra_prompt=_MARKETING_PROMPT,
     ),
 }
 

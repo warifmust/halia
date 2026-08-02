@@ -370,3 +370,23 @@ printf 'a\n' | halia education 'Tuliskan surat ringkas dalam Bahasa Melayu kepad
   passes explicit widths (`pdf.epw`). Font bundled in the wheel via hatch `artifacts`.
 - **CJK still deferred** (Chinese/Japanese/Korean need a much larger font, ~10 MB+).
   Unit-tested in `tests/test_export.py` (Unicode round-trip).
+
+## 22. Fourth vertical — `marketing` (channel-fit as a real trust hook)
+
+**Goal:** a commercial-content vertical — but with a *deterministic* verification hook, not
+just a persona. "Good copy" is subjective; **"this headline is 47 chars, over the 40-char
+limit" is hard pass/fail** and commercially real.
+
+```bash
+halia marketing 'Write 3 Meta ad headline options for an eco water bottle. Each MUST fit the 40-char limit — verify each with count_text and show the counts. Flag any over.'
+```
+
+- **Result:** ✅ each headline reported with its verified character count (30/40, 28/40,
+  30/40 …) via `count_text`, over-limit ones flagged. The persona is disciplined to
+  *verify* fit (not claim it), check reading level with `readability`, and ground any stat
+  in a retrieved source. Reuses the whole output quartet (calendars → `make_excel`, briefs
+  → PDF/DOCX/PPTX).
+- `count_text` skill: char/word counts + limit check (explicit `limit` or a known
+  `platform`: twitter/sms/google_ads/meta/…); counts are tool figures the conscience then
+  grounds. Unit-tested in `tests/test_textmetrics.py`.
+- **Verticals now: finance · research · education · marketing** — all on one engine.

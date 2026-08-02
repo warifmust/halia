@@ -18,6 +18,7 @@ from halia.skills.readability import Readability
 from halia.skills.reconcile import ReconcileCsv
 from halia.skills.registry import SkillRegistry
 from halia.skills.spreadsheet import MakeExcel
+from halia.skills.textmetrics import CountText
 from halia.skills.web import FetchUrl, WebSearch
 
 # The full catalogue of skills, by name.
@@ -35,6 +36,7 @@ _SKILL_FACTORIES: dict[str, Callable[[], Skill]] = {
     "reconcile_csv": ReconcileCsv,
     "query_db": QueryDb,
     "readability": Readability,
+    "count_text": CountText,
     "make_chart": MakeChart,
     "make_pdf": MakePdf,
     "make_pptx": MakePptx,
