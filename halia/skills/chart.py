@@ -21,7 +21,7 @@ from halia.permissions.guard import PermissionDenied, check_writable
 _W, _H = 680, 420
 _LEFT, _RIGHT, _TOP, _BOTTOM = 60, 20, 48, 70
 _PALETTE = ["#4f7cff", "#ff6b6b", "#2ecc71", "#f1c40f", "#9b59b6", "#e67e22"]
-_CHART_KINDS = ("bar", "line", "pie", "scatter")
+_CHART_KINDS = ("bar", "line", "pie", "scatter", "area", "histogram")
 
 # A named series of values aligned to the chart's categories (bar/line/pie).
 Series = list[tuple[str, list[float]]]
@@ -46,6 +46,21 @@ def _fmt(value: float) -> str:
 
 def _color(i: int) -> str:
     return _PALETTE[i % len(_PALETTE)]
+
+
+def histogram_bins(values: list[float], n_bins: int) -> tuple[list[str], list[float]]:
+    """Bin raw numbers into `n_bins` equal-width ranges; return (bin labels, counts)."""
+    n_bins = max(1, min(n_bins, 50))
+    lo, hi = min(values), max(values)
+    if hi == lo:
+        hi = lo + 1
+    width = (hi - lo) / n_bins
+    counts = [0] * n_bins
+    for v in values:
+        idx = min(int((v - lo) / width), n_bins - 1)
+        counts[idx] += 1
+    labels = [f"{lo + i * width:.0f}-{lo + (i + 1) * width:.0f}" for i in range(n_bins)]
+    return labels, [float(c) for c in counts]
 
 
 def _svg_open(title: str) -> list[str]:
@@ -96,17 +111,25 @@ def _bar_line_svg(spec: ChartSpec) -> str:
         f'stroke="#888"/>'
     )
 
-    if spec.kind == "line":
+    if spec.kind in ("line", "area"):
         step = plot_w / (n_cat - 1) if n_cat > 1 else 0.0
         for si, (_, vals) in enumerate(series):
-            pts = " ".join(
-                f"{_LEFT + ci * step:.1f},{yv(val(vals, ci)):.1f}" for ci in range(n_cat)
-            )
+            xy = [(_LEFT + ci * step, yv(val(vals, ci))) for ci in range(n_cat)]
+            if spec.kind == "area":
+                area = (
+                    f"{xy[0][0]:.1f},{baseline:.1f} "
+                    + " ".join(f"{x:.1f},{y:.1f}" for x, y in xy)
+                    + f" {xy[-1][0]:.1f},{baseline:.1f}"
+                )
+                parts.append(
+                    f'<polygon points="{area}" fill="{_color(si)}" '
+                    f'fill-opacity="0.2" stroke="none"/>'
+                )
+            pts = " ".join(f"{x:.1f},{y:.1f}" for x, y in xy)
             parts.append(
                 f'<polyline points="{pts}" fill="none" stroke="{_color(si)}" stroke-width="2"/>'
             )
-            for ci in range(n_cat):
-                cx, cy = _LEFT + ci * step, yv(val(vals, ci))
+            for (cx, cy), ci in zip(xy, range(n_cat), strict=True):
                 parts.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="3" fill="{_color(si)}"/>')
                 if n_ser == 1:
                     parts.append(
@@ -114,6 +137,23 @@ def _bar_line_svg(spec: ChartSpec) -> str:
                         f'font-size="10">{escape(_fmt(val(vals, ci)))}</text>'
                     )
         label_x = [(_LEFT + ci * step) for ci in range(n_cat)]
+    elif spec.kind == "histogram":
+        slot = plot_w / max(n_cat, 1)
+        vals = series[0][1] if series else []
+        for ci in range(n_cat):
+            v = val(vals, ci)
+            x = _LEFT + ci * slot + slot * 0.01
+            y = yv(v)
+            parts.append(
+                f'<rect x="{x:.1f}" y="{y:.1f}" width="{slot * 0.98:.1f}" '
+                f'height="{baseline - y:.1f}" fill="{_color(0)}"/>'
+            )
+            if n_cat <= 12:
+                parts.append(
+                    f'<text x="{x + slot * 0.49:.1f}" y="{y - 4:.1f}" text-anchor="middle" '
+                    f'font-size="10">{escape(_fmt(v))}</text>'
+                )
+        label_x = [(_LEFT + ci * slot + slot / 2) for ci in range(n_cat)]
     else:
         slot = plot_w / max(n_cat, 1)
         group_w = slot * 0.8
@@ -265,6 +305,7 @@ def parse_chart_block(text: str) -> ChartSpec | None:
     x_labels: list[str] | None = None
     x_label = ""
     y_label = ""
+    bins = 10
     data: list[str] = []
     for line in text.splitlines():
         s = line.strip()
@@ -281,6 +322,10 @@ def parse_chart_block(text: str) -> ChartSpec | None:
             x_label = s.split(":", 1)[1].strip()
         elif low.startswith("ylabel:"):
             y_label = s.split(":", 1)[1].strip()
+        elif low.startswith("bins:"):
+            parsed = _one_float(s.split(":", 1)[1])
+            if parsed:
+                bins = int(parsed)
         elif low.startswith("x:"):
             x_labels = [c.strip() for c in s.split(":", 1)[1].split(",") if c.strip()]
         else:
@@ -290,6 +335,15 @@ def parse_chart_block(text: str) -> ChartSpec | None:
         points = [(nums[0], nums[1]) for line in data if len(nums := _floats(line)) >= 2]
         return ChartSpec("scatter", title, points=points, x_label=x_label, y_label=y_label) \
             if points else None
+
+    if kind == "histogram":  # bin raw numbers into a frequency distribution
+        hnums: list[float] = []
+        for line in data:
+            hnums += _floats(line.rpartition(":")[2])
+        if not hnums:
+            return None
+        hlabels, hcounts = histogram_bins(hnums, bins)
+        return ChartSpec("histogram", title, hlabels, [("", hcounts)])
 
     if x_labels is not None:  # multi-series
         series: Series = []
@@ -315,10 +369,12 @@ def parse_chart_block(text: str) -> ChartSpec | None:
 class MakeChart:
     name = "make_chart"
     description = (
-        "Create a chart, saved as an SVG file. kind = bar (default) / line (trends) / pie "
-        "(shares) / scatter (correlation). For bar/line/pie: `labels` = categories, and "
-        "either `values` (one series) or `series` = [{name, values}] (multiple). For "
-        "scatter: `points` = [[x, y], …] (optionally `xlabel`/`ylabel`)."
+        "Create a chart, saved as an SVG file. kind = bar (default) / line (trends) / area "
+        "(cumulative trend) / pie (shares) / scatter (correlation) / histogram (distribution "
+        "of raw numbers). For bar/line/area/pie: `labels` = categories, and either `values` "
+        "(one series) or `series` = [{name, values}] (multiple). For scatter: `points` = "
+        "[[x, y], …] (+ `xlabel`/`ylabel`). For histogram: `values` = the raw numbers (+ "
+        "optional `bins`)."
     )
     dangerous = True  # writes a file
     parameters: dict[str, Any] = {
@@ -367,6 +423,18 @@ class MakeChart:
         return f"wrote {kind} chart to {path}"
 
     def _build_spec(self, kind: str, title: str, args: dict[str, Any]) -> ChartSpec | str:
+        if kind == "histogram":
+            values = args.get("values")
+            if not isinstance(values, list) or not values:
+                return "error: histogram needs 'values' = the raw numbers to bin"
+            try:
+                nums = [float(v) for v in values]
+            except (TypeError, ValueError):
+                return "error: every value must be a number"
+            bins = args.get("bins")
+            hlabels, hcounts = histogram_bins(nums, int(bins) if isinstance(bins, int) else 10)
+            return ChartSpec("histogram", title, hlabels, [("", hcounts)])
+
         if kind == "scatter":
             raw = args.get("points")
             if not isinstance(raw, list) or not raw:

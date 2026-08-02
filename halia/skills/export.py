@@ -226,13 +226,18 @@ def _draw_bar_line_pdf(pdf: FPDF, spec: Any) -> None:
         return vals[ci] if ci < len(vals) else 0.0
 
     pdf.set_font(_FONT, "", 8)
-    if kind == "line":
+    if kind in ("line", "area"):
         step = usable / (n_cat - 1) if n_cat > 1 else 0.0
         for si, (_, vals) in enumerate(series):
             r, g, b = _CHART_COLORS[si % len(_CHART_COLORS)]
+            pts = [(left + ci * step, yv(val(vals, ci))) for ci in range(n_cat)]
+            if kind == "area":
+                poly = [(pts[0][0], baseline), *pts, (pts[-1][0], baseline)]
+                pdf.set_fill_color(r, g, b)
+                with pdf.local_context(fill_opacity=0.2):
+                    pdf.polygon(poly, style="F")
             pdf.set_draw_color(r, g, b)
             pdf.set_line_width(0.5)
-            pts = [(left + ci * step, yv(val(vals, ci))) for ci in range(n_cat)]
             for (x1, y1), (x2, y2) in zip(pts, pts[1:], strict=False):
                 pdf.line(x1, y1, x2, y2)
             if n_ser == 1:
@@ -242,6 +247,17 @@ def _draw_bar_line_pdf(pdf: FPDF, spec: Any) -> None:
         pdf.set_draw_color(0, 0, 0)
         pdf.set_line_width(0.2)
         label_x = [left + ci * step for ci in range(n_cat)]
+    elif kind == "histogram":
+        slot = usable / max(n_cat, 1)
+        hist_vals = series[0][1] if series else []
+        r, g, b = _CHART_COLORS[0]
+        pdf.set_fill_color(r, g, b)
+        for ci in range(n_cat):
+            v = val(hist_vals, ci)
+            x = left + ci * slot + slot * 0.01
+            y = yv(v)
+            pdf.rect(x, y, slot * 0.98, baseline - y, style="F")
+        label_x = [left + ci * slot + slot / 2 for ci in range(n_cat)]
     else:
         slot = usable / max(n_cat, 1)
         group_w = slot * 0.8
@@ -496,7 +512,10 @@ def render_markdown_pptx(content: str) -> Any:
     return prs
 
 
-_PPTX_TYPES = {"bar": "COLUMN_CLUSTERED", "line": "LINE_MARKERS", "pie": "PIE"}
+_PPTX_TYPES = {
+    "bar": "COLUMN_CLUSTERED", "line": "LINE_MARKERS", "pie": "PIE",
+    "area": "AREA", "histogram": "COLUMN_CLUSTERED",
+}
 
 
 def _add_pptx_chart(slide: Any, spec: Any, top: float, Inches: Any) -> float:

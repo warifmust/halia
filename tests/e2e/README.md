@@ -514,6 +514,27 @@ South: 23                     xlabel: Price
 - **Chart set now: bar · line · multi-series · pie · scatter.** (radar/treemap/bubble
   deferred; gantt is PM, skipped.)
 
+## 30. Area + histogram charts
+
+**Goal:** area = cumulative trend (filled line); histogram = frequency distribution of raw
+numbers (halia does the binning — a deterministic value-add).
+
+```chart
+type: area          ```chart
+Jan: 120            type: histogram
+Feb: 260            bins: 6
+Mar: 410            values: 52, 61, 63, 68, 70, …
+```                 ```
+```
+
+- **Result:** ✅ **area** (filled polygon under the line, translucent) and **histogram**
+  (adjacent bars over binned data) render natively in PDF (vector), PPTX (native AREA /
+  column), and SVG. `histogram_bins()` bins raw numbers into equal-width ranges + counts —
+  the model passes raw `values`, halia computes the distribution. Unit-tested in
+  `tests/test_chart.py`.
+- **Chart set now: bar · line · multi-series · pie · scatter · area · histogram** — the
+  analyst's working set is complete. (radar/treemap/bubble/donut deferred; gantt = PM.)
+
 ## 27. `clean_csv` — transform-and-save (the last wrangling gap)
 
 **Goal:** the cleaning SQL can't do cleanly (standardise casing/dates, trim, dedupe, fill/

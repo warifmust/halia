@@ -39,6 +39,46 @@ def test_parse_chart_block_scatter() -> None:
     assert spec.x_label == "price" and spec.y_label == "units"
 
 
+def test_histogram_bins() -> None:
+    from halia.skills.chart import histogram_bins
+
+    labels, counts = histogram_bins([1, 2, 2, 3, 3, 3, 4, 5, 9, 10], 5)
+    assert len(labels) == 5 and len(counts) == 5
+    assert sum(counts) == 10  # every value counted once
+
+
+def test_parse_chart_block_area() -> None:
+    spec = parse_chart_block("type: area\ntitle: Cumulative\nJan: 10\nFeb: 25\nMar: 45")
+    assert spec is not None
+    assert spec.kind == "area"
+    assert spec.categories == ["Jan", "Feb", "Mar"]
+
+
+def test_parse_chart_block_histogram() -> None:
+    spec = parse_chart_block("type: histogram\nbins: 4\nvalues: 55, 62, 71, 78, 85, 90, 92")
+    assert spec is not None
+    assert spec.kind == "histogram"
+    assert len(spec.categories) == 4  # 4 bins
+    assert sum(spec.series[0][1]) == 7  # all 7 values binned
+
+
+def test_area_svg_has_fill_polygon() -> None:
+    from halia.skills.chart import render_chart_svg
+
+    spec = parse_chart_block("type: area\nA: 10\nB: 20\nC: 15")
+    assert spec is not None
+    assert "<polygon" in render_chart_svg(spec)  # filled area under the line
+
+
+def test_make_chart_histogram(tmp_path: Any) -> None:
+    out = tmp_path / "h.svg"
+    r = MakeChart().run(
+        {"path": str(out), "kind": "histogram", "values": [1, 2, 3, 4, 5, 6, 7, 8], "bins": 4}
+    )
+    assert "wrote histogram chart" in r
+    assert out.read_text().count("<rect") == 4  # one bar per bin
+
+
 def test_parse_chart_block_type_line() -> None:
     spec = parse_chart_block("type: line\ntitle: Trend\nJan: 10\nFeb: 14\nMar: 12")
     assert spec is not None
