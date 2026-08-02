@@ -42,3 +42,21 @@ def test_mis_rounding_is_flagged() -> None:
     steps = [Step("aggregate_csv", "{}", "mean(amount) = 181.375 over 4 values")]
     # 181.40 is NOT a correct rounding of 181.375 → flagged
     assert "181.40" in ungrounded_numbers("The average is 181.40.", steps)
+
+
+def test_negative_tool_figure_grounds_positive_magnitude() -> None:
+    # Bank debits are negative in tools; prose states the positive magnitude — same fact.
+    steps = [Step("reconcile_csv", "{}", "CHK-1042: -1200.00 vs -1250.00")]
+    answer = "The check cleared for $1,250.00 versus the recorded $1,200.00."
+    assert ungrounded_numbers(answer, steps) == []  # sign-insensitive → grounded
+
+
+def test_positive_tool_figure_grounds_negative_answer() -> None:
+    steps = [Step("aggregate_csv", "{}", "sum = 175.00")]
+    assert ungrounded_numbers("The net difference is -175.00.", steps) == []
+
+
+def test_sign_insensitivity_still_catches_invented() -> None:
+    # magnitude matching must not ground a number that isn't in tools at all
+    steps = [Step("reconcile_csv", "{}", "CHK-1042: -1200.00 vs -1250.00")]
+    assert "999.00" in ungrounded_numbers("There is also a $999.00 fee.", steps)

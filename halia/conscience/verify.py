@@ -41,20 +41,26 @@ def _extract(text: str, figures_only: bool) -> set[Decimal]:
 
 
 def _is_grounded(figure: Decimal, tool_figures: set[Decimal]) -> bool:
-    """A figure is grounded if it equals a tool figure OR is a correct rounding of one.
+    """A figure is grounded if its magnitude equals a tool figure's OR is a correct rounding.
 
-    So `181.38` passes against a tool's `181.375` (correct 2-dp rounding), but a
-    *mis*-rounding like `181.40` — and any invented number — still fails.
+    Matching is **sign-insensitive**: a bank statement expresses a debit as `-1,250.00`,
+    but prose reports the magnitude `$1,250.00` — the same fact. So `181.38` passes
+    against a tool's `181.375` (correct 2-dp rounding) and `1250.00` passes against a
+    tool's `-1250.00`; a *mis*-rounding like `181.40` or an invented number still fails.
+    (Trade-off: a genuine sign-flip in prose won't be caught — acceptable, since the
+    debit/credit convention mismatch is far more common than a flipped sign.)
     """
-    if figure in tool_figures:
+    target = abs(figure)
+    tool_mags = {abs(t) for t in tool_figures}
+    if target in tool_mags:
         return True
     exponent = figure.as_tuple().exponent
     if not isinstance(exponent, int):  # nan/inf — never grounded
         return False
     quantum = Decimal(1).scaleb(-max(0, -exponent))  # figure's decimal precision
-    for tool_figure in tool_figures:
+    for mag in tool_mags:
         try:
-            if tool_figure.quantize(quantum, rounding=ROUND_HALF_UP) == figure:
+            if mag.quantize(quantum, rounding=ROUND_HALF_UP) == target:
                 return True
         except InvalidOperation:
             continue
