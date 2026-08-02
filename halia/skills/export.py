@@ -359,6 +359,140 @@ def _add_pptx_table(slide: Any, rows: list[list[str]], top: float, Inches: Any, 
     return top + height + 0.3
 
 
+# --- DOCX: markdown -> Word -------------------------------------------------------
+# Same master model. Word is XML/UTF-8 so full Unicode works. python-docx has no native
+# chart, so a ```chart block renders as a small Label/Value table.
+
+
+def _add_docx_rich(doc: Any, text: str, style: str | None = None) -> None:
+    para = doc.add_paragraph(style=style)
+    for part in re.split(r"(\*\*[^*]+\*\*)", text):
+        if part.startswith("**") and part.endswith("**"):
+            para.add_run(part[2:-2]).bold = True
+        elif part:
+            para.add_run(part)
+
+
+def _add_docx_table(doc: Any, raw_lines: list[str]) -> None:
+    data: list[list[str]] = []
+    for raw in raw_lines:
+        if re.match(r"^\|[\s:|-]+\|$", raw):
+            continue
+        data.append([_strip_md(c.strip()) for c in raw.strip("|").split("|")])
+    if not data:
+        return
+    ncols = max(len(r) for r in data)
+    table = doc.add_table(rows=len(data), cols=ncols)
+    table.style = "Table Grid"
+    for r, row in enumerate(data):
+        for c in range(ncols):
+            cell = table.cell(r, c)
+            cell.text = row[c] if c < len(row) else ""
+            if r == 0 and cell.paragraphs[0].runs:
+                cell.paragraphs[0].runs[0].bold = True
+
+
+def render_markdown_docx(content: str) -> Any:
+    """Render a markdown subset to a python-docx Document (headings, lists, tables, bold)."""
+    from docx import Document
+
+    doc = Document()
+    lines = content.replace("\r\n", "\n").split("\n")
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+
+        if stripped.startswith("```chart"):
+            i += 1
+            chart_lines: list[str] = []
+            while i < len(lines) and not lines[i].strip().startswith("```"):
+                chart_lines.append(lines[i])
+                i += 1
+            i += 1
+            spec = parse_chart_block("\n".join(chart_lines))
+            if spec:
+                title, labels, values = spec
+                if title:
+                    doc.add_heading(title, level=3)
+                _add_docx_table(doc, ["| Item | Value |"] + [f"| {a} | {b} |"
+                                for a, b in zip(labels, values, strict=True)])
+            continue
+
+        if stripped.startswith("|") and stripped.endswith("|"):
+            table_block: list[str] = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                table_block.append(lines[i].strip())
+                i += 1
+            _add_docx_table(doc, table_block)
+            continue
+        i += 1
+
+        if not stripped:
+            continue
+        heading = re.match(r"^(#{1,6})\s+(.*)", stripped)
+        if heading:
+            doc.add_heading(_strip_md(heading.group(2)), level=min(len(heading.group(1)), 4))
+            continue
+        if re.match(r"^(-{3,}|\*{3,}|_{3,})$", stripped):
+            doc.add_paragraph()
+            continue
+        bullet = re.match(r"^[-*]\s+(.*)", stripped)
+        numbered = re.match(r"^(\d+)\.\s+(.*)", stripped)
+        if bullet:
+            _add_docx_rich(doc, bullet.group(1), "List Bullet")
+        elif numbered:
+            _add_docx_rich(doc, numbered.group(2), "List Number")
+        else:
+            _add_docx_rich(doc, stripped)
+    return doc
+
+
+class MakeDocx:
+    name = "make_docx"
+    description = (
+        "Render markdown/text content to an editable Word (.docx) document (headings, bold, "
+        "bullet and numbered lists, simple tables). Full Unicode. The editable markdown "
+        "source is saved alongside — edit that and re-render."
+    )
+    dangerous = True  # writes files
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "path": {"type": "string", "description": "Output .docx file path."},
+            "content": {"type": "string", "description": "The markdown/text content."},
+            "title": {"type": "string", "description": "Optional title (rendered as a heading)."},
+        },
+        "required": ["path", "content"],
+    }
+
+    def run(self, args: dict[str, Any]) -> str:
+        path = args.get("path")
+        content = args.get("content")
+        title = args.get("title")
+        if not isinstance(path, str) or not path.strip():
+            return "error: 'path' is required"
+        if not isinstance(content, str) or not content.strip():
+            return "error: 'content' is required and must be non-empty"
+        if isinstance(title, str) and title.strip():
+            content = f"# {title.strip()}\n\n{content}"
+
+        docx_path = Path(path).expanduser()
+        md_path = docx_path.with_suffix(".md")
+        try:
+            check_writable(docx_path)
+            check_writable(md_path)
+        except PermissionDenied as exc:
+            return f"blocked: {exc}"
+
+        try:
+            render_markdown_docx(content).save(str(docx_path))
+            md_path.write_text(content, encoding="utf-8")
+        except OSError as exc:
+            return f"error writing {path}: {exc}"
+        return f"wrote Word document to {docx_path} (editable markdown source kept at {md_path})"
+
+
 class MakePptx:
     name = "make_pptx"
     description = (
