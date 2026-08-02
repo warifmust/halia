@@ -116,6 +116,51 @@ def _draw_bar_chart_pdf(pdf: FPDF, title: str, labels: list[str], values: list[f
     pdf.ln(2)
 
 
+def _draw_line_chart_pdf(pdf: FPDF, title: str, labels: list[str], values: list[float]) -> None:
+    """Draw a line chart natively with fpdf2 primitives (vector, no image/raster)."""
+    chart_h = 55.0
+    if pdf.get_y() + chart_h + 22 > pdf.h - pdf.b_margin:
+        pdf.add_page()
+    pdf.ln(2)
+    if title:
+        pdf.set_font(_FONT, "B", 11)
+        pdf.multi_cell(pdf.epw, 6, _s(title), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    left = pdf.l_margin
+    usable = pdf.w - pdf.l_margin - pdf.r_margin
+    top = pdf.get_y() + 6
+    baseline = top + chart_h
+    max_v = max(values)
+    min_v = min(0.0, min(values))
+    span = (max_v - min_v) or 1
+    n = len(values)
+    step = usable / (n - 1) if n > 1 else 0.0
+    pts = [(left + i * step, baseline - (v - min_v) / span * chart_h) for i, v in enumerate(values)]
+    pdf.set_draw_color(79, 124, 255)
+    pdf.set_line_width(0.5)
+    for (x1, y1), (x2, y2) in zip(pts, pts[1:], strict=False):
+        pdf.line(x1, y1, x2, y2)
+    pdf.set_draw_color(0, 0, 0)
+    pdf.set_line_width(0.2)
+    pdf.set_font(_FONT, "", 8)
+    for (x, y), label, value in zip(pts, labels, values, strict=True):
+        pdf.set_xy(x - 10, y - 5)
+        pdf.cell(20, 4, _s(_num(value)), align="C")
+        pdf.set_xy(x - 10, baseline + 1)
+        pdf.cell(20, 4, _s(label[:12]), align="C")
+    pdf.line(left, baseline, left + usable, baseline)
+    pdf.set_y(baseline + 8)
+    pdf.ln(2)
+
+
+def _draw_chart_pdf(
+    pdf: FPDF, kind: str, title: str, labels: list[str], values: list[float]
+) -> None:
+    if kind == "line":
+        _draw_line_chart_pdf(pdf, title, labels, values)
+    else:
+        _draw_bar_chart_pdf(pdf, title, labels, values)
+
+
 def render_markdown_pdf(content: str) -> FPDF:
     """Render a markdown subset to a clean FPDF document (pure — caller does the I/O)."""
     pdf = FPDF()
@@ -138,7 +183,7 @@ def render_markdown_pdf(content: str) -> FPDF:
             i += 1  # consume the closing fence
             spec = parse_chart_block("\n".join(chart_lines))
             if spec:
-                _draw_bar_chart_pdf(pdf, *spec)
+                _draw_chart_pdf(pdf, *spec)
             continue
 
         if stripped.startswith("|") and stripped.endswith("|"):
@@ -194,8 +239,9 @@ class MakePdf:
     description = (
         "Render markdown/text content to a clean, printable PDF (headings, bold, bullet "
         "and numbered lists, simple tables). To embed a bar chart, include a fenced block:\n"
-        "```chart\ntitle: My Chart\nLabel A: 12\nLabel B: 8\n```\n"
-        "The editable markdown source is saved alongside the PDF — edit that and re-render."
+        "```chart\ntype: line\ntitle: My Chart\nLabel A: 12\nLabel B: 8\n```\n"
+        "(type is bar or line — line for trends). The editable markdown source is saved "
+        "alongside the PDF — edit that and re-render."
     )
     dangerous = True  # writes files
     parameters: dict[str, Any] = {
@@ -344,19 +390,20 @@ def render_markdown_pptx(content: str) -> Any:
     return prs
 
 
-def _add_pptx_chart(slide: Any, spec: tuple[str, list[str], list[float]], top: float,
+def _add_pptx_chart(slide: Any, spec: tuple[str, str, list[str], list[float]], top: float,
                     Inches: Any) -> float:
-    """Add a native, editable PowerPoint column chart from (title, labels, values)."""
+    """Add a native, editable PowerPoint chart from (kind, title, labels, values)."""
     from pptx.chart.data import CategoryChartData
     from pptx.enum.chart import XL_CHART_TYPE
 
-    title, labels, values = spec
+    kind, title, labels, values = spec
     data = CategoryChartData()  # type: ignore[no-untyped-call]
     data.categories = labels
     data.add_series(title or "Values", values)  # type: ignore[no-untyped-call]
     height = 4.2
+    chart_type = XL_CHART_TYPE.LINE_MARKERS if kind == "line" else XL_CHART_TYPE.COLUMN_CLUSTERED
     frame = slide.shapes.add_chart(
-        XL_CHART_TYPE.COLUMN_CLUSTERED,
+        chart_type,
         Inches(0.6), Inches(top), Inches(8.8), Inches(height), data,
     )
     if title:
@@ -434,7 +481,7 @@ def render_markdown_docx(content: str) -> Any:
             i += 1
             spec = parse_chart_block("\n".join(chart_lines))
             if spec:
-                title, labels, values = spec
+                _kind, title, labels, values = spec
                 if title:
                     doc.add_heading(title, level=3)
                 _add_docx_table(doc, ["| Item | Value |"] + [f"| {a} | {b} |"
@@ -522,8 +569,9 @@ class MakePptx:
         "Render markdown content to a PowerPoint (.pptx) deck of structured content slides "
         "(title + bullets + simple tables + native editable charts). Use '---' on its own "
         "line to separate slides. Embed a chart with a fenced block:\n"
-        "```chart\ntitle: My Chart\nLabel A: 12\nLabel B: 8\n```\n"
-        "Produces clean CONTENT and arrangement; the user styles the design in PowerPoint. "
+        "```chart\ntype: line\ntitle: My Chart\nLabel A: 12\nLabel B: 8\n```\n"
+        "(type is bar or line). Produces clean CONTENT and arrangement; the user styles the "
+        "design in PowerPoint. "
         "The editable markdown source is saved alongside."
     )
     dangerous = True  # writes files

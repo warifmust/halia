@@ -450,3 +450,19 @@ halia data 'I have /tmp/orders.csv and /tmp/reps.csv. Using query_data, JOIN the
   the SQL (knowledge), halia *runs* it on the real data (tool) — the JOIN/SORT question
   answered. Added to DEFAULT_SKILLS + finance/data presets. Tests: `tests/test_query_data.py`.
 - Also closes much of the *cleaning* gap — dedup/null-handling/casts/filtering are just SQL.
+
+## 26. Line charts (trends)
+
+**Goal:** charts were bar-only; trends need a line. Add line to make_chart + the embedded
+```chart block across PDF/PPTX.
+
+```bash
+printf 'a\n' | halia data 'Read /tmp/revenue.csv. Total + growth first→last. Produce /tmp/trend_report.pdf with an EMBEDDED LINE chart (```chart with type: line).'
+```
+
+- **Result:** ✅ the report embeds a native vector **line chart** (drawn with fpdf2
+  primitives; PPTX gets a native `LINE_MARKERS` chart). `make_chart` gained `kind=bar|line`;
+  the chart block gained `type: bar|line`. Total/growth tool-grounded, conscience regrounded.
+- `render_line_svg` + `_draw_line_chart_pdf`; `parse_chart_block` now returns
+  `(kind, title, labels, values)`. Line = trends over time, bar = category comparisons.
+  Unit-tested in `tests/test_chart.py`. **Next data: clean/transform-and-save; pie/scatter later.**

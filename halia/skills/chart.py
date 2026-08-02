@@ -62,13 +62,63 @@ def _fmt(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else f"{value:.2f}"
 
 
-def parse_chart_block(text: str) -> tuple[str, list[str], list[float]] | None:
-    """Parse a ```chart block body into (title, labels, values), or None if empty.
+def render_line_svg(title: str, labels: list[str], values: list[float]) -> str:
+    """Render a line chart as an SVG string (good for trends over time)."""
+    plot_w = _W - _LEFT - _RIGHT
+    plot_h = _H - _TOP - _BOTTOM
+    max_v = max(values)
+    min_v = min(0.0, min(values))  # baseline at 0 (or below, if negatives)
+    span = (max_v - min_v) or 1
+    n = len(values)
+    step = plot_w / (n - 1) if n > 1 else 0.0
 
-    Format (one per line): `title: <title>` (optional), then `<label>: <number>`.
-    Shared by the PDF and PPTX renderers so a chart in the markdown master renders
-    natively in each format (no SVG→raster).
+    def px(i: int) -> float:
+        return _LEFT + i * step
+
+    def py(v: float) -> float:
+        return _TOP + plot_h - (v - min_v) / span * plot_h
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{_W}" height="{_H}" '
+        f'viewBox="0 0 {_W} {_H}" font-family="sans-serif">',
+        f'<text x="{_W / 2}" y="26" text-anchor="middle" font-size="18" '
+        f'font-weight="bold">{escape(title)}</text>',
+        f'<line x1="{_LEFT}" y1="{_TOP + plot_h}" x2="{_W - _RIGHT}" '
+        f'y2="{_TOP + plot_h}" stroke="#888"/>',
+    ]
+    pts = " ".join(f"{px(i):.1f},{py(v):.1f}" for i, v in enumerate(values))
+    parts.append(f'<polyline points="{pts}" fill="none" stroke="#4f7cff" stroke-width="2"/>')
+    for i, (label, value) in enumerate(zip(labels, values, strict=True)):
+        cx, cy = px(i), py(value)
+        parts.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="3" fill="#4f7cff"/>')
+        parts.append(
+            f'<text x="{cx:.1f}" y="{cy - 7:.1f}" text-anchor="middle" font-size="10">'
+            f"{escape(_fmt(value))}</text>"
+        )
+        parts.append(
+            f'<text x="{cx:.1f}" y="{_TOP + plot_h + 16:.1f}" text-anchor="middle" '
+            f'font-size="11">{escape(label)}</text>'
+        )
+    parts.append("</svg>")
+    return "\n".join(parts)
+
+
+_CHART_KINDS = ("bar", "line")
+
+
+def render_chart_svg(kind: str, title: str, labels: list[str], values: list[float]) -> str:
+    return render_line_svg(title, labels, values) if kind == "line" \
+        else render_bar_svg(title, labels, values)
+
+
+def parse_chart_block(text: str) -> tuple[str, str, list[str], list[float]] | None:
+    """Parse a ```chart block body into (kind, title, labels, values), or None if empty.
+
+    Format (one per line): `type: bar|line` (optional, default bar), `title: <title>`
+    (optional), then `<label>: <number>`. Shared by the PDF/PPTX/DOCX renderers so a chart
+    in the markdown master renders natively in each format (no SVG→raster).
     """
+    kind = "bar"
     title = ""
     labels: list[str] = []
     values: list[float] = []
@@ -76,8 +126,14 @@ def parse_chart_block(text: str) -> tuple[str, list[str], list[float]] | None:
         line = line.strip()
         if not line:
             continue
-        if line.lower().startswith("title:"):
+        low = line.lower()
+        if low.startswith("title:"):
             title = line.split(":", 1)[1].strip()
+            continue
+        if low.startswith("type:"):
+            requested = line.split(":", 1)[1].strip().lower()
+            if requested in _CHART_KINDS:
+                kind = requested
             continue
         label, sep, raw = line.rpartition(":")
         if not sep:
@@ -89,14 +145,15 @@ def parse_chart_block(text: str) -> tuple[str, list[str], list[float]] | None:
         labels.append(label.strip())
     if not values:
         return None
-    return (title, labels, values)
+    return (kind, title, labels, values)
 
 
 class MakeChart:
     name = "make_chart"
     description = (
-        "Create a bar chart from labels and values, saved as an SVG file. Use for "
-        "performance tables, grade distributions, attendance, and similar summaries."
+        "Create a bar or line chart from labels and values, saved as an SVG file. Use a "
+        "line chart for trends over time (kind='line'); bar for comparisons across "
+        "categories (default). For grades, spend-by-category, attendance, etc."
     )
     dangerous = True  # writes a file
     parameters: dict[str, Any] = {
@@ -107,14 +164,19 @@ class MakeChart:
             "labels": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "One label per bar (x-axis).",
+                "description": "One label per point (x-axis).",
             },
             "values": {
                 "type": "array",
                 "items": {"type": "number"},
-                "description": "One numeric value per bar, same length as labels.",
+                "description": "One numeric value per label, same length as labels.",
             },
             "title": {"type": "string", "description": "Chart title."},
+            "kind": {
+                "type": "string",
+                "enum": list(_CHART_KINDS),
+                "description": "bar (default) or line (for trends over time).",
+            },
         },
         "required": ["path", "labels", "values"],
     }
@@ -141,9 +203,12 @@ class MakeChart:
         except PermissionDenied as exc:
             return f"blocked: {exc}"
 
-        svg = render_bar_svg(str(title), [str(x) for x in labels], nums)
+        kind = args.get("kind", "bar")
+        if kind not in _CHART_KINDS:
+            kind = "bar"
+        svg = render_chart_svg(kind, str(title), [str(x) for x in labels], nums)
         try:
             target.expanduser().write_text(svg, encoding="utf-8")
         except OSError as exc:
             return f"error writing {path}: {exc}"
-        return f"wrote bar chart ({len(nums)} bars) to {path}"
+        return f"wrote {kind} chart ({len(nums)} points) to {path}"
