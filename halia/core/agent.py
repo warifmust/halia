@@ -41,6 +41,48 @@ SYSTEM_PROMPT = (
 
 DEFAULT_MAX_ITERS = 8
 
+# Cap on the conversation history *sent to the model* each turn (a char proxy for
+# tokens, ~4 chars/token). The full transcript is still persisted — this only bounds
+# what we transmit, so long chats don't bloat cost or overflow the context window.
+DEFAULT_HISTORY_BUDGET_CHARS = 40000
+
+
+def _msg_chars(message: Message) -> int:
+    content = message.get("content") or ""
+    tool_calls = message.get("tool_calls") or []
+    return len(str(content)) + len(json.dumps(tool_calls))
+
+
+def _window(messages: list[Message], max_chars: int) -> list[Message]:
+    """The system message + the most recent whole turns that fit within `max_chars`.
+
+    Trims only at user-message boundaries, so an assistant tool-call turn always keeps
+    its tool responses (splitting them would make an invalid request). If even the last
+    turn exceeds the budget, it's still sent whole — better a big call than a broken one.
+    """
+    has_system = bool(messages) and messages[0].get("role") == "system"
+    system = messages[:1] if has_system else []
+    body = messages[len(system):]
+
+    total = 0
+    start = len(body)  # nothing kept yet
+    for i in range(len(body) - 1, -1, -1):
+        total += _msg_chars(body[i])
+        if total > max_chars:
+            break
+        start = i
+    # Advance to the next user boundary so the window never begins mid-turn.
+    while start < len(body) and body[start].get("role") != "user":
+        start += 1
+    if start >= len(body):  # budget too small for even one whole turn — keep the last one
+        start = next(
+            (j for j in range(len(body) - 1, -1, -1) if body[j].get("role") == "user"),
+            0,
+        )
+    if start == 0:
+        return messages  # everything fits — unchanged
+    return system + body[start:]
+
 # How many times the conscience may bounce an answer back to reground flagged figures.
 DEFAULT_MAX_CORRECTIONS = 1
 
@@ -123,6 +165,7 @@ class _Ctx:
     approver: Approver | None
     pause_on_approval: bool
     checkpoint_db: Path = DB_PATH
+    history_budget: int = DEFAULT_HISTORY_BUDGET_CHARS
 
 
 def _is_dangerous(registry: SkillRegistry, name: str) -> bool:
@@ -203,7 +246,8 @@ def _loop(
     tools = ctx.registry.tool_schemas() or None
     while iters_used < ctx.max_iters:
         iters_used += 1
-        result = ctx.provider.chat(messages, tools=tools)
+        # Send a bounded window of history (full transcript stays in `messages`).
+        result = ctx.provider.chat(_window(messages, ctx.history_budget), tools=tools)
 
         if not result.tool_calls:
             answer = (result.content or "").strip()
@@ -332,6 +376,7 @@ def converse(
     max_iters: int = DEFAULT_MAX_ITERS,
     observer: Observer | None = None,
     approver: Approver | None = None,
+    history_budget: int = DEFAULT_HISTORY_BUDGET_CHARS,
 ) -> RunResult:
     """Run one chat turn over an existing conversation (the multi-turn / chat primitive).
 
@@ -348,7 +393,7 @@ def converse(
         provider=provider, config=config, registry=registry, prompt=prompt,
         extra_system="", plan="", max_iters=max_iters,
         max_corrections=DEFAULT_MAX_CORRECTIONS, observer=observer, approver=approver,
-        pause_on_approval=False,
+        pause_on_approval=False, history_budget=history_budget,
     )
     return _loop(ctx, messages, [], 0, 0)
 
