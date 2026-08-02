@@ -84,81 +84,98 @@ def _num(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else f"{value:.1f}"
 
 
-def _draw_bar_chart_pdf(pdf: FPDF, title: str, labels: list[str], values: list[float]) -> None:
-    """Draw a bar chart natively with fpdf2 primitives (vector, no image/raster)."""
-    chart_h = 55.0  # mm
-    if pdf.get_y() + chart_h + 22 > pdf.h - pdf.b_margin:
-        pdf.add_page()
-    pdf.ln(2)
-    if title:
-        pdf.set_font(_FONT, "B", 11)
-        pdf.multi_cell(pdf.epw, 6, _s(title), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-    left = pdf.l_margin
-    usable = pdf.w - pdf.l_margin - pdf.r_margin
-    top = pdf.get_y() + 6
-    baseline = top + chart_h
-    max_v = max(values) or 1
-    slot = usable / len(values)
-    bar_w = slot * 0.6
-    pdf.set_fill_color(79, 124, 255)
-    pdf.set_font(_FONT, "", 8)
-    for i, (label, value) in enumerate(zip(labels, values, strict=True)):
-        bar_h = (value / max_v) * chart_h
-        x = left + i * slot + (slot - bar_w) / 2
-        y = baseline - bar_h
-        pdf.rect(x, y, bar_w, bar_h, style="F")
-        pdf.set_xy(x, y - 4)
-        pdf.cell(bar_w, 4, _s(_num(value)), align="C")
-        pdf.set_xy(x, baseline + 1)
-        pdf.cell(bar_w, 4, _s(label[:14]), align="C")
-    pdf.line(left, baseline, left + usable, baseline)
-    pdf.set_y(baseline + 8)
-    pdf.ln(2)
+_CHART_COLORS = [
+    (79, 124, 255), (255, 107, 107), (46, 204, 113),
+    (241, 196, 15), (155, 89, 182), (230, 126, 34),
+]
 
 
-def _draw_line_chart_pdf(pdf: FPDF, title: str, labels: list[str], values: list[float]) -> None:
-    """Draw a line chart natively with fpdf2 primitives (vector, no image/raster)."""
+def _chart_frame(pdf: FPDF, title: str, series: list[tuple[str, list[float]]]) -> float:
+    """Common chart setup: page-break, title, legend. Returns the plot-top y."""
     chart_h = 55.0
-    if pdf.get_y() + chart_h + 22 > pdf.h - pdf.b_margin:
+    if pdf.get_y() + chart_h + 30 > pdf.h - pdf.b_margin:
         pdf.add_page()
     pdf.ln(2)
     if title:
         pdf.set_font(_FONT, "B", 11)
         pdf.multi_cell(pdf.epw, 6, _s(title), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-    left = pdf.l_margin
-    usable = pdf.w - pdf.l_margin - pdf.r_margin
-    top = pdf.get_y() + 6
-    baseline = top + chart_h
-    max_v = max(values)
-    min_v = min(0.0, min(values))
-    span = (max_v - min_v) or 1
-    n = len(values)
-    step = usable / (n - 1) if n > 1 else 0.0
-    pts = [(left + i * step, baseline - (v - min_v) / span * chart_h) for i, v in enumerate(values)]
-    pdf.set_draw_color(79, 124, 255)
-    pdf.set_line_width(0.5)
-    for (x1, y1), (x2, y2) in zip(pts, pts[1:], strict=False):
-        pdf.line(x1, y1, x2, y2)
-    pdf.set_draw_color(0, 0, 0)
-    pdf.set_line_width(0.2)
-    pdf.set_font(_FONT, "", 8)
-    for (x, y), label, value in zip(pts, labels, values, strict=True):
-        pdf.set_xy(x - 10, y - 5)
-        pdf.cell(20, 4, _s(_num(value)), align="C")
-        pdf.set_xy(x - 10, baseline + 1)
-        pdf.cell(20, 4, _s(label[:12]), align="C")
-    pdf.line(left, baseline, left + usable, baseline)
-    pdf.set_y(baseline + 8)
-    pdf.ln(2)
+    if len(series) > 1:  # legend row
+        pdf.set_font(_FONT, "", 8)
+        lx = pdf.l_margin
+        y0 = pdf.get_y()
+        for si, (name, _) in enumerate(series):
+            r, g, b = _CHART_COLORS[si % len(_CHART_COLORS)]
+            pdf.set_fill_color(r, g, b)
+            pdf.rect(lx, y0 + 0.5, 3, 3, style="F")
+            label = name or f"Series {si + 1}"
+            pdf.set_xy(lx + 4, y0)
+            pdf.cell(pdf.get_string_width(_s(label)) + 2, 4, _s(label))
+            lx += 6 + pdf.get_string_width(_s(label)) + 6
+        pdf.ln(6)
+    return pdf.get_y() + 4
 
 
 def _draw_chart_pdf(
-    pdf: FPDF, kind: str, title: str, labels: list[str], values: list[float]
+    pdf: FPDF, kind: str, title: str, categories: list[str], series: list[tuple[str, list[float]]]
 ) -> None:
+    """Draw a bar (grouped) or line (multi) chart natively with fpdf2 primitives."""
+    chart_h = 55.0
+    top = _chart_frame(pdf, title, series)
+    left = pdf.l_margin
+    usable = pdf.epw
+    baseline = top + chart_h
+    all_v = [v for _, vals in series for v in vals] or [0.0]
+    max_v, min_v = max(all_v), min(0.0, min(all_v))
+    span = (max_v - min_v) or 1
+    n_cat = len(categories)
+    n_ser = len(series)
+
+    def yv(v: float) -> float:
+        return baseline - (v - min_v) / span * chart_h
+
+    def val(vals: list[float], ci: int) -> float:
+        return vals[ci] if ci < len(vals) else 0.0
+
+    pdf.set_font(_FONT, "", 8)
     if kind == "line":
-        _draw_line_chart_pdf(pdf, title, labels, values)
+        step = usable / (n_cat - 1) if n_cat > 1 else 0.0
+        for si, (_, vals) in enumerate(series):
+            r, g, b = _CHART_COLORS[si % len(_CHART_COLORS)]
+            pdf.set_draw_color(r, g, b)
+            pdf.set_line_width(0.5)
+            pts = [(left + ci * step, yv(val(vals, ci))) for ci in range(n_cat)]
+            for (x1, y1), (x2, y2) in zip(pts, pts[1:], strict=False):
+                pdf.line(x1, y1, x2, y2)
+            if n_ser == 1:
+                for (x, y), ci in zip(pts, range(n_cat), strict=True):
+                    pdf.set_xy(x - 10, y - 5)
+                    pdf.cell(20, 4, _s(_num(val(vals, ci))), align="C")
+        pdf.set_draw_color(0, 0, 0)
+        pdf.set_line_width(0.2)
+        label_x = [left + ci * step for ci in range(n_cat)]
     else:
-        _draw_bar_chart_pdf(pdf, title, labels, values)
+        slot = usable / max(n_cat, 1)
+        group_w = slot * 0.8
+        bar_w = group_w / max(n_ser, 1)
+        for ci in range(n_cat):
+            for si, (_, vals) in enumerate(series):
+                r, g, b = _CHART_COLORS[si % len(_CHART_COLORS)]
+                pdf.set_fill_color(r, g, b)
+                v = val(vals, ci)
+                x = left + ci * slot + (slot - group_w) / 2 + si * bar_w
+                y = yv(v)
+                pdf.rect(x, y, bar_w, baseline - y, style="F")
+                if n_ser == 1:
+                    pdf.set_xy(x - 2, y - 4)
+                    pdf.cell(bar_w + 4, 4, _s(_num(v)), align="C")
+        label_x = [left + ci * slot + slot / 2 for ci in range(n_cat)]
+
+    for ci, cx in enumerate(label_x):
+        pdf.set_xy(cx - 15, baseline + 1)
+        pdf.cell(30, 4, _s(categories[ci][:14]), align="C")
+    pdf.line(left, baseline, left + usable, baseline)
+    pdf.set_y(baseline + 8)
+    pdf.ln(2)
 
 
 def render_markdown_pdf(content: str) -> FPDF:
@@ -390,22 +407,27 @@ def render_markdown_pptx(content: str) -> Any:
     return prs
 
 
-def _add_pptx_chart(slide: Any, spec: tuple[str, str, list[str], list[float]], top: float,
-                    Inches: Any) -> float:
-    """Add a native, editable PowerPoint chart from (kind, title, labels, values)."""
+def _add_pptx_chart(
+    slide: Any, spec: tuple[str, str, list[str], list[tuple[str, list[float]]]],
+    top: float, Inches: Any,
+) -> float:
+    """Add a native, editable PowerPoint chart from (kind, title, categories, series)."""
     from pptx.chart.data import CategoryChartData
     from pptx.enum.chart import XL_CHART_TYPE
 
-    kind, title, labels, values = spec
+    kind, title, categories, series = spec
     data = CategoryChartData()  # type: ignore[no-untyped-call]
-    data.categories = labels
-    data.add_series(title or "Values", values)  # type: ignore[no-untyped-call]
+    data.categories = categories
+    for name, values in series:
+        data.add_series(name or "Values", values)  # type: ignore[no-untyped-call]
     height = 4.2
     chart_type = XL_CHART_TYPE.LINE_MARKERS if kind == "line" else XL_CHART_TYPE.COLUMN_CLUSTERED
     frame = slide.shapes.add_chart(
         chart_type,
         Inches(0.6), Inches(top), Inches(8.8), Inches(height), data,
     )
+    if len(series) > 1:
+        frame.chart.has_legend = True
     if title:
         frame.chart.has_title = True
         frame.chart.chart_title.text_frame.text = title
@@ -481,11 +503,17 @@ def render_markdown_docx(content: str) -> Any:
             i += 1
             spec = parse_chart_block("\n".join(chart_lines))
             if spec:
-                _kind, title, labels, values = spec
+                _kind, title, categories, series = spec
                 if title:
                     doc.add_heading(title, level=3)
-                _add_docx_table(doc, ["| Item | Value |"] + [f"| {a} | {b} |"
-                                for a, b in zip(labels, values, strict=True)])
+                header = "| Item | " + " | ".join(n or f"Series {i + 1}"
+                                                   for i, (n, _) in enumerate(series)) + " |"
+                body_rows = [
+                    "| " + categories[ci] + " | "
+                    + " | ".join(str(v[ci]) if ci < len(v) else "" for _, v in series) + " |"
+                    for ci in range(len(categories))
+                ]
+                _add_docx_table(doc, [header, *body_rows])
             continue
 
         if stripped.startswith("|") and stripped.endswith("|"):

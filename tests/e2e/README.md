@@ -467,6 +467,29 @@ printf 'a\n' | halia data 'Read /tmp/revenue.csv. Total + growth first→last. P
   `(kind, title, labels, values)`. Line = trends over time, bar = category comparisons.
   Unit-tested in `tests/test_chart.py`. Pie/scatter later.
 
+## 28. Multi-series charts (grouped bar + multi-line)
+
+**Goal:** compare several series at once — the most-used chart type analysts lacked.
+
+The chart block gains an `x:` (categories) line + one `Series: v1, v2, …` line per series:
+
+    ```chart
+    type: line
+    title: Monthly Sales by Region
+    x: Jan, Feb, Mar, Apr
+    North: 100, 140, 120, 175
+    South: 80, 95, 110, 105
+    ```
+
+- **Result:** ✅ grouped bars / multi-line with a **legend**, rendered natively in PDF
+  (vector, palette per series), PPTX (native multi-series chart), SVG, and DOCX (a
+  column-per-series table). `make_chart` also takes a `series: [{name, values}]` array.
+  Live: `halia data` produced a valid multi-line region comparison from the new syntax,
+  separating grounded findings from inferred insight.
+- Core-model change: `parse_chart_block` → `(kind, title, categories, series)`;
+  `render_multi_svg` + `_draw_chart_pdf` handle N series. Single-series still works
+  (`label: value`, no `x:`). Unit-tested in `tests/test_chart.py`.
+
 ## 27. `clean_csv` — transform-and-save (the last wrangling gap)
 
 **Goal:** the cleaning SQL can't do cleanly (standardise casing/dates, trim, dedupe, fill/
