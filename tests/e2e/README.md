@@ -465,4 +465,24 @@ printf 'a\n' | halia data 'Read /tmp/revenue.csv. Total + growth first→last. P
   the chart block gained `type: bar|line`. Total/growth tool-grounded, conscience regrounded.
 - `render_line_svg` + `_draw_line_chart_pdf`; `parse_chart_block` now returns
   `(kind, title, labels, values)`. Line = trends over time, bar = category comparisons.
-  Unit-tested in `tests/test_chart.py`. **Next data: clean/transform-and-save; pie/scatter later.**
+  Unit-tested in `tests/test_chart.py`. Pie/scatter later.
+
+## 27. `clean_csv` — transform-and-save (the last wrangling gap)
+
+**Goal:** the cleaning SQL can't do cleanly (standardise casing/dates, trim, dedupe, fill/
+drop blanks, rename, remap) → emit a cleaned file, with an auditable report of every change.
+
+```bash
+printf 'a\n' | halia data 'The file /tmp/raw_sales.csv is messy. Use clean_csv to trim rep+region, titlecase region, fill blank amount with 0, drop duplicates → /tmp/clean_sales.csv. Then query_data the CLEANED file for total by region, highest first.'
+```
+
+- **Result:** ✅ `clean_csv` trimmed/cased/filled/deduped and saved the cleaned file with a
+  per-op report (`trim: 2 cells`, `titlecase: 3 changed`, `drop_duplicates: 1 removed`, `rows
+  5→4`); `query_data` then grouped the **cleaned** file (North 3,500 / South 600). halia also
+  flagged an honest nuance — a same-rep pair dedup didn't catch (exact-row match only).
+- Ordered, deterministic ops: trim · lower/upper/titlecase · fill_blank · drop_missing ·
+  drop_duplicates(±columns) · drop_empty_rows · replace(map) · rename · standardize_date
+  (optional explicit `from` format for ambiguous dates). Every step reports its change =
+  auditable, not a black box. Unit-tested in `tests/test_clean.py`.
+- **The `data` loop is now end-to-end:** gather → **clean** → **query (SQL)** → aggregate/
+  group → **visualise (bar + line)** → report (PDF/DOCX/PPTX/XLSX), all grounded.
