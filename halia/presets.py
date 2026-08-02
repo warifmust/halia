@@ -105,6 +105,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "aggregate_csv",
             "reconcile_csv",
             "group_by",  # group + aggregate (e.g. spend by category)
+            "query_data",  # full SQL over CSV/Excel files
             "read_excel",
             "read_pdf",
             "query_db",
@@ -181,6 +182,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "read_csv",
             "aggregate_csv",  # exact column totals/averages
             "group_by",  # break a metric down by a dimension (the analyst workhorse)
+            "query_data",  # full SQL (JOIN/WHERE/ORDER BY) over CSV/Excel files
             "read_excel",
             "query_db",  # analyse databases
             "calculate",

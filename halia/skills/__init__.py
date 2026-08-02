@@ -9,7 +9,7 @@ from halia.skills.calc import Calculate
 from halia.skills.chart import MakeChart
 from halia.skills.compliance import CheckRequirements
 from halia.skills.data import AggregateCsv, GroupByCsv, ReadCsv
-from halia.skills.db import QueryDb
+from halia.skills.db import QueryData, QueryDb
 from halia.skills.excel import ReadExcel
 from halia.skills.exec import RunCommand
 from halia.skills.export import MakeDocx, MakePdf, MakePptx
@@ -40,6 +40,7 @@ _SKILL_FACTORIES: dict[str, Callable[[], Skill]] = {
     "check_requirements": CheckRequirements,
     "reconcile_csv": ReconcileCsv,
     "query_db": QueryDb,
+    "query_data": QueryData,
     "readability": Readability,
     "count_text": CountText,
     "make_chart": MakeChart,
@@ -70,6 +71,7 @@ DEFAULT_SKILLS = [
     "read_docx",
     "reconcile_csv",
     "query_db",
+    "query_data",
 ]
 
 

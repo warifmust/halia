@@ -431,3 +431,22 @@ printf 'a\n' | halia data 'Analyze /tmp/sales_q2.csv. Total sales by region (gro
   do the same core work) — deliberately *not* filed under an "IT" umbrella. See req doc
   §"Vertical taxonomy & positioning". **Verticals: finance · research · education ·
   marketing · compliance · data (6).**
+
+## 25. `query_data` — SQL over CSV/Excel files (the analyst power tool)
+
+**Goal:** give the analyst their native language — full SQL (JOIN, WHERE, ORDER BY, GROUP
+BY, subqueries) over flat files, deterministically. Subsumes join/filter/sort/pivot tools.
+
+```bash
+halia data 'I have /tmp/orders.csv and /tmp/reps.csv. Using query_data, JOIN them and give total sales by rep name and region, highest first.'
+```
+
+- **Result:** ✅ halia JOINed the two files with `query_data`, then **cross-verified** the
+  totals with `group_by` + `aggregate_csv`, computed gaps via `calculate` — every number
+  tool-traced, conscience regrounded once. The full analyst loop, grounded.
+- **How:** each CSV/Excel file is loaded into an **in-memory SQLite** table named after its
+  filename; columns are type-inferred (numeric → sorting/aggregation work); **read-only**
+  (SELECT/WITH only); errors list the available tables (self-correcting). The model *writes*
+  the SQL (knowledge), halia *runs* it on the real data (tool) — the JOIN/SORT question
+  answered. Added to DEFAULT_SKILLS + finance/data presets. Tests: `tests/test_query_data.py`.
+- Also closes much of the *cleaning* gap — dedup/null-handling/casts/filtering are just SQL.
