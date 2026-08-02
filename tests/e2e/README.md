@@ -262,3 +262,21 @@ printf 'a\n' | halia education 'Read /tmp/pupils.csv, compute each student avera
   gated + floor-checked like any file write. Horizontal (finance/research can chart too).
 - **Fix surfaced:** the trust-a-directory approval scope now covers *any* file-writing tool
   (make_chart, not just write_file).
+
+## 17. `make_pdf` — printable deliverables (markdown master → PDF render)
+
+**Goal:** turn grounded content into a clean, printable PDF; keep the content editable.
+
+```bash
+printf 'a\n' | halia education 'Read /tmp/pupils.csv, compute each student average (use calculate), then produce a one-page class performance report as a PDF at /tmp/class_report.pdf: intro paragraph, a markdown table of averages, and two recommendations.'
+```
+
+- **Result:** ✅ wrote `class_report.pdf` (valid PDF, clean render — heading, intro, aligned
+  table, bullets) **and kept `class_report.md`** (the editable master). Round-trips back
+  through our own `read_pdf`. Every figure was tool-computed upstream.
+- **Model:** markdown is the master; PDF is a *render* of it (`fpdf2`, lean — no LibreOffice,
+  no browser). Edit the `.md` and re-render; the PDF is a disposable print product.
+- Unit-tested in `tests/test_export.py` (incl. a markdown→PDF→text round-trip, unicode
+  safety, and the permission floor). `make_pdf` added to finance/research/education presets.
+- Follow-ups (deferred): `make_pptx` (python-pptx, new dep), embedding charts in the PDF,
+  full-Unicode output (bundle a TTF — currently latin-1 with typographic sanitisation).

@@ -70,6 +70,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "read_pdf",
             "query_db",
             "write_file",  # for report deliverables; still approval-gated
+            "make_pdf",  # render the report to a printable PDF
         ],
         model=None,
         extra_prompt=_FINANCE_PROMPT,
@@ -85,6 +86,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "read_csv",
             "aggregate_csv",
             "write_file",  # for saving notes / a research brief; approval-gated
+            "make_pdf",  # render a brief to PDF
         ],
         model=None,
         extra_prompt=_RESEARCH_PROMPT,
@@ -103,6 +105,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "web_search",  # look up facts for lessons
             "fetch_url",
             "write_file",  # produce class lists, reports, worksheets; approval-gated
+            "make_pdf",  # render materials/reports to printable PDF
         ],
         model=None,
         extra_prompt=_EDUCATION_PROMPT,
