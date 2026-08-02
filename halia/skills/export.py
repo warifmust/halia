@@ -11,6 +11,7 @@ simple tables, rules) with fpdf2 — lean, no browser, no LibreOffice.
 
 from __future__ import annotations
 
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -115,10 +116,98 @@ def _chart_frame(pdf: FPDF, title: str, series: list[tuple[str, list[float]]]) -
     return pdf.get_y() + 4
 
 
-def _draw_chart_pdf(
-    pdf: FPDF, kind: str, title: str, categories: list[str], series: list[tuple[str, list[float]]]
-) -> None:
+def _draw_chart_pdf(pdf: FPDF, spec: Any) -> None:
+    """Draw a chart natively with fpdf2 primitives, dispatched by kind."""
+    if spec.kind == "pie":
+        _draw_pie_pdf(pdf, spec)
+    elif spec.kind == "scatter":
+        _draw_scatter_pdf(pdf, spec)
+    else:
+        _draw_bar_line_pdf(pdf, spec)
+
+
+def _draw_pie_pdf(pdf: FPDF, spec: Any) -> None:
+    chart_h = 62.0
+    if pdf.get_y() + chart_h + 30 > pdf.h - pdf.b_margin:
+        pdf.add_page()
+    pdf.ln(2)
+    if spec.title:
+        pdf.set_font(_FONT, "B", 11)
+        pdf.multi_cell(pdf.epw, 6, _s(spec.title), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    labels = spec.categories
+    values = spec.series[0][1] if spec.series else []
+    total = sum(values) or 1
+    top = pdf.get_y() + 4
+    cx, cy, r = pdf.l_margin + 30.0, top + 30.0, 28.0
+    angle = -90.0
+    for i, value in enumerate(values):
+        sweep = value / total * 360
+        rr, gg, bb = _CHART_COLORS[i % len(_CHART_COLORS)]
+        pdf.set_fill_color(rr, gg, bb)
+        if sweep >= 359.999:
+            pdf.ellipse(cx - r, cy - r, 2 * r, 2 * r, style="F")
+        else:
+            steps = max(2, int(sweep / 6))
+            poly = [(cx, cy)] + [
+                (cx + r * math.cos(math.radians(angle + sweep * s / steps)),
+                 cy + r * math.sin(math.radians(angle + sweep * s / steps)))
+                for s in range(steps + 1)
+            ]
+            pdf.polygon(poly, style="F")
+        angle += sweep
+    pdf.set_font(_FONT, "", 9)
+    lx, ly = cx + r + 14, top
+    for i, (label, value) in enumerate(zip(labels, values, strict=False)):
+        rr, gg, bb = _CHART_COLORS[i % len(_CHART_COLORS)]
+        pdf.set_fill_color(rr, gg, bb)
+        pdf.rect(lx, ly, 3, 3, style="F")
+        pdf.set_xy(lx + 5, ly - 1)
+        pdf.cell(70, 4, _s(f"{label} ({value / total * 100:.0f}%)"))
+        ly += 6
+    pdf.set_y(max(cy + r, ly) + 6)
+    pdf.ln(2)
+
+
+def _draw_scatter_pdf(pdf: FPDF, spec: Any) -> None:
+    chart_h = 60.0
+    if pdf.get_y() + chart_h + 30 > pdf.h - pdf.b_margin:
+        pdf.add_page()
+    pdf.ln(2)
+    if spec.title:
+        pdf.set_font(_FONT, "B", 11)
+        pdf.multi_cell(pdf.epw, 6, _s(spec.title), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pts = spec.points
+    xs = [p[0] for p in pts] or [0.0]
+    ys = [p[1] for p in pts] or [0.0]
+    xmin, xmax, ymin, ymax = min(xs), max(xs), min(ys), max(ys)
+    xspan, yspan = (xmax - xmin) or 1, (ymax - ymin) or 1
+    left, usable = pdf.l_margin, pdf.epw
+    top = pdf.get_y() + 4
+    baseline = top + chart_h
+    pdf.set_draw_color(136, 136, 136)
+    pdf.line(left, baseline, left + usable, baseline)
+    pdf.line(left, top, left, baseline)
+    pdf.set_draw_color(0, 0, 0)
+    rr, gg, bb = _CHART_COLORS[0]
+    pdf.set_fill_color(rr, gg, bb)
+    for x, y in pts:
+        px = left + (x - xmin) / xspan * usable
+        py = baseline - (y - ymin) / yspan * chart_h
+        pdf.ellipse(px - 1, py - 1, 2, 2, style="F")
+    if spec.x_label:
+        pdf.set_font(_FONT, "", 8)
+        pdf.set_xy(left, baseline + 2)
+        pdf.cell(usable, 4, _s(spec.x_label), align="C")
+    pdf.set_y(baseline + 8)
+    pdf.ln(2)
+
+
+def _draw_bar_line_pdf(pdf: FPDF, spec: Any) -> None:
     """Draw a bar (grouped) or line (multi) chart natively with fpdf2 primitives."""
+    kind: str = spec.kind
+    title: str = spec.title
+    categories: list[str] = spec.categories
+    series: list[tuple[str, list[float]]] = spec.series
     chart_h = 55.0
     top = _chart_frame(pdf, title, series)
     left = pdf.l_margin
@@ -200,7 +289,7 @@ def render_markdown_pdf(content: str) -> FPDF:
             i += 1  # consume the closing fence
             spec = parse_chart_block("\n".join(chart_lines))
             if spec:
-                _draw_chart_pdf(pdf, *spec)
+                _draw_chart_pdf(pdf, spec)
             continue
 
         if stripped.startswith("|") and stripped.endswith("|"):
@@ -407,30 +496,38 @@ def render_markdown_pptx(content: str) -> Any:
     return prs
 
 
-def _add_pptx_chart(
-    slide: Any, spec: tuple[str, str, list[str], list[tuple[str, list[float]]]],
-    top: float, Inches: Any,
-) -> float:
-    """Add a native, editable PowerPoint chart from (kind, title, categories, series)."""
-    from pptx.chart.data import CategoryChartData
+_PPTX_TYPES = {"bar": "COLUMN_CLUSTERED", "line": "LINE_MARKERS", "pie": "PIE"}
+
+
+def _add_pptx_chart(slide: Any, spec: Any, top: float, Inches: Any) -> float:
+    """Add a native, editable PowerPoint chart from a ChartSpec."""
+    from pptx.chart.data import CategoryChartData, XyChartData
     from pptx.enum.chart import XL_CHART_TYPE
 
-    kind, title, categories, series = spec
-    data = CategoryChartData()  # type: ignore[no-untyped-call]
-    data.categories = categories
-    for name, values in series:
-        data.add_series(name or "Values", values)  # type: ignore[no-untyped-call]
     height = 4.2
-    chart_type = XL_CHART_TYPE.LINE_MARKERS if kind == "line" else XL_CHART_TYPE.COLUMN_CLUSTERED
-    frame = slide.shapes.add_chart(
-        chart_type,
-        Inches(0.6), Inches(top), Inches(8.8), Inches(height), data,
-    )
-    if len(series) > 1:
-        frame.chart.has_legend = True
-    if title:
+    data: Any
+    if spec.kind == "scatter":
+        data = XyChartData()  # type: ignore[no-untyped-call]
+        s = data.add_series(spec.title or "Points")
+        for x, y in spec.points:
+            s.add_data_point(x, y)
+        frame = slide.shapes.add_chart(
+            XL_CHART_TYPE.XY_SCATTER, Inches(0.6), Inches(top), Inches(8.8), Inches(height), data,
+        )
+    else:
+        data = CategoryChartData()  # type: ignore[no-untyped-call]
+        data.categories = spec.categories
+        for name, values in spec.series:
+            data.add_series(name or "Values", values)
+        chart_type = getattr(XL_CHART_TYPE, _PPTX_TYPES.get(spec.kind, "COLUMN_CLUSTERED"))
+        frame = slide.shapes.add_chart(
+            chart_type, Inches(0.6), Inches(top), Inches(8.8), Inches(height), data,
+        )
+        if len(spec.series) > 1 or spec.kind == "pie":
+            frame.chart.has_legend = True
+    if spec.title:
         frame.chart.has_title = True
-        frame.chart.chart_title.text_frame.text = title
+        frame.chart.chart_title.text_frame.text = spec.title
     return top + height + 0.3
 
 
@@ -503,17 +600,19 @@ def render_markdown_docx(content: str) -> Any:
             i += 1
             spec = parse_chart_block("\n".join(chart_lines))
             if spec:
-                _kind, title, categories, series = spec
-                if title:
-                    doc.add_heading(title, level=3)
-                header = "| Item | " + " | ".join(n or f"Series {i + 1}"
-                                                   for i, (n, _) in enumerate(series)) + " |"
-                body_rows = [
-                    "| " + categories[ci] + " | "
-                    + " | ".join(str(v[ci]) if ci < len(v) else "" for _, v in series) + " |"
-                    for ci in range(len(categories))
-                ]
-                _add_docx_table(doc, [header, *body_rows])
+                if spec.title:
+                    doc.add_heading(spec.title, level=3)
+                if spec.kind == "scatter":  # python-docx has no chart → a table of (x, y)
+                    rows = ["| x | y |"] + [f"| {x} | {y} |" for x, y in spec.points]
+                else:
+                    rows = ["| Item | " + " | ".join(n or f"Series {i + 1}"
+                            for i, (n, _) in enumerate(spec.series)) + " |"] + [
+                        "| " + spec.categories[ci] + " | "
+                        + " | ".join(str(v[ci]) if ci < len(v) else "" for _, v in spec.series)
+                        + " |"
+                        for ci in range(len(spec.categories))
+                    ]
+                _add_docx_table(doc, rows)
             continue
 
         if stripped.startswith("|") and stripped.endswith("|"):

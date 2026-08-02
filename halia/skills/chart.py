@@ -1,15 +1,17 @@
-"""Chart skill — turn data into a simple bar chart, as an SVG file.
+"""Chart skill — turn data into charts (bar, line, pie, scatter), saved as SVG.
 
-The "build graph" capability for clerical work (pupil performance, attendance,
-grade distributions…). SVG is plain text, so this needs NO plotting dependency
-(no matplotlib) and the output renders in any browser — staying lean.
+Dependency-free (SVG text + fpdf2 primitives + native pptx charts — no matplotlib).
+The model: bar/line/pie use `categories` × named `series`; scatter uses (x, y) `points`.
+`parse_chart_block` is shared by the PDF/PPTX/DOCX renderers so a chart in the markdown
+master renders natively in each format (no SVG→raster).
 
-Writes a file, so — like write_file — it is dangerous (approval-gated) and passes
-through the filesystem permission floor.
+Writes a file, so — like write_file — it is dangerous (approval-gated) and floored.
 """
 
 from __future__ import annotations
 
+import math
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
@@ -19,11 +21,23 @@ from halia.permissions.guard import PermissionDenied, check_writable
 _W, _H = 680, 420
 _LEFT, _RIGHT, _TOP, _BOTTOM = 60, 20, 48, 70
 _PALETTE = ["#4f7cff", "#ff6b6b", "#2ecc71", "#f1c40f", "#9b59b6", "#e67e22"]
+_CHART_KINDS = ("bar", "line", "pie", "scatter")
 
-_CHART_KINDS = ("bar", "line")
-
-# A named series of values aligned to the chart's categories.
+# A named series of values aligned to the chart's categories (bar/line/pie).
 Series = list[tuple[str, list[float]]]
+
+
+@dataclass
+class ChartSpec:
+    """A parsed chart. Category charts use categories+series; scatter uses points."""
+
+    kind: str
+    title: str = ""
+    categories: list[str] = field(default_factory=list)
+    series: Series = field(default_factory=list)
+    points: list[tuple[float, float]] = field(default_factory=list)  # scatter (x, y)
+    x_label: str = ""
+    y_label: str = ""
 
 
 def _fmt(value: float) -> str:
@@ -32,6 +46,15 @@ def _fmt(value: float) -> str:
 
 def _color(i: int) -> str:
     return _PALETTE[i % len(_PALETTE)]
+
+
+def _svg_open(title: str) -> list[str]:
+    return [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{_W}" height="{_H}" '
+        f'viewBox="0 0 {_W} {_H}" font-family="sans-serif">',
+        f'<text x="{_W / 2}" y="26" text-anchor="middle" font-size="18" '
+        f'font-weight="bold">{escape(title)}</text>',
+    ]
 
 
 def _legend(series: Series, y: float) -> list[str]:
@@ -47,10 +70,9 @@ def _legend(series: Series, y: float) -> list[str]:
     return parts
 
 
-def render_multi_svg(kind: str, title: str, categories: list[str], series: Series) -> str:
-    """Render a bar (grouped) or line (multi) chart as SVG — one or several named series."""
-    n_cat = len(categories)
-    n_ser = len(series)
+def _bar_line_svg(spec: ChartSpec) -> str:
+    categories, series = spec.categories, spec.series
+    n_cat, n_ser = len(categories), len(series)
     legend_h = 18 if n_ser > 1 else 0
     plot_top = _TOP + legend_h
     plot_w = _W - _LEFT - _RIGHT
@@ -66,12 +88,7 @@ def render_multi_svg(kind: str, title: str, categories: list[str], series: Serie
     def val(vals: list[float], ci: int) -> float:
         return vals[ci] if ci < len(vals) else 0.0
 
-    parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{_W}" height="{_H}" '
-        f'viewBox="0 0 {_W} {_H}" font-family="sans-serif">',
-        f'<text x="{_W / 2}" y="26" text-anchor="middle" font-size="18" '
-        f'font-weight="bold">{escape(title)}</text>',
-    ]
+    parts = _svg_open(spec.title)
     if n_ser > 1:
         parts += _legend(series, plot_top - 4)
     parts.append(
@@ -79,7 +96,7 @@ def render_multi_svg(kind: str, title: str, categories: list[str], series: Serie
         f'stroke="#888"/>'
     )
 
-    if kind == "line":
+    if spec.kind == "line":
         step = plot_w / (n_cat - 1) if n_cat > 1 else 0.0
         for si, (_, vals) in enumerate(series):
             pts = " ".join(
@@ -126,18 +143,93 @@ def render_multi_svg(kind: str, title: str, categories: list[str], series: Serie
     return "\n".join(parts)
 
 
+def _pie_svg(spec: ChartSpec) -> str:
+    labels = spec.categories
+    values = spec.series[0][1] if spec.series else []
+    total = sum(values) or 1
+    cx, cy, r = _W * 0.33, _H * 0.55, 130.0
+    parts = _svg_open(spec.title)
+    angle = -90.0  # start at 12 o'clock
+    for i, value in enumerate(values):
+        sweep = value / total * 360
+        a1, a2 = math.radians(angle), math.radians(angle + sweep)
+        x1, y1 = cx + r * math.cos(a1), cy + r * math.sin(a1)
+        x2, y2 = cx + r * math.cos(a2), cy + r * math.sin(a2)
+        large = 1 if sweep > 180 else 0
+        if sweep >= 359.999:  # single slice = full circle
+            parts.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r:.1f}" fill="{_color(i)}"/>')
+        else:
+            parts.append(
+                f'<path d="M{cx:.1f},{cy:.1f} L{x1:.1f},{y1:.1f} '
+                f'A{r:.1f},{r:.1f} 0 {large} 1 {x2:.1f},{y2:.1f} Z" fill="{_color(i)}"/>'
+            )
+        angle += sweep
+    ly = 90.0
+    for i, (label, value) in enumerate(zip(labels, values, strict=False)):
+        pct = value / total * 100
+        parts.append(f'<rect x="{_W * 0.62:.0f}" y="{ly - 9:.0f}" width="11" height="11" '
+                     f'fill="{_color(i)}"/>')
+        parts.append(f'<text x="{_W * 0.62 + 16:.0f}" y="{ly:.0f}" font-size="12">'
+                     f'{escape(label)} ({pct:.0f}%)</text>')
+        ly += 22
+    parts.append("</svg>")
+    return "\n".join(parts)
+
+
+def _scatter_svg(spec: ChartSpec) -> str:
+    pts = spec.points
+    xs = [p[0] for p in pts] or [0.0]
+    ys = [p[1] for p in pts] or [0.0]
+    xmin, xmax = min(xs), max(xs)
+    ymin, ymax = min(ys), max(ys)
+    xspan = (xmax - xmin) or 1
+    yspan = (ymax - ymin) or 1
+    left, top = _LEFT, _TOP
+    plot_w = _W - _LEFT - _RIGHT
+    plot_h = _H - _TOP - _BOTTOM
+    baseline = top + plot_h
+
+    def sx(x: float) -> float:
+        return left + (x - xmin) / xspan * plot_w
+
+    def sy(y: float) -> float:
+        return baseline - (y - ymin) / yspan * plot_h
+
+    parts = _svg_open(spec.title)
+    parts.append(f'<line x1="{left}" y1="{baseline:.1f}" x2="{_W - _RIGHT}" '
+                 f'y2="{baseline:.1f}" stroke="#888"/>')
+    parts.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{baseline:.1f}" stroke="#888"/>')
+    for x, y in pts:
+        parts.append(f'<circle cx="{sx(x):.1f}" cy="{sy(y):.1f}" r="4" fill="{_color(0)}" '
+                     f'fill-opacity="0.75"/>')
+    if spec.x_label:
+        parts.append(f'<text x="{_W / 2:.0f}" y="{_H - 8}" text-anchor="middle" '
+                     f'font-size="12">{escape(spec.x_label)}</text>')
+    if spec.y_label:
+        parts.append(f'<text x="16" y="{_H / 2:.0f}" text-anchor="middle" font-size="12" '
+                     f'transform="rotate(-90 16 {_H / 2:.0f})">{escape(spec.y_label)}</text>')
+    parts.append("</svg>")
+    return "\n".join(parts)
+
+
+def render_chart_svg(spec: ChartSpec) -> str:
+    if spec.kind == "pie":
+        return _pie_svg(spec)
+    if spec.kind == "scatter":
+        return _scatter_svg(spec)
+    return _bar_line_svg(spec)
+
+
 def render_bar_svg(title: str, labels: list[str], values: list[float]) -> str:
-    """Single-series bar chart (convenience wrapper)."""
-    return render_multi_svg("bar", title, labels, [("", values)])
+    return render_chart_svg(ChartSpec("bar", title, labels, [("", values)]))
 
 
 def render_line_svg(title: str, labels: list[str], values: list[float]) -> str:
-    """Single-series line chart (convenience wrapper)."""
-    return render_multi_svg("line", title, labels, [("", values)])
+    return render_chart_svg(ChartSpec("line", title, labels, [("", values)]))
 
 
-def render_chart_svg(kind: str, title: str, categories: list[str], series: Series) -> str:
-    return render_multi_svg(kind, title, categories, series)
+def render_multi_svg(kind: str, title: str, categories: list[str], series: Series) -> str:
+    return render_chart_svg(ChartSpec(kind, title, categories, series))
 
 
 def _floats(raw: str) -> list[float]:
@@ -160,62 +252,73 @@ def _one_float(raw: str) -> float | None:
         return None
 
 
-def parse_chart_block(text: str) -> tuple[str, str, list[str], Series] | None:
-    """Parse a ```chart block into (kind, title, categories, series), or None if empty.
+def parse_chart_block(text: str) -> ChartSpec | None:
+    """Parse a ```chart block into a ChartSpec, or None if it has no data.
 
-    Single-series: `type:`/`title:` (optional) then `<label>: <number>` lines.
-    Multi-series: add an `x: a, b, c` line (categories), then one `<Series>: v1, v2, v3`
-    line per series (comma-separated, no thousands commas). Shared by the PDF/PPTX/DOCX
-    renderers so a chart in the markdown master renders natively in each format.
+    Directives (any order): `type: bar|line|pie|scatter`, `title:`, and for category
+    charts `x: a, b, c` (multi-series); for scatter `xlabel:`/`ylabel:`. Data lines:
+    category charts → `<label>: <number>` (single) or `<Series>: v1, v2, …` (with `x:`);
+    scatter → `<x>, <y>` per line.
     """
     kind = "bar"
     title = ""
     x_labels: list[str] | None = None
-    entries: list[tuple[str, str]] = []
+    x_label = ""
+    y_label = ""
+    data: list[str] = []
     for line in text.splitlines():
-        line = line.strip()
-        if not line:
+        s = line.strip()
+        if not s:
             continue
-        low = line.lower()
+        low = s.lower()
         if low.startswith("type:"):
-            requested = line.split(":", 1)[1].strip().lower()
+            requested = s.split(":", 1)[1].strip().lower()
             if requested in _CHART_KINDS:
                 kind = requested
-            continue
-        if low.startswith("title:"):
-            title = line.split(":", 1)[1].strip()
-            continue
-        if low.startswith("x:"):
-            x_labels = [c.strip() for c in line.split(":", 1)[1].split(",") if c.strip()]
-            continue
-        name, sep, raw = line.rpartition(":")
-        if sep:
-            entries.append((name.strip(), raw.strip()))
+        elif low.startswith("title:"):
+            title = s.split(":", 1)[1].strip()
+        elif low.startswith("xlabel:"):
+            x_label = s.split(":", 1)[1].strip()
+        elif low.startswith("ylabel:"):
+            y_label = s.split(":", 1)[1].strip()
+        elif low.startswith("x:"):
+            x_labels = [c.strip() for c in s.split(":", 1)[1].split(",") if c.strip()]
+        else:
+            data.append(s)
+
+    if kind == "scatter":
+        points = [(nums[0], nums[1]) for line in data if len(nums := _floats(line)) >= 2]
+        return ChartSpec("scatter", title, points=points, x_label=x_label, y_label=y_label) \
+            if points else None
 
     if x_labels is not None:  # multi-series
-        series: Series = [(name, _floats(raw)) for name, raw in entries]
-        series = [(n, v) for n, v in series if v]
-        return (kind, title, x_labels, series) if series else None
+        series: Series = []
+        for line in data:
+            name, sep, raw = line.rpartition(":")
+            if sep and (vals := _floats(raw)):
+                series.append((name.strip(), vals))
+        return ChartSpec(kind, title, x_labels, series) if series else None
 
     labels: list[str] = []
     values: list[float] = []
-    for name, raw in entries:
+    for line in data:
+        name, sep, raw = line.rpartition(":")
+        if not sep:
+            continue
         v = _one_float(raw)
         if v is not None:
-            labels.append(name)
+            labels.append(name.strip())
             values.append(v)
-    if not values:
-        return None
-    return (kind, title, labels, [(title, values)])
+    return ChartSpec(kind, title, labels, [(title, values)]) if values else None
 
 
 class MakeChart:
     name = "make_chart"
     description = (
-        "Create a bar or line chart, saved as an SVG file. `labels` are the x-axis "
-        "categories. For ONE series pass `values`; for MULTIPLE series (grouped bars / "
-        "multi-line) pass `series` — a list of {name, values} each aligned to labels. Use "
-        "line for trends over time, bar for comparisons (default)."
+        "Create a chart, saved as an SVG file. kind = bar (default) / line (trends) / pie "
+        "(shares) / scatter (correlation). For bar/line/pie: `labels` = categories, and "
+        "either `values` (one series) or `series` = [{name, values}] (multiple). For "
+        "scatter: `points` = [[x, y], …] (optionally `xlabel`/`ylabel`)."
     )
     dangerous = True  # writes a file
     parameters: dict[str, Any] = {
@@ -223,73 +326,80 @@ class MakeChart:
         "additionalProperties": False,
         "properties": {
             "path": {"type": "string", "description": "Output .svg file path."},
-            "labels": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "The x-axis categories.",
-            },
-            "values": {
-                "type": "array",
-                "items": {"type": "number"},
-                "description": "One value per label (single series).",
-            },
-            "series": {
-                "type": "array",
-                "items": {"type": "object"},
-                "description": "Multiple series: each {name, values} aligned to labels.",
-            },
+            "kind": {"type": "string", "enum": list(_CHART_KINDS), "description": "Chart type."},
             "title": {"type": "string", "description": "Chart title."},
-            "kind": {
-                "type": "string",
-                "enum": list(_CHART_KINDS),
-                "description": "bar (default) or line.",
-            },
+            "labels": {"type": "array", "items": {"type": "string"},
+                       "description": "x-axis categories (bar/line/pie)."},
+            "values": {"type": "array", "items": {"type": "number"},
+                       "description": "One value per label (single series)."},
+            "series": {"type": "array", "items": {"type": "object"},
+                       "description": "Multiple series: each {name, values} aligned to labels."},
+            "points": {"type": "array", "items": {"type": "array"},
+                       "description": "Scatter [x, y] pairs."},
+            "xlabel": {"type": "string", "description": "Scatter x-axis label."},
+            "ylabel": {"type": "string", "description": "Scatter y-axis label."},
         },
-        "required": ["path", "labels"],
+        "required": ["path"],
     }
 
     def run(self, args: dict[str, Any]) -> str:
         path = args.get("path")
-        labels = args.get("labels")
         title = str(args.get("title", ""))
         if not isinstance(path, str) or not path.strip():
             return "error: 'path' is required"
-        if not isinstance(labels, list) or not labels:
-            return "error: 'labels' must be a non-empty array"
-        categories = [str(x) for x in labels]
+        kind = args.get("kind", "bar")
+        if kind not in _CHART_KINDS:
+            kind = "bar"
 
-        series: Series = []
-        raw_series = args.get("series")
-        if isinstance(raw_series, list) and raw_series:
-            for item in raw_series:
-                if not isinstance(item, dict) or not isinstance(item.get("values"), list):
-                    return "error: each series must be an object with a 'values' array"
-                try:
-                    vals = [float(v) for v in item["values"]]
-                except (TypeError, ValueError):
-                    return "error: every series value must be a number"
-                series.append((str(item.get("name", "")), vals))
-        else:
-            values = args.get("values")
-            if not isinstance(values, list) or len(values) != len(labels):
-                return "error: pass 'values' (same length as labels) or a 'series' array"
-            try:
-                series = [(title, [float(v) for v in values])]
-            except (TypeError, ValueError):
-                return "error: every value must be a number"
+        spec_or_err = self._build_spec(kind, title, args)
+        if isinstance(spec_or_err, str):
+            return spec_or_err
 
         target = Path(path)
         try:
             check_writable(target)
         except PermissionDenied as exc:
             return f"blocked: {exc}"
-
-        kind = args.get("kind", "bar")
-        if kind not in _CHART_KINDS:
-            kind = "bar"
-        svg = render_chart_svg(kind, title, categories, series)
         try:
-            target.expanduser().write_text(svg, encoding="utf-8")
+            target.expanduser().write_text(render_chart_svg(spec_or_err), encoding="utf-8")
         except OSError as exc:
             return f"error writing {path}: {exc}"
-        return f"wrote {kind} chart ({len(series)} series × {len(categories)} categories) to {path}"
+        return f"wrote {kind} chart to {path}"
+
+    def _build_spec(self, kind: str, title: str, args: dict[str, Any]) -> ChartSpec | str:
+        if kind == "scatter":
+            raw = args.get("points")
+            if not isinstance(raw, list) or not raw:
+                return "error: scatter needs 'points' = [[x, y], …]"
+            points: list[tuple[float, float]] = []
+            for p in raw:
+                try:
+                    points.append((float(p[0]), float(p[1])))
+                except (TypeError, ValueError, IndexError):
+                    return "error: each point must be [x, y] numbers"
+            return ChartSpec("scatter", title, points=points,
+                             x_label=str(args.get("xlabel", "")),
+                             y_label=str(args.get("ylabel", "")))
+
+        labels = args.get("labels")
+        if not isinstance(labels, list) or not labels:
+            return "error: 'labels' (categories) is required"
+        categories = [str(x) for x in labels]
+        raw_series = args.get("series")
+        if isinstance(raw_series, list) and raw_series:
+            series: Series = []
+            for item in raw_series:
+                if not isinstance(item, dict) or not isinstance(item.get("values"), list):
+                    return "error: each series must be {name, values}"
+                try:
+                    series.append((str(item.get("name", "")), [float(v) for v in item["values"]]))
+                except (TypeError, ValueError):
+                    return "error: every series value must be a number"
+            return ChartSpec(kind, title, categories, series)
+        values = args.get("values")
+        if not isinstance(values, list) or len(values) != len(labels):
+            return "error: pass 'values' (same length as labels) or a 'series' array"
+        try:
+            return ChartSpec(kind, title, categories, [(title, [float(v) for v in values])])
+        except (TypeError, ValueError):
+            return "error: every value must be a number"

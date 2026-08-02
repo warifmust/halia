@@ -490,6 +490,30 @@ The chart block gains an `x:` (categories) line + one `Series: v1, v2, …` line
   `render_multi_svg` + `_draw_chart_pdf` handle N series. Single-series still works
   (`label: value`, no `x:`). Unit-tested in `tests/test_chart.py`.
 
+## 29. Pie + scatter charts
+
+**Goal:** shares (pie) and correlation between two numeric variables (scatter).
+
+```chart
+type: pie                     ```chart
+North: 42                     type: scatter
+South: 23                     xlabel: Price
+                              ylabel: Units
+```                           9, 420
+                              12, 360
+                              ```
+```
+
+- **Result:** ✅ **pie** (vector polygons + a %-legend) and **scatter** (numeric axes +
+  x/y labels) drawn natively in the PDF; PPTX gets native **PIE** + **XY_SCATTER** editable
+  charts; SVG via `make_chart`. Scatter uses a new data shape — `x, y` per line (or
+  `points: [[x,y],…]` in make_chart).
+- Chart model moved to a **`ChartSpec` dataclass** (kind, title, categories, series, points,
+  x/y labels) — cleanly holds category charts *and* xy scatter. Unit-tested in
+  `tests/test_chart.py` (pie/scatter parse, make_chart, PDF embed).
+- **Chart set now: bar · line · multi-series · pie · scatter.** (radar/treemap/bubble
+  deferred; gantt is PM, skipped.)
+
 ## 27. `clean_csv` — transform-and-save (the last wrangling gap)
 
 **Goal:** the cleaning SQL can't do cleanly (standardise casing/dates, trim, dedupe, fill/
