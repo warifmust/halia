@@ -56,6 +56,14 @@ def setup() -> None:
 
 
 @app.command()
+def tui() -> None:
+    """Experimental REPL-style chat shell (banner + rich input; multi-line paste, word nav)."""
+    from halia.cli.tui import run_tui
+
+    run_tui()
+
+
+@app.command()
 def ask(prompt: Annotated[str, typer.Argument(help="What to ask halia.")]) -> None:
     """Ask halia a single question (one-shot, no tools)."""
     from halia.config.settings import ConfigError, load_config
