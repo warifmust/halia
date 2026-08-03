@@ -172,8 +172,13 @@ def _execute_run(
     profile: str | None,
     plan: bool = False,
     pause_for_approval: bool = False,
+    extra_prompt_block: str = "",
 ) -> None:
-    """Shared body for `run` and the persona-preset commands (`halia finance`, …)."""
+    """Shared body for `run` and the persona-preset commands (`halia finance`, …).
+
+    `extra_prompt_block` is appended to the system prompt for this run only (used to
+    inject a saved test procedure's instructions — see `procedure run`).
+    """
     from halia.core.agent import RunLimitError
     from halia.core.agent import run as run_agent
     from halia.providers.base import ProviderError
@@ -186,6 +191,8 @@ def _execute_run(
         console.print(f"[dim]{text}[/dim]\n")
 
     config, registry, extra_system = _prepare_context(profile, allow_commands)
+    if extra_prompt_block:
+        extra_system = f"{extra_system}\n\n{extra_prompt_block}".strip()
 
     try:
         result = run_agent(
@@ -746,6 +753,153 @@ def profile_delete(name: Annotated[str, typer.Argument(help="Profile name.")]) -
         console.print(f"[green]✓[/green] deleted profile '{name}'")
     else:
         console.print(f"[yellow]no profile named '{name}'[/yellow]")
+
+
+procedure_app = typer.Typer(help="Teach, list, and run reusable test procedures.")
+app.add_typer(procedure_app, name="procedure")
+
+
+@procedure_app.command("add")
+def procedure_add(
+    name: Annotated[str, typer.Argument(help="Procedure name (how you'll run it).")],
+    target: Annotated[str, typer.Option("--target", help="What is under test.")] = "",
+    data_spec: Annotated[
+        str, typer.Option("--data", help="Test-data spec (synthesize …, or 'user provides').")
+    ] = "",
+    method: Annotated[str, typer.Option("--method", help="HTTP method.")] = "GET",
+    url: Annotated[str, typer.Option("--url", help="Endpoint URL.")] = "",
+    pass_rule: Annotated[
+        str, typer.Option("--pass-rule", help="Deterministic pass/fail rule.")
+    ] = "",
+    column: Annotated[
+        list[str] | None,
+        typer.Option("--column", help="An output CSV column (repeatable)."),
+    ] = None,
+    header: Annotated[
+        list[str] | None,
+        typer.Option("--header", help="A default request header 'Name: value' (repeatable)."),
+    ] = None,
+    description: Annotated[str, typer.Option("--description", help="Short description.")] = "",
+) -> None:
+    """Create (or replace) a test procedure. Missing required slots are reported, not fatal."""
+    from halia.procedures import Procedure, save_procedure
+
+    headers: dict[str, str] = {}
+    for item in header or []:
+        if ":" not in item:
+            console.print(f"[red]bad --header (want 'Name: value'):[/red] {item}")
+            raise typer.Exit(1)
+        key, value = item.split(":", 1)
+        headers[key.strip()] = value.strip()
+
+    proc = Procedure(
+        name=name,
+        description=description,
+        target=target,
+        data_spec=data_spec,
+        method=method.upper(),
+        url=url,
+        headers=headers,
+        result_columns=column or [],
+        pass_rule=pass_rule,
+    )
+    save_procedure(proc)
+    console.print(f"[green]✓[/green] saved procedure '[bold]{name}[/bold]'.")
+    missing = proc.missing_slots()
+    if missing:
+        console.print(
+            f"[yellow]incomplete[/yellow] — fill before running: {', '.join(missing)} "
+            f"[dim](edit with `halia procedure add {name} …`)[/dim]"
+        )
+
+
+@procedure_app.command("list")
+def procedure_list() -> None:
+    """List saved test procedures."""
+    from halia.procedures import list_procedures
+
+    procs = list_procedures()
+    if not procs:
+        console.print("[dim]no procedures yet — teach one with `halia procedure add`.[/dim]")
+        return
+    for proc in procs:
+        status = "[green]ready[/green]" if proc.is_runnable() else "[yellow]incomplete[/yellow]"
+        target = proc.target or "[dim](no target)[/dim]"
+        console.print(f"  [bold]{proc.name}[/bold]  {status}  [dim]{target}[/dim]")
+
+
+@procedure_app.command("show")
+def procedure_show(name: Annotated[str, typer.Argument(help="Procedure name.")]) -> None:
+    """Show a procedure's full rendered instructions."""
+    from halia.procedures import get_procedure
+
+    proc = get_procedure(name)
+    if proc is None:
+        console.print(f"[yellow]no procedure named '{name}'[/yellow]")
+        raise typer.Exit(1)
+    console.print(proc.to_prompt())
+    missing = proc.missing_slots()
+    if missing:
+        console.print(f"\n[yellow]missing required slots:[/yellow] {', '.join(missing)}")
+
+
+@procedure_app.command("remove")
+def procedure_remove(name: Annotated[str, typer.Argument(help="Procedure name.")]) -> None:
+    """Delete a procedure."""
+    from halia.procedures import delete_procedure
+
+    if delete_procedure(name):
+        console.print(f"[green]✓[/green] deleted procedure '{name}'")
+    else:
+        console.print(f"[yellow]no procedure named '{name}'[/yellow]")
+
+
+@procedure_app.command("run")
+def procedure_run(
+    name: Annotated[str, typer.Argument(help="Procedure name to run.")],
+    task: Annotated[
+        str, typer.Argument(help="Optional extra context for this run (e.g. data to use).")
+    ] = "",
+    max_iters: Annotated[int, typer.Option(help="Max tool-call iterations.")] = 12,
+    quiet: Annotated[bool, typer.Option("--quiet", "-q", help="Hide the tool-call trace.")] = False,
+    profile: Annotated[
+        str | None,
+        typer.Option("--profile", help="Run under a profile/preset (default: general)."),
+    ] = None,
+    plan: Annotated[bool, typer.Option("--plan", help="Draft a short plan first.")] = False,
+    pause_for_approval: Annotated[
+        bool,
+        typer.Option("--pause-for-approval", help="Unattended: checkpoint at a dangerous tool."),
+    ] = False,
+) -> None:
+    """Execute a saved test procedure (injects its instructions into the run)."""
+    from halia.procedures import get_procedure
+
+    proc = get_procedure(name)
+    if proc is None:
+        console.print(f"[yellow]no procedure named '{name}'[/yellow]")
+        raise typer.Exit(1)
+    missing = proc.missing_slots()
+    if missing:
+        console.print(
+            f"[red]procedure '{name}' is incomplete[/red] — missing {', '.join(missing)}.\n"
+            f"[dim]fill it with `halia procedure add {name} …`, then run.[/dim]"
+        )
+        raise typer.Exit(1)
+
+    run_prompt = f"Run the test procedure '{name}'."
+    if task:
+        run_prompt = f"{run_prompt} {task}"
+    _execute_run(
+        run_prompt,
+        max_iters,
+        quiet,
+        allow_commands=False,
+        profile=profile,
+        plan=plan,
+        pause_for_approval=pause_for_approval,
+        extra_prompt_block=proc.to_prompt(),
+    )
 
 
 if __name__ == "__main__":

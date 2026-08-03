@@ -580,6 +580,37 @@ halia qa 'POST to https://postman-echo.com/post with JSON {"email":"a@b.com"} an
   GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS, raw or JSON body. Auto-joins the generalist; added to
   the `qa` preset. Unit-tested in `tests/test_http.py` (12 tests, mocked transport).
 
+## 33. Test procedures — teach a reusable test, then run it (`halia procedure`)
+
+**Goal:** the "teach halia the test format + remember it" system. A procedure is a
+declarative template (what/data/action-endpoint/result-schema/pass-rule) stored in
+SQLite; running it injects `to_prompt()` into the loop, which executes via `http_request`
++ deterministic pass/fail.
+
+```bash
+# teach it (headless; the friendly chat wizard is the next step)
+halia procedure add login-api \
+  --target 'POST /auth/login' \
+  --data 'synthesize 5 rows: {email, password, expect_status}' \
+  --method POST --url https://postman-echo.com/post \
+  --pass-rule 'response echoes the sent email' \
+  --column test_id --column email --column actual_status --column verdict
+halia procedure list        # → login-api  ready  POST /auth/login
+halia procedure show login-api
+# run it
+halia procedure run login-api
+```
+
+- **Wiring verified (no live model needed):** `add` saves + reports missing required
+  slots; `list` shows ready/incomplete; `show` renders the full grounded instructions;
+  `run` **refuses an incomplete procedure** (exit 1, names the missing slots) and, when
+  complete, injects `to_prompt()` into the run via `_execute_run(extra_prompt_block=…)`. ✅
+- **Grounding baked into the rendered prompt:** "call http_request… decide pass/fail
+  DETERMINISTICALLY from the response… Never guess a verdict… output EXACTLY these columns."
+- **⏳ Live full-loop run** (model synthesizes data → `http_request` → deterministic verdict
+  → results CSV) is the behavioural scenario to run against `deepseek-v4-pro`. Code path
+  verified; live execution pending. Store unit-tested in `tests/test_procedures.py` (8).
+
 ## 27. `clean_csv` — transform-and-save (the last wrangling gap)
 
 **Goal:** the cleaning SQL can't do cleanly (standardise casing/dates, trim, dedupe, fill/
