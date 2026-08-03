@@ -34,7 +34,8 @@ class Procedure:
     name: str
     description: str = ""
     target: str = ""  # what is under test, e.g. "POST /auth/login"
-    data_spec: str = ""  # how to get test data (synthesize per schema, or "user provides")
+    data_spec: str = ""  # how to get test data (what rows/shape)
+    data_source: str = "synthesize"  # "synthesize" (halia generates) | "provided" (user supplies)
     method: str = "GET"  # the action: HTTP method …
     url: str = ""  # … and endpoint (may contain {placeholders} filled at run time)
     headers: dict[str, str] = field(default_factory=dict)  # default request headers
@@ -54,6 +55,10 @@ class Procedure:
         """True once every required slot is filled."""
         return not self.missing_slots()
 
+    def provides_own_data(self) -> bool:
+        """True if the user supplies the test data (gated/real) rather than halia synthesizing."""
+        return self.data_source == "provided"
+
     def to_prompt(self) -> str:
         """Render the procedure as instructions injected into the run's context."""
         lines = [f"TEST PROCEDURE: {self.name}"]
@@ -61,7 +66,8 @@ class Procedure:
             lines.append(self.description)
         lines.append("")
         lines.append(f"What is under test: {self.target or '(unspecified)'}")
-        lines.append(f"Test data: {self.data_spec or '(unspecified)'}")
+        source = "provided by the user" if self.provides_own_data() else "synthesized by halia"
+        lines.append(f"Test data ({source}): {self.data_spec or '(unspecified)'}")
         action = f"Action: {self.method} {self.url}".rstrip()
         lines.append(action)
         if self.headers:
@@ -73,11 +79,18 @@ class Procedure:
             lines.append(f"Output CSV columns (use EXACTLY these): {cols}")
         lines.append("")
         lines.append("Execute this procedure:")
-        lines.append(
-            "1. Prepare the test data as described above — synthesize it (then write_file), "
-            "or use data the user supplies. For gated/real data (e.g. live accounts), ask "
-            "the user to provide it; do not invent it."
-        )
+        if self.provides_own_data():
+            lines.append(
+                "1. The test data is PROVIDED BY THE USER (gated/real, e.g. live accounts). "
+                "Use ONLY the data the user supplies — read the file they name (read_csv / "
+                "read_file) or the rows they paste. Do NOT invent or synthesize rows. If no "
+                "data was provided, ask the user for it before continuing."
+            )
+        else:
+            lines.append(
+                "1. Synthesize the test data described above, then write_file it to a CSV so "
+                "it's inspectable. Realistic but non-sensitive values are fine."
+            )
         lines.append(
             f"2. For each case, call the endpoint with http_request ({self.method} {self.url}). "
             "The HTTP status/response is the grounded result."
@@ -112,14 +125,16 @@ def save_procedure(procedure: Procedure, db_path: Path = DB_PATH) -> None:
         ).fetchone()
         created_at = existing[0] if existing else _now()
         conn.execute(
-            "INSERT OR REPLACE INTO procedures (name, description, target, data_spec, method, "
-            "url, headers_json, result_columns_json, pass_rule, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO procedures (name, description, target, data_spec, "
+            "data_source, method, url, headers_json, result_columns_json, pass_rule, "
+            "created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 procedure.name,
                 procedure.description,
                 procedure.target,
                 procedure.data_spec,
+                procedure.data_source,
                 procedure.method,
                 procedure.url,
                 json.dumps(procedure.headers),
@@ -135,23 +150,24 @@ def save_procedure(procedure: Procedure, db_path: Path = DB_PATH) -> None:
 
 
 def _row_to_procedure(row: tuple[Any, ...]) -> Procedure:
-    headers: Any = json.loads(row[6])
-    columns: Any = json.loads(row[7])
+    headers: Any = json.loads(row[7])
+    columns: Any = json.loads(row[8])
     return Procedure(
         name=row[0],
         description=row[1],
         target=row[2],
         data_spec=row[3],
-        method=row[4],
-        url=row[5],
+        data_source=row[4],
+        method=row[5],
+        url=row[6],
         headers=dict(headers),
         result_columns=list(columns),
-        pass_rule=row[8],
+        pass_rule=row[9],
     )
 
 
 _COLUMNS = (
-    "name, description, target, data_spec, method, url, headers_json, "
+    "name, description, target, data_spec, data_source, method, url, headers_json, "
     "result_columns_json, pass_rule"
 )
 

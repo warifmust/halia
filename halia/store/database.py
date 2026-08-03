@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS procedures (
     description         TEXT NOT NULL DEFAULT '',
     target             TEXT NOT NULL DEFAULT '',
     data_spec          TEXT NOT NULL DEFAULT '',
+    data_source        TEXT NOT NULL DEFAULT 'synthesize',
     method             TEXT NOT NULL DEFAULT 'GET',
     url                TEXT NOT NULL DEFAULT '',
     headers_json       TEXT NOT NULL DEFAULT '{}',
@@ -96,6 +97,11 @@ _RUNS_MIGRATIONS = {
     "corrections": "INTEGER NOT NULL DEFAULT 0",
 }
 
+# Columns added to `procedures` after its first release.
+_PROCEDURES_MIGRATIONS = {
+    "data_source": "TEXT NOT NULL DEFAULT 'synthesize'",
+}
+
 
 def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
     """Add any missing columns to `table` (idempotent, additive-only migration)."""
@@ -111,5 +117,6 @@ def connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.executescript(_SCHEMA)
     _ensure_columns(conn, "runs", _RUNS_MIGRATIONS)
+    _ensure_columns(conn, "procedures", _PROCEDURES_MIGRATIONS)
     conn.commit()
     return conn

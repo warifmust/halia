@@ -883,6 +883,10 @@ def procedure_add(
         list[str] | None,
         typer.Option("--header", help="A default request header 'Name: value' (repeatable)."),
     ] = None,
+    provided: Annotated[
+        bool,
+        typer.Option("--provided", help="Test data is provided by you (gated/real), not made up."),
+    ] = False,
     description: Annotated[str, typer.Option("--description", help="Short description.")] = "",
 ) -> None:
     """Create (or replace) a test procedure. Missing required slots are reported, not fatal."""
@@ -901,6 +905,7 @@ def procedure_add(
         description=description,
         target=target,
         data_spec=data_spec,
+        data_source="provided" if provided else "synthesize",
         method=method.upper(),
         url=url,
         headers=headers,
@@ -958,12 +963,49 @@ def procedure_remove(name: Annotated[str, typer.Argument(help="Procedure name.")
         console.print(f"[yellow]no procedure named '{name}'[/yellow]")
 
 
+def _collect_provided_data(data_file: str | None) -> str:
+    """For a 'provided'-data procedure: turn a file path or pasted rows into a prompt block."""
+    import os
+
+    if data_file:
+        return (
+            "The user has provided the test data in a file. Read it with read_csv and use "
+            f"those rows EXACTLY — do NOT synthesize: {data_file}"
+        )
+    console.print(
+        "[cyan]This procedure uses data you provide.[/cyan] Enter a file path, "
+        "or paste rows and end with an empty line:"
+    )
+    first = console.input("  › ").strip()
+    if not first:
+        return ""  # nothing supplied — to_prompt still tells the model to ask
+    if os.path.isfile(os.path.expanduser(first)):
+        return (
+            "The user has provided the test data in a file. Read it with read_csv and use "
+            f"those rows EXACTLY — do NOT synthesize: {first}"
+        )
+    lines = [first]
+    while True:
+        more = console.input("  › ")
+        if not more.strip():
+            break
+        lines.append(more)
+    return (
+        "The user provided this test data; use it EXACTLY and do NOT invent rows:\n"
+        + "\n".join(lines)
+    )
+
+
 @procedure_app.command("run")
 def procedure_run(
     name: Annotated[str, typer.Argument(help="Procedure name to run.")],
     task: Annotated[
         str, typer.Argument(help="Optional extra context for this run (e.g. data to use).")
     ] = "",
+    data_file: Annotated[
+        str | None,
+        typer.Option("--data-file", help="Path to your test data (for 'provided'-data procs)."),
+    ] = None,
     max_iters: Annotated[int, typer.Option(help="Max tool-call iterations.")] = 12,
     quiet: Annotated[bool, typer.Option("--quiet", "-q", help="Hide the tool-call trace.")] = False,
     profile: Annotated[
@@ -991,6 +1033,12 @@ def procedure_run(
         )
         raise typer.Exit(1)
 
+    extra_block = proc.to_prompt()
+    if proc.provides_own_data():
+        data_block = _collect_provided_data(data_file)
+        if data_block:
+            extra_block = f"{extra_block}\n\n{data_block}"
+
     run_prompt = f"Run the test procedure '{name}'."
     if task:
         run_prompt = f"{run_prompt} {task}"
@@ -1002,7 +1050,7 @@ def procedure_run(
         profile=profile,
         plan=plan,
         pause_for_approval=pause_for_approval,
-        extra_prompt_block=proc.to_prompt(),
+        extra_prompt_block=extra_block,
     )
 
 
@@ -1050,6 +1098,7 @@ def _parse_headers(answer: str, current: dict[str, str]) -> dict[str, str]:
 _FIELD_ALIASES = {
     "target": "target",
     "data": "data_spec", "data_spec": "data_spec", "data-spec": "data_spec",
+    "source": "data_source", "data_source": "data_source", "data-source": "data_source",
     "method": "method",
     "url": "url",
     "endpoint": "endpoint",  # "METHOD URL" → sets both
@@ -1059,7 +1108,9 @@ _FIELD_ALIASES = {
     "columns": "result_columns", "column": "result_columns", "result_columns": "result_columns",
     "header": "header", "headers": "header",
 }
-_SETTABLE = "target, data, method, url, endpoint, pass-rule, columns, header, description"
+_SETTABLE = (
+    "target, data, source, method, url, endpoint, pass-rule, columns, header, description"
+)
 
 
 def _apply_field(proc: Any, field: str, value: str) -> Any:
@@ -1077,6 +1128,11 @@ def _apply_field(proc: Any, field: str, value: str) -> Any:
         if method not in _METHODS_SET:
             raise ValueError(f"method must be one of {', '.join(sorted(_METHODS_SET))}")
         return replace(proc, method=method)
+    if key == "data_source":
+        source = value.strip().lower()
+        if source not in ("synthesize", "provided"):
+            raise ValueError("data-source must be 'synthesize' or 'provided'")
+        return replace(proc, data_source=source)
     if key == "result_columns":
         cols = [c.strip() for c in value.split(",") if c.strip()]
         return replace(proc, result_columns=cols)
@@ -1110,10 +1166,15 @@ def _teach_procedure(name_arg: str | None) -> None:
 
     target = _ask_slot("What are we testing? (e.g. POST /auth/login)", cur.target)
     data_spec = _ask_slot(
-        "What test data does it need? Describe the rows for me to synthesize, "
-        "or say 'user provides' for real/gated data.",
+        "What test data does it need? Describe the rows (their shape/columns).",
         cur.data_spec,
     )
+    source_answer = _ask_slot(
+        "Should I SYNTHESIZE that data, or will you PROVIDE it yourself "
+        "(e.g. real/gated accounts)? [synthesize/provided]",
+        cur.data_source,
+    )
+    data_source = "provided" if source_answer.strip().lower().startswith("prov") else "synthesize"
     method, url = _parse_endpoint(
         _ask_slot(
             "Which endpoint should I call? Method and URL (e.g. POST https://api…/login)",
@@ -1148,6 +1209,7 @@ def _teach_procedure(name_arg: str | None) -> None:
         description=description,
         target=target,
         data_spec=data_spec,
+        data_source=data_source,
         method=method,
         url=url,
         headers=headers,

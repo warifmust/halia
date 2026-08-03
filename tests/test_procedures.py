@@ -154,3 +154,72 @@ def test_apply_field_bad_header_format() -> None:
 
     with pytest.raises(ValueError, match="Name: value"):
         _apply_field(_login_proc(), "header", "no-colon-here")
+
+
+# --- gated-data flow: data_source ---
+
+
+def test_data_source_defaults_to_synthesize() -> None:
+    assert Procedure(name="p").data_source == "synthesize"
+    assert Procedure(name="p").provides_own_data() is False
+
+
+def test_data_source_provided_roundtrips(tmp_path: Any) -> None:
+    db = tmp_path / "halia.db"
+    save_procedure(Procedure(name="accts", data_source="provided"), db_path=db)
+    loaded = get_procedure("accts", db_path=db)
+    assert loaded is not None
+    assert loaded.data_source == "provided"
+    assert loaded.provides_own_data() is True
+
+
+def test_to_prompt_provided_forbids_synthesis() -> None:
+    text = Procedure(
+        name="p", target="x", data_spec="real accounts", data_source="provided",
+        url="https://x", result_columns=["a"], pass_rule="ok",
+    ).to_prompt()
+    assert "PROVIDED BY THE USER" in text
+    assert "Do NOT invent or synthesize" in text
+    assert "provided by the user" in text  # header line
+
+
+def test_to_prompt_synthesize_says_synthesize() -> None:
+    text = _login_proc().to_prompt()  # default synthesize
+    assert "Synthesize the test data" in text
+    assert "synthesized by halia" in text
+
+
+def test_apply_field_data_source_validates() -> None:
+    import pytest
+
+    from halia.cli.main import _apply_field
+
+    assert _apply_field(_login_proc(), "source", "provided").data_source == "provided"
+    with pytest.raises(ValueError, match="synthesize' or 'provided"):
+        _apply_field(_login_proc(), "source", "nonsense")
+
+
+def test_procedures_migration_adds_data_source(tmp_path: Any) -> None:
+    # Simulate an older DB whose procedures table predates data_source.
+    import sqlite3
+
+    from halia.store.database import connect
+
+    db = tmp_path / "halia.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE procedures (name TEXT PRIMARY KEY, description TEXT DEFAULT '', "
+        "target TEXT DEFAULT '', data_spec TEXT DEFAULT '', method TEXT DEFAULT 'GET', "
+        "url TEXT DEFAULT '', headers_json TEXT DEFAULT '{}', "
+        "result_columns_json TEXT DEFAULT '[]', pass_rule TEXT DEFAULT '', "
+        "created_at TEXT NOT NULL, updated_at TEXT NOT NULL);"
+    )
+    conn.execute(
+        "INSERT INTO procedures (name, created_at, updated_at) VALUES ('old', 't', 't')"
+    )
+    conn.commit()
+    conn.close()
+    # connect() runs the additive migration; the old row should now read back cleanly.
+    connect(db).close()
+    loaded = get_procedure("old", db_path=db)
+    assert loaded is not None and loaded.data_source == "synthesize"

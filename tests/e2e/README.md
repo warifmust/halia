@@ -622,6 +622,32 @@ halia procedure run login-api
 - **Full trust chain proven:** `http_request` = exact *actual*, `check_expectation` = exact
   *verdict*, results CSV = the deliverable. Store unit-tested in `tests/test_procedures.py`.
 
+## 36. Gated-data flow — user-provided test data (`data_source: provided`)
+
+**Goal:** for gated/real data (e.g. live accounts), halia must NOT synthesize — the user
+supplies it and halia uses it verbatim. A procedure carries `data_source`
+(`synthesize` | `provided`); `provides_own_data()` + a branched `to_prompt()` enforce it,
+and `procedure run` collects the data (`--data-file` or interactive paste) up front.
+
+```bash
+halia procedure add gated-login --provided --url https://api/login --method POST \
+  --data 'rows of {email, password}' --pass-rule 'status 200' --column email --column verdict
+halia procedure run gated-login --data-file ./real_accounts.csv
+# or, no flag → halia prompts: "Enter a file path, or paste rows and end with an empty line:"
+```
+
+- **✅ Live run (deepseek-v4-pro, provided CSV with `alice.gated@bank.test`,
+  `bob.gated@bank.test`):** halia `read_csv`'d the supplied file → POST'd the **exact
+  provided emails** → grounded verdicts via `check_expectation` → **2 passed / 0 failed**.
+  It **invented nothing** (asserted: no synthesized `user1@test.com` in any request). ✅
+- **The discipline:** `to_prompt()` for a `provided` procedure says "Use ONLY the data the
+  user supplies… Do NOT invent or synthesize rows. If no data was provided, ask the user."
+  For `synthesize` it says the opposite. In **chat**, the model asks for the data
+  conversationally (natural multi-turn); in one-shot **CLI**, `run` collects it up front.
+- Migration-safe: `data_source` added to the `procedures` table via an additive migration
+  (older rows default to `synthesize`). Unit-tested incl. the migration in
+  `tests/test_procedures.py`.
+
 ## 34. Friendly teach flow — `procedure teach` + chat `/procedure`
 
 **Goal:** the "feels like talking to a human" way to teach a procedure — a warm,
