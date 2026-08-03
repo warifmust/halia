@@ -607,9 +607,20 @@ halia procedure run login-api
   complete, injects `to_prompt()` into the run via `_execute_run(extra_prompt_block=…)`. ✅
 - **Grounding baked into the rendered prompt:** "call http_request… decide pass/fail
   DETERMINISTICALLY from the response… Never guess a verdict… output EXACTLY these columns."
-- **⏳ Live full-loop run** (model synthesizes data → `http_request` → deterministic verdict
-  → results CSV) is the behavioural scenario to run against `deepseek-v4-pro`. Code path
-  verified; live execution pending. Store unit-tested in `tests/test_procedures.py` (8).
+- **✅ Live full-loop run (deepseek-v4-pro, real endpoint postman-echo.com, auto-approver
+  simulating the user's "yes" on the gated http_request):** from a procedure whose rule was
+  "status 200 AND body contains the sent email", halia autonomously — synthesized 3
+  `{email, password}` rows → `http_request` POST each (real 200s) → **6 `check_expectation`
+  calls** grounding *both* the status (`equals 200`) *and* the body (`contains <email>`) →
+  `write_file` the results CSV with exactly the taught columns → reported **3 passed / 0
+  failed**, noting "every verdict traces to a check_expectation call". `unverified=[]`,
+  `corrections=0`.
+- **✅ Negative run (honest failure):** a procedure expecting `status == 201` against the
+  200-returning endpoint → halia reported **FAIL**, grounded via `check_expectation`
+  (actual 200 ≠ expected 201), and explained why. Not a rubber-stamp — it fails when it
+  should. `unverified=[]`.
+- **Full trust chain proven:** `http_request` = exact *actual*, `check_expectation` = exact
+  *verdict*, results CSV = the deliverable. Store unit-tested in `tests/test_procedures.py`.
 
 ## 34. Friendly teach flow — `procedure teach` + chat `/procedure`
 

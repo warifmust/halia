@@ -465,7 +465,12 @@ def chat(
 
 def _chat_procedure(command: str) -> str | None:
     """Handle `/procedure …` in chat. Returns a prompt to run (for `run`), else None."""
-    from halia.procedures import delete_procedure, get_procedure, list_procedures
+    from halia.procedures import (
+        delete_procedure,
+        get_procedure,
+        list_procedures,
+        save_procedure,
+    )
 
     parts = command.split()
     sub = parts[1].lower() if len(parts) > 1 else "list"
@@ -495,6 +500,25 @@ def _chat_procedure(command: str) -> str | None:
             console.print(f"[yellow]no procedure named '{parts[2]}'[/yellow]\n")
             return None
         console.print(proc.to_prompt() + "\n")
+        return None
+
+    if sub == "set":
+        if len(parts) < 5:
+            console.print("[dim]usage: /procedure set <name> <field> <value>[/dim]\n")
+            return None
+        target_proc = get_procedure(parts[2])
+        if target_proc is None:
+            console.print(f"[yellow]no procedure named '{parts[2]}'[/yellow]\n")
+            return None
+        try:
+            updated = _apply_field(target_proc, parts[3], " ".join(parts[4:]))
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]\n")
+            return None
+        save_procedure(updated)
+        miss = updated.missing_slots()
+        tail = "ready" if not miss else f"still missing {', '.join(miss)}"
+        console.print(f"[green]✓[/green] updated {parts[3]} on '{parts[2]}' — {tail}.\n")
         return None
 
     if sub == "remove":
@@ -532,7 +556,8 @@ def _chat_procedure(command: str) -> str | None:
         return f"{proc.to_prompt()}\n\n{run_prompt}"
 
     console.print(
-        "[dim]/procedure list · teach [name] · show <name> · run <name> · remove <name>[/dim]\n"
+        "[dim]/procedure list · teach [name] · show <name> · set <name> <field> <value> · "
+        "run <name> · remove <name>[/dim]\n"
     )
     return None
 
@@ -1021,6 +1046,50 @@ def _parse_headers(answer: str, current: dict[str, str]) -> dict[str, str]:
     return headers or current
 
 
+# field name (+ aliases) → canonical slot, for editing one slot at a time.
+_FIELD_ALIASES = {
+    "target": "target",
+    "data": "data_spec", "data_spec": "data_spec", "data-spec": "data_spec",
+    "method": "method",
+    "url": "url",
+    "endpoint": "endpoint",  # "METHOD URL" → sets both
+    "pass": "pass_rule", "pass_rule": "pass_rule", "pass-rule": "pass_rule",
+    "passrule": "pass_rule", "rule": "pass_rule",
+    "description": "description", "desc": "description",
+    "columns": "result_columns", "column": "result_columns", "result_columns": "result_columns",
+    "header": "header", "headers": "header",
+}
+_SETTABLE = "target, data, method, url, endpoint, pass-rule, columns, header, description"
+
+
+def _apply_field(proc: Any, field: str, value: str) -> Any:
+    """Return a copy of `proc` with one field changed. Raises ValueError on bad input."""
+    from dataclasses import replace
+
+    key = _FIELD_ALIASES.get(field.lower().strip())
+    if key is None:
+        raise ValueError(f"unknown field '{field}'. Settable: {_SETTABLE}")
+    if key == "endpoint":
+        method, url = _parse_endpoint(value, proc.method, proc.url)
+        return replace(proc, method=method, url=url)
+    if key == "method":
+        method = value.strip().upper()
+        if method not in _METHODS_SET:
+            raise ValueError(f"method must be one of {', '.join(sorted(_METHODS_SET))}")
+        return replace(proc, method=method)
+    if key == "result_columns":
+        cols = [c.strip() for c in value.split(",") if c.strip()]
+        return replace(proc, result_columns=cols)
+    if key == "header":
+        if ":" not in value:
+            raise ValueError("header must be 'Name: value'")
+        hkey, hval = value.split(":", 1)
+        headers = dict(proc.headers)
+        headers[hkey.strip()] = hval.strip()
+        return replace(proc, headers=headers)
+    return replace(proc, **{key: value.strip()})
+
+
 def _teach_procedure(name_arg: str | None) -> None:
     """Interactively teach (or edit) a test procedure — asks warmly, then saves."""
     from halia.procedures import Procedure, get_procedure, save_procedure
@@ -1108,6 +1177,35 @@ def procedure_teach(
 ) -> None:
     """Teach a test procedure conversationally (asks only what it needs, then saves)."""
     _teach_procedure(name)
+
+
+@procedure_app.command("set")
+def procedure_set(
+    name: Annotated[str, typer.Argument(help="Procedure name.")],
+    field: Annotated[str, typer.Argument(help=f"Field to change: {_SETTABLE}.")],
+    value: Annotated[str, typer.Argument(help="New value.")],
+) -> None:
+    """Change a single field of a saved procedure (no need to re-teach the rest)."""
+    from halia.procedures import get_procedure, save_procedure
+
+    proc = get_procedure(name)
+    if proc is None:
+        console.print(f"[yellow]no procedure named '{name}'[/yellow]")
+        raise typer.Exit(1)
+    try:
+        updated = _apply_field(proc, field, value)
+    except ValueError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    save_procedure(updated)
+    console.print(f"[green]✓[/green] updated [bold]{field}[/bold] on '{name}'.")
+    missing = updated.missing_slots()
+    status = (
+        "[green]ready to run[/green]"
+        if not missing
+        else f"[yellow]still incomplete[/yellow] — missing {', '.join(missing)}"
+    )
+    console.print(f"  {status}")
 
 
 if __name__ == "__main__":

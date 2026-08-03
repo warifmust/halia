@@ -92,3 +92,65 @@ def test_list_and_delete(tmp_path: Any) -> None:
 def test_get_missing_returns_none(tmp_path: Any) -> None:
     db = tmp_path / "halia.db"
     assert get_procedure("nope", db_path=db) is None
+
+
+# --- edit-single-slot: _apply_field ---
+
+
+def test_apply_field_plain_string() -> None:
+    from halia.cli.main import _apply_field
+
+    proc = _login_proc()
+    updated = _apply_field(proc, "pass-rule", "actual_status == 201")
+    assert updated.pass_rule == "actual_status == 201"
+    assert updated.url == proc.url  # everything else untouched
+
+
+def test_apply_field_endpoint_sets_method_and_url() -> None:
+    from halia.cli.main import _apply_field
+
+    updated = _apply_field(_login_proc(), "endpoint", "PUT https://api.test/v2/login")
+    assert updated.method == "PUT"
+    assert updated.url == "https://api.test/v2/login"
+
+
+def test_apply_field_columns_splits_csv() -> None:
+    from halia.cli.main import _apply_field
+
+    updated = _apply_field(_login_proc(), "columns", "id, status, result")
+    assert updated.result_columns == ["id", "status", "result"]
+
+
+def test_apply_field_header_merges_not_replaces() -> None:
+    from halia.cli.main import _apply_field
+
+    updated = _apply_field(_login_proc(), "header", "X-Env: staging")
+    assert updated.headers["X-Env"] == "staging"
+    assert updated.headers["Authorization"] == "Bearer {token}"  # original kept
+
+
+def test_apply_field_rejects_unknown_field() -> None:
+    import pytest
+
+    from halia.cli.main import _apply_field
+
+    with pytest.raises(ValueError, match="unknown field"):
+        _apply_field(_login_proc(), "nonsense", "x")
+
+
+def test_apply_field_rejects_bad_method() -> None:
+    import pytest
+
+    from halia.cli.main import _apply_field
+
+    with pytest.raises(ValueError, match="method must be"):
+        _apply_field(_login_proc(), "method", "FETCH")
+
+
+def test_apply_field_bad_header_format() -> None:
+    import pytest
+
+    from halia.cli.main import _apply_field
+
+    with pytest.raises(ValueError, match="Name: value"):
+        _apply_field(_login_proc(), "header", "no-colon-here")
