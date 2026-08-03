@@ -557,6 +557,29 @@ halia qa 'Feature: password reset via emailed link, expires after 30 min. Write 
   `tests/test_qa.py`. **Verticals: finance · research · education · marketing · compliance ·
   data · qa (7).**
 
+## 32. `http_request` — call/test an API endpoint (grounded status)
+
+**Goal:** the missing HTTP primitive for API/endpoint testing (eng-dev + QA) — the base
+that the future "teach a test procedure" system composes on. `fetch_url` only does GET
+page-reads; this does any method with headers + body, and reports the exact status.
+
+```bash
+# behavioural: point halia (qa/general) at a real test endpoint and assert on the status
+halia qa 'POST to https://postman-echo.com/post with JSON {"email":"a@b.com"} and confirm it returns 200.'
+```
+
+- **Live smoke (non-mocked, real httpx path):** POST JSON to `postman-echo.com/post` →
+  `200 OK`, body echoed the sent `{"email":"a@b.com"}`, `Content-Type: application/json`
+  set automatically, timing reported. A `/status/404` returned `→ 404` exactly. ✅
+- **Trust discipline:** the **HTTP status code is the grounded fact** to assert on (reported
+  exactly, never guessed). Request headers (auth tokens) are **never echoed** into the
+  observation (`test_auth_header_not_echoed_in_output`) — secrets don't leak into logs/audit.
+- **Safety:** `dangerous=True` (POST/PUT/DELETE mutate → approval-gated); the **egress floor**
+  (SSRF) applies to every call — `169.254.169.254`/loopback/private hosts blocked before any
+  request is built. Redirects **not** followed by default (a 3xx is reported as-is). Supports
+  GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS, raw or JSON body. Auto-joins the generalist; added to
+  the `qa` preset. Unit-tested in `tests/test_http.py` (12 tests, mocked transport).
+
 ## 27. `clean_csv` — transform-and-save (the last wrangling gap)
 
 **Goal:** the cleaning SQL can't do cleanly (standardise casing/dates, trim, dedupe, fill/

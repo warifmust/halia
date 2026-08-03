@@ -238,6 +238,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
         skills=[
             "check_qa_artifact",  # bug report / test case completeness (the hook)
             "check_requirements",  # requirement → test-case traceability
+            "http_request",  # call/test API endpoints (approval-gated)
             "read_file",
             "read_pdf",
             "read_docx",  # read specs / requirements

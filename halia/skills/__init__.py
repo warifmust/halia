@@ -15,6 +15,7 @@ from halia.skills.excel import ReadExcel
 from halia.skills.exec import RunCommand
 from halia.skills.export import MakeDocx, MakePdf, MakePptx
 from halia.skills.fs import ListFiles, ReadFile, WriteFile
+from halia.skills.http import HttpRequest
 from halia.skills.pdf import ReadPdf
 from halia.skills.qa import CheckQaArtifact
 from halia.skills.readability import Readability
@@ -32,6 +33,7 @@ _SKILL_FACTORIES: dict[str, Callable[[], Skill]] = {
     "list_files": ListFiles,
     "fetch_url": FetchUrl,
     "web_search": WebSearch,
+    "http_request": HttpRequest,
     "calculate": Calculate,
     "read_csv": ReadCsv,
     "aggregate_csv": AggregateCsv,
