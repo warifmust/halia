@@ -93,6 +93,21 @@ _COMPLIANCE_PROMPT = (
     "reports with make_docx / make_pdf / make_excel."
 )
 
+_QA_PROMPT = (
+    "You are halia in QA mode — an assistant for MANUAL software testers (QA analysts and "
+    "engineers). Take over the clerical load: turn a feature or spec into structured test "
+    "cases, turn a rough bug observation into a proper bug report, maintain regression "
+    "checklists, and summarise test runs. Discipline: (1) Every BUG REPORT must have steps "
+    "to reproduce, expected result, actual result, and environment; every TEST CASE must "
+    "have preconditions, steps, and expected result — VERIFY completeness with "
+    "check_qa_artifact and fix any gaps before finalising. (2) Trace tests to requirements: "
+    "use check_requirements to confirm each requirement in the spec has a covering test "
+    "case, and flag any that don't. (3) Write clear, unambiguous steps a tester can follow "
+    "exactly; separate observed FACTS from your assumptions. (4) Deliver as Word / PDF / "
+    "Excel (test plans, case tables, traceability matrices). You do NOT write automated test "
+    "CODE — that is a developer's job; you produce the manual test artifacts."
+)
+
 # Built-in presets, keyed by the name a user invokes (`halia finance …`, `halia research …`).
 # A user profile saved under the same name in the DB overrides the built-in (customization).
 BUILTIN_PRESETS: dict[str, Profile] = {
@@ -217,6 +232,24 @@ BUILTIN_PRESETS: dict[str, Profile] = {
         ],
         model=None,
         extra_prompt=_COMPLIANCE_PROMPT,
+    ),
+    "qa": Profile(
+        name="qa",
+        skills=[
+            "check_qa_artifact",  # bug report / test case completeness (the hook)
+            "check_requirements",  # requirement → test-case traceability
+            "read_file",
+            "read_pdf",
+            "read_docx",  # read specs / requirements
+            "list_files",
+            "readability",  # keep steps clear
+            "write_file",
+            "make_docx",  # test plans / cases
+            "make_pdf",
+            "make_excel",  # test-case tables / traceability matrices
+        ],
+        model=None,
+        extra_prompt=_QA_PROMPT,
     ),
 }
 

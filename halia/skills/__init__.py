@@ -16,6 +16,7 @@ from halia.skills.exec import RunCommand
 from halia.skills.export import MakeDocx, MakePdf, MakePptx
 from halia.skills.fs import ListFiles, ReadFile, WriteFile
 from halia.skills.pdf import ReadPdf
+from halia.skills.qa import CheckQaArtifact
 from halia.skills.readability import Readability
 from halia.skills.reconcile import ReconcileCsv
 from halia.skills.registry import SkillRegistry
@@ -40,6 +41,7 @@ _SKILL_FACTORIES: dict[str, Callable[[], Skill]] = {
     "read_pdf": ReadPdf,
     "read_docx": ReadDocx,
     "check_requirements": CheckRequirements,
+    "check_qa_artifact": CheckQaArtifact,
     "reconcile_csv": ReconcileCsv,
     "query_db": QueryDb,
     "query_data": QueryData,

@@ -535,6 +535,28 @@ Mar: 410            values: 52, 61, 63, 68, 70, …
 - **Chart set now: bar · line · multi-series · pie · scatter · area · histogram** — the
   analyst's working set is complete. (radar/treemap/bubble/donut deferred; gantt = PM.)
 
+## 31. Seventh vertical — `qa` (manual testing; clerical relief + completeness hook)
+
+**Goal:** the underserved IT-family wedge — relieve manual testers' clerical load (test
+cases, bug reports, regression checklists), with a deterministic hook (meta-QA).
+
+```bash
+halia qa 'Feature: password reset via emailed link, expires after 30 min. Write 2 structured test cases and a bug report for an expired link still working. VERIFY each with check_qa_artifact.'
+```
+
+- **Result:** ✅ generated structured test cases + a bug report, **verified each with
+  `check_qa_artifact`** (bug report needs steps-to-reproduce/expected/actual/environment;
+  test case needs preconditions/steps/expected), and *explicitly separated* the
+  deterministic completeness check from its own **adequacy judgment** — the presence-vs-
+  adequacy discipline.
+- **`check_qa_artifact`** (new hook): deterministic field-presence check per artifact type
+  (variant-matching: "Repro:"/"Browser:" count). Read-only, auto-joins the default.
+- **`qa` preset**: persona centered on manual-test clerical relief + traceability (reuses
+  `check_requirements` for requirement→test coverage); explicitly NOT test-code authoring
+  (that's AQA/coding, off-thesis). Playwright browser assist deferred. Unit-tested in
+  `tests/test_qa.py`. **Verticals: finance · research · education · marketing · compliance ·
+  data · qa (7).**
+
 ## 27. `clean_csv` — transform-and-save (the last wrangling gap)
 
 **Goal:** the cleaning SQL can't do cleanly (standardise casing/dates, trim, dedupe, fill/
