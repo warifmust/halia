@@ -60,6 +60,11 @@ def _read_json(path: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def read_config() -> dict[str, Any]:
+    """The raw (non-secret) config dict, or {} if none."""
+    return _read_json(CONFIG_FILE)
+
+
 def write_config(data: dict[str, Any]) -> None:
     """Write the (non-secret) config file."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)

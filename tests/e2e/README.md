@@ -622,6 +622,35 @@ halia procedure run login-api
 - **Full trust chain proven:** `http_request` = exact *actual*, `check_expectation` = exact
   *verdict*, results CSV = the deliverable. Store unit-tested in `tests/test_procedures.py`.
 
+## 38. Interaction-ops — scheduling (OS cron) + notify gateway (send-first)
+
+**Goal:** "run my tests on a schedule and ping me." No daemon — halia manages OS crontab
+entries that invoke the headless CLI, and pushes results to a channel via one outbound call.
+
+```bash
+halia gateway setup                 # channel (telegram): bot token + chat id, stored locally
+halia gateway test                  # send a test message
+halia schedule add nightly-login --procedure login-smoke --cron '0 9 * * *' --notify
+halia schedule list                 # halia-managed jobs only
+halia schedule remove nightly-login
+```
+
+- **✅ Live crontab smoke (real `crontab`):** `schedule add` wrote a real entry —
+  `@daily /…/.venv/bin/halia procedure run <proc> --quiet --yes # halia:<name>` (absolute
+  path for cron's minimal PATH; `# halia:` marker so we touch only our lines) → `list`
+  parsed it back → `remove` cleaned it, leaving the rest of the crontab untouched. ✅
+- **Unattended runs:** scheduled runs use `--yes` (auto-approve gated tools so cron doesn't
+  block on a prompt) — the permission FLOOR (fs denylist, egress SSRF) still applies; only
+  the prompt is skipped. `--notify` pushes the result to the gateway.
+- **Gateway (send-first, no daemon):** `halia/gateway.py` — channel + chat id in config,
+  bot token in the 0600 secrets file; `notify()` = one httpx POST to Telegram. Token is
+  **scrubbed** from any error surface. Degrades cleanly when unconfigured ("no gateway
+  configured — run `halia gateway setup`"). Interactive two-way chat over a channel stays
+  deferred (the only piece needing a listener). Unit-tested: `tests/test_gateway.py` (6,
+  mocked HTTP) + `tests/test_schedule.py` (7, in-memory crontab).
+- **Note:** the live Telegram *send* needs the user's own bot token, so it's exercised via
+  a mocked transport here; the CLI status/test paths degrade gracefully without one.
+
 ## 37. Teach a procedure by CHATTING — `save_procedure` skill (model-driven teach)
 
 **Goal:** the user's north star — teach QA in your own words ("first do this, then run

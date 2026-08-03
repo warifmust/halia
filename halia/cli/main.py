@@ -198,18 +198,22 @@ def _execute_run(
     plan: bool = False,
     pause_for_approval: bool = False,
     extra_prompt_block: str = "",
+    notify: bool = False,
+    unattended: bool = False,
 ) -> None:
     """Shared body for `run` and the persona-preset commands (`halia finance`, …).
 
     `extra_prompt_block` is appended to the system prompt for this run only (used to
-    inject a saved test procedure's instructions — see `procedure run`).
+    inject a saved test procedure's instructions — see `procedure run`). `notify` pushes
+    the result to the configured gateway when the run finishes. `unattended` auto-approves
+    gated skills (for scheduled/headless runs) — the permission FLOOR still applies.
     """
     from halia.core.agent import RunLimitError
     from halia.core.agent import run as run_agent
     from halia.providers.base import ProviderError
 
     show = _show_step
-    approve = _make_approver()
+    approve = (lambda name, arguments: True) if unattended else _make_approver()
 
     def show_plan(text: str) -> None:
         console.print("[cyan]plan[/cyan]")
@@ -236,10 +240,12 @@ def _execute_run(
         console.print(f"[red]error:[/red] {exc}")
         raise typer.Exit(1) from exc
 
-    _present_result(config, prompt, result, quiet)
+    _present_result(config, prompt, result, quiet, notify)
 
 
-def _present_result(config: Any, prompt: str, result: Any, quiet: bool) -> None:
+def _present_result(
+    config: Any, prompt: str, result: Any, quiet: bool, notify: bool = False
+) -> None:
     """Render a finished-or-paused result: paused → checkpoint notice; done → answer + record."""
     if result.paused:
         from halia.core.checkpoint import get_checkpoint
@@ -252,6 +258,8 @@ def _present_result(config: Any, prompt: str, result: Any, quiet: bool) -> None:
             f"  [dim]resume with[/dim] halia resume {result.checkpoint_id} --approve"
             f"  [dim]/[/dim] --deny"
         )
+        if notify:
+            _notify_result(prompt, f"⏸ paused — {reason} (checkpoint {result.checkpoint_id})")
         return
 
     console.print(result.answer)
@@ -283,6 +291,24 @@ def _present_result(config: Any, prompt: str, result: Any, quiet: bool) -> None:
     if not quiet:
         console.print(f"[dim](run {record.id} recorded)[/dim]")
 
+    if notify:
+        tail = ""
+        if result.unverified:
+            tail = f"\n\n⚠ unverified figures: {', '.join(result.unverified)}"
+        _notify_result(prompt, f"✅ done\n\n{result.answer}{tail}")
+
+
+def _notify_result(prompt: str, body: str) -> None:
+    """Push a run's outcome to the configured gateway; report but never fail the run."""
+    from halia.gateway import notify as gateway_notify
+
+    label = prompt.strip().splitlines()[0][:80] if prompt.strip() else "halia run"
+    ok, detail = gateway_notify(f"halia · {label}\n\n{body[:3000]}")
+    if ok:
+        console.print("[dim](notified via gateway)[/dim]")
+    else:
+        console.print(f"[yellow]gateway not sent:[/yellow] {detail}")
+
 
 @app.command()
 def run(
@@ -309,9 +335,14 @@ def run(
             "of prompting (resume later with `halia resume`).",
         ),
     ] = False,
+    notify: Annotated[
+        bool, typer.Option("--notify", help="Push the result to the configured gateway.")
+    ] = False,
 ) -> None:
     """Run halia's agent loop on a task (can use tools)."""
-    _execute_run(prompt, max_iters, quiet, allow_commands, profile, plan, pause_for_approval)
+    _execute_run(
+        prompt, max_iters, quiet, allow_commands, profile, plan, pause_for_approval, notify=notify
+    )
 
 
 def _make_preset_command(preset_name: str) -> Callable[..., None]:
@@ -884,6 +915,140 @@ def profile_delete(name: Annotated[str, typer.Argument(help="Profile name.")]) -
         console.print(f"[yellow]no profile named '{name}'[/yellow]")
 
 
+schedule_app = typer.Typer(help="Schedule procedures via the OS crontab (no daemon).")
+app.add_typer(schedule_app, name="schedule")
+
+
+@schedule_app.command("add")
+def schedule_add(
+    name: Annotated[str, typer.Argument(help="A name for this schedule.")],
+    procedure: Annotated[str, typer.Option("--procedure", help="Procedure to run.")],
+    cron: Annotated[
+        str, typer.Option("--cron", help="Cron spec, e.g. '0 9 * * *' or '@daily'.")
+    ],
+    notify: Annotated[
+        bool, typer.Option("--notify", help="Push the result to the gateway when it runs.")
+    ] = False,
+) -> None:
+    """Schedule a procedure to run on a cron. Writes an OS crontab entry (the OS times it)."""
+    from halia.procedures import get_procedure
+    from halia.schedule import ScheduleError, add_job, build_procedure_command, validate_cron
+
+    proc = get_procedure(procedure)
+    if proc is None:
+        console.print(f"[red]no procedure named '{procedure}'[/red] (see `halia procedure list`).")
+        raise typer.Exit(1)
+    if not proc.is_runnable():
+        console.print(
+            f"[red]procedure '{procedure}' is incomplete[/red] — "
+            f"missing {', '.join(proc.missing_slots())}. Fill it before scheduling."
+        )
+        raise typer.Exit(1)
+    if notify:
+        from halia.gateway import get_gateway
+
+        if get_gateway() is None:
+            console.print(
+                "[yellow]note:[/yellow] --notify set but no gateway configured — "
+                "run `halia gateway setup` or it won't send."
+            )
+    try:
+        validate_cron(cron)
+        job = add_job(name, cron, build_procedure_command(procedure, notify))
+    except ScheduleError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    console.print(
+        f"[green]✓[/green] scheduled '[bold]{job.name}[/bold]' — {job.cron} → {procedure}"
+    )
+    console.print(f"  [dim]{job.command}[/dim]")
+
+
+@schedule_app.command("list")
+def schedule_list() -> None:
+    """List halia-managed cron jobs."""
+    from halia.schedule import ScheduleError, list_jobs
+
+    try:
+        jobs = list_jobs()
+    except ScheduleError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    if not jobs:
+        console.print("[dim]no scheduled jobs — add one with `halia schedule add`.[/dim]")
+        return
+    for job in jobs:
+        console.print(
+            f"  [bold]{job.name}[/bold]  [cyan]{job.cron}[/cyan]  [dim]{job.command}[/dim]"
+        )
+
+
+@schedule_app.command("remove")
+def schedule_remove(name: Annotated[str, typer.Argument(help="Schedule name.")]) -> None:
+    """Remove a scheduled job."""
+    from halia.schedule import ScheduleError, remove_job
+
+    try:
+        removed = remove_job(name)
+    except ScheduleError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    if removed:
+        console.print(f"[green]✓[/green] removed schedule '{name}'")
+    else:
+        console.print(f"[yellow]no schedule named '{name}'[/yellow]")
+
+
+gateway_app = typer.Typer(help="Configure outbound notifications (e.g. Telegram).")
+app.add_typer(gateway_app, name="gateway")
+
+
+@gateway_app.command("setup")
+def gateway_setup() -> None:
+    """Configure a notify channel (Telegram): bot token + chat id, stored locally."""
+    from halia.gateway import save_gateway
+
+    console.print("[bold]Gateway setup[/bold] [dim](send-only notifications)[/dim]")
+    console.print("Channel: [bold]telegram[/bold] (the only channel for now).")
+    console.print(
+        "[dim]Create a bot with @BotFather to get a token; message it, then find your "
+        "chat id via @userinfobot.[/dim]"
+    )
+    token = typer.prompt("Telegram bot token", hide_input=True).strip()
+    chat_id = typer.prompt("Chat id (where to send)").strip()
+    if not token or not chat_id:
+        console.print("[yellow]both a token and a chat id are required — nothing saved.[/yellow]")
+        raise typer.Exit(1)
+    save_gateway("telegram", chat_id, token)
+    console.print("[green]✓[/green] gateway saved. Test it with `halia gateway test`.")
+
+
+@gateway_app.command("status")
+def gateway_status() -> None:
+    """Show whether a gateway is configured (token is never printed)."""
+    from halia.gateway import get_gateway
+
+    gw = get_gateway()
+    if gw is None:
+        console.print("[yellow]no gateway configured[/yellow] — run `halia gateway setup`.")
+        return
+    console.print(f"[green]configured[/green] — channel [bold]{gw.channel}[/bold], "
+                  f"chat id {gw.chat_id} [dim](token stored, hidden)[/dim]")
+
+
+@gateway_app.command("test")
+def gateway_test() -> None:
+    """Send a test message through the configured gateway."""
+    from halia.gateway import notify
+
+    ok, detail = notify("👋 halia gateway test — you're all set.")
+    if ok:
+        console.print("[green]✓[/green] sent — check your channel.")
+    else:
+        console.print(f"[red]failed:[/red] {detail}")
+        raise typer.Exit(1)
+
+
 procedure_app = typer.Typer(help="Teach, list, and run reusable test procedures.")
 app.add_typer(procedure_app, name="procedure")
 
@@ -1047,6 +1212,13 @@ def procedure_run(
         bool,
         typer.Option("--pause-for-approval", help="Unattended: checkpoint at a dangerous tool."),
     ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", help="Auto-approve gated tools (scheduled runs; floor applies)."),
+    ] = False,
+    notify: Annotated[
+        bool, typer.Option("--notify", help="Push the result to the configured gateway.")
+    ] = False,
 ) -> None:
     """Execute a saved test procedure (injects its instructions into the run)."""
     from halia.procedures import get_procedure
@@ -1081,6 +1253,8 @@ def procedure_run(
         plan=plan,
         pause_for_approval=pause_for_approval,
         extra_prompt_block=extra_block,
+        notify=notify,
+        unattended=yes,
     )
 
 
