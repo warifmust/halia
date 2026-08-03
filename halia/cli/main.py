@@ -56,11 +56,18 @@ def setup() -> None:
 
 
 @app.command()
-def tui() -> None:
+def tui(
+    profile: Annotated[
+        str | None, typer.Option("--profile", help="Use a named profile or preset (e.g. finance).")
+    ] = None,
+    allow_commands: Annotated[
+        bool, typer.Option("--allow-commands", help="Enable shell commands (gated by approval).")
+    ] = False,
+) -> None:
     """Experimental REPL-style chat shell (banner + rich input; multi-line paste, word nav)."""
     from halia.cli.tui import run_tui
 
-    run_tui()
+    run_tui(profile=profile, allow_commands=allow_commands)
 
 
 @app.command()

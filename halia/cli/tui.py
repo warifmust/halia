@@ -20,6 +20,8 @@ from prompt_toolkit.keys import Keys
 from rich.console import Console
 from rich.text import Text
 
+from halia.providers.base import Message
+
 # Shift+Enter has no universal byte sequence — most terminals send the SAME code as
 # plain Enter, so it can't be told apart. Terminals that DO emit a distinct sequence
 # use one of these (CSI-u or xterm modifyOtherKeys); by default prompt_toolkit folds
@@ -46,8 +48,8 @@ def render_banner(console: Console | None = None) -> None:
     con = console or _console
     con.print(Text(HALIA_BANNER, style="bold yellow"))
     con.print(
-        "[dim]trust-first agent · Enter to send · Shift/Option+Enter for a newline · "
-        "/exit to quit[/dim]\n"
+        "[dim]trust-first agent · Enter to send · Option+Enter for a newline · "
+        "/clear resets · /exit quits[/dim]\n"
     )
 
 
@@ -95,25 +97,45 @@ def build_session(**kwargs: Any) -> PromptSession[str]:
     return PromptSession(key_bindings=build_key_bindings(), multiline=True, **kwargs)
 
 
-def run_tui() -> None:
-    """Banner + input loop that echoes each submission (multi-line paste shown back)."""
+def run_tui(profile: str | None = None, allow_commands: bool = False) -> None:
+    """Banner + a real chat loop: the prompt_toolkit input feeds the converse() loop."""
+    # Imported lazily — cli.main imports this module for the `tui` command (avoid a cycle).
+    from halia.cli.main import _make_approver, _prepare_context, _show_step, console
+    from halia.core.agent import SYSTEM_PROMPT, RunLimitError, converse
+    from halia.providers.base import ProviderError
+
     render_banner()
+    config, registry, extra_system = _prepare_context(profile, allow_commands)
+    messages: list[Message] = [{"role": "system", "content": SYSTEM_PROMPT + extra_system}]
+    approve = _make_approver()  # one trust scope for the whole session
     session = build_session()
+
     while True:
         try:
-            text = session.prompt(PROMPT)
+            user_input = session.prompt(PROMPT).strip()
         except (EOFError, KeyboardInterrupt):
-            _console.print("[dim]bye.[/dim]")
+            console.print("[dim]bye.[/dim]")
             break
-        text = text.strip()
-        if not text:
+        if not user_input:
             continue
-        if text.lower() in ("/exit", "/quit"):
-            _console.print("[dim]bye.[/dim]")
+        if user_input.lower() in ("/exit", "/quit"):
+            console.print("[dim]bye.[/dim]")
             break
-        lines = text.splitlines()
-        label = "you submitted" if len(lines) == 1 else f"you submitted ({len(lines)} lines)"
-        _console.print(f"[cyan]{label}:[/cyan]")
-        for line in lines:
-            _console.print(f"  {line}")
-        _console.print()
+        if user_input.lower() == "/clear":
+            del messages[1:]  # keep the system prompt
+            console.print("[dim]context cleared.[/dim]\n")
+            continue
+
+        messages.append({"role": "user", "content": user_input})
+        try:
+            result = converse(messages, config, registry, observer=_show_step, approver=approve)
+        except (ProviderError, RunLimitError) as exc:
+            console.print(f"[red]error:[/red] {exc}\n")
+            messages.pop()  # drop the failed turn so history stays clean
+            continue
+        messages.append({"role": "assistant", "content": result.answer})
+        console.print(f"[bold]halia ›[/bold] {result.answer}")
+        if result.unverified:
+            figures = ", ".join(result.unverified)
+            console.print(f"[yellow]⚠ unverified figures:[/yellow] {figures}")
+        console.print()
