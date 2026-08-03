@@ -14,7 +14,24 @@ def _prompt(text: str) -> str:
 
 
 def test_plain_line_submits() -> None:
+    # Even in multiline mode, plain Enter (\r) submits.
     assert _prompt("hello world\r") == "hello world"
+
+
+def test_option_enter_inserts_newline_then_enter_submits() -> None:
+    # Option/Alt+Enter (Esc + Enter = \x1b\r) adds a newline; a later plain Enter submits.
+    assert _prompt("first\x1b\rsecond\r") == "first\nsecond"
+
+
+def test_ctrl_j_inserts_newline() -> None:
+    # Ctrl+J (\n) — and the remapped Shift+Enter sequences resolve to it — inserts a newline.
+    assert _prompt("a\nb\r") == "a\nb"
+
+
+def test_shift_enter_sequence_inserts_newline() -> None:
+    # A terminal that emits the modifyOtherKeys Shift+Enter sequence gets a newline,
+    # not a submit (we remapped it away from ControlM).
+    assert _prompt("one\x1b[27;2;13~two\r") == "one\ntwo"
 
 
 def test_multiline_paste_returns_one_block() -> None:
