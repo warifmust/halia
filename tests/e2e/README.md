@@ -611,6 +611,31 @@ halia procedure run login-api
   → results CSV) is the behavioural scenario to run against `deepseek-v4-pro`. Code path
   verified; live execution pending. Store unit-tested in `tests/test_procedures.py` (8).
 
+## 34. Friendly teach flow — `procedure teach` + chat `/procedure`
+
+**Goal:** the "feels like talking to a human" way to teach a procedure — a warm,
+deterministic slot-filling wizard that asks only what it needs, plus `/procedure` in
+chat. One core (`_teach_procedure`), two surfaces (`halia procedure teach` + `/procedure
+teach`).
+
+```bash
+halia procedure teach login-api      # asks: what are we testing? test data? endpoint?
+                                      # headers? result columns? pass rule? → saves
+# in chat:
+/procedure list · teach [name] · show <name> · run <name> · remove <name>
+```
+
+- **Wizard smoke (scripted stdin):** asked each slot with warm copy, parsed the endpoint
+  ("POST https://…" → method+url), headers ("K: v" → dict), columns (CSV → list), saved a
+  **ready** procedure; reports ready/incomplete at the end. Editing an existing one shows
+  the current value and enter keeps it. ✅
+- **Chat `/procedure` dispatch:** `list` (ready/incomplete status), `teach`/`add` (runs the
+  wizard), `show`, `remove`, and `run <name>` — which **guards incomplete** procedures
+  (prints the missing slots, does not run) and, when ready, injects `to_prompt()` as the
+  turn so the normal chat loop executes it (carrying any extra context the user appended). ✅
+- Deterministic (no model tokens for the elicitation) yet warmly worded — on-thesis: the
+  schema decides *what* to ask, the copy makes it *feel* human. mypy --strict + ruff clean.
+
 ## 27. `clean_csv` — transform-and-save (the last wrangling gap)
 
 **Goal:** the cleaning SQL can't do cleanly (standardise casing/dates, trim, dedupe, fill/

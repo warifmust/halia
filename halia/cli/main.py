@@ -392,8 +392,8 @@ def chat(
         save_session(session)  # persist immediately so it shows up in `halia sessions`
 
     console.print(
-        "[bold]halia[/bold] — chat. [dim]/exit to quit · /clear to reset context · "
-        "/resume <id> to continue a paused run[/dim]"
+        "[bold]halia[/bold] — chat. [dim]/exit quit · /clear reset · /resume <id> paused run · "
+        "/procedure teach|list|run a test procedure[/dim]"
     )
     if resume is not None:
         console.print(
@@ -435,6 +435,11 @@ def chat(
         if user_input.lower().startswith("/resume"):
             _chat_resume(user_input, config, registry)
             continue
+        if user_input.lower().startswith("/procedure"):
+            to_run = _chat_procedure(user_input)
+            if to_run is None:
+                continue
+            user_input = to_run  # a `/procedure run` — fall through to execute it
 
         messages.append({"role": "user", "content": user_input})
         try:
@@ -456,6 +461,80 @@ def chat(
             unverified=result.unverified, corrections=result.corrections,
         )
         save_run(record)
+
+
+def _chat_procedure(command: str) -> str | None:
+    """Handle `/procedure …` in chat. Returns a prompt to run (for `run`), else None."""
+    from halia.procedures import delete_procedure, get_procedure, list_procedures
+
+    parts = command.split()
+    sub = parts[1].lower() if len(parts) > 1 else "list"
+
+    if sub == "list":
+        procs = list_procedures()
+        if not procs:
+            console.print("[dim]no procedures yet — teach one with `/procedure teach`.[/dim]\n")
+            return None
+        for item in procs:
+            status = "[green]ready[/green]" if item.is_runnable() else "[yellow]incomplete[/yellow]"
+            console.print(f"  [bold]{item.name}[/bold]  {status}  [dim]{item.target}[/dim]")
+        console.print()
+        return None
+
+    if sub in ("teach", "add"):
+        _teach_procedure(parts[2] if len(parts) > 2 else None)
+        console.print()
+        return None
+
+    if sub == "show":
+        if len(parts) < 3:
+            console.print("[dim]usage: /procedure show <name>[/dim]\n")
+            return None
+        proc = get_procedure(parts[2])
+        if proc is None:
+            console.print(f"[yellow]no procedure named '{parts[2]}'[/yellow]\n")
+            return None
+        console.print(proc.to_prompt() + "\n")
+        return None
+
+    if sub == "remove":
+        if len(parts) < 3:
+            console.print("[dim]usage: /procedure remove <name>[/dim]\n")
+            return None
+        msg = (
+            f"[green]✓[/green] deleted '{parts[2]}'"
+            if delete_procedure(parts[2])
+            else f"[yellow]no procedure named '{parts[2]}'[/yellow]"
+        )
+        console.print(msg + "\n")
+        return None
+
+    if sub == "run":
+        if len(parts) < 3:
+            console.print("[dim]usage: /procedure run <name> [extra context][/dim]\n")
+            return None
+        proc = get_procedure(parts[2])
+        if proc is None:
+            console.print(f"[yellow]no procedure named '{parts[2]}'[/yellow]\n")
+            return None
+        missing = proc.missing_slots()
+        if missing:
+            console.print(
+                f"[yellow]'{parts[2]}' is incomplete[/yellow] — add {', '.join(missing)} first "
+                f"[dim](/procedure teach {parts[2]}).[/dim]\n"
+            )
+            return None
+        task = " ".join(parts[3:])
+        run_prompt = f"Run the test procedure '{proc.name}'."
+        if task:
+            run_prompt = f"{run_prompt} {task}"
+        # Inject the procedure's instructions as the turn; the chat loop runs it.
+        return f"{proc.to_prompt()}\n\n{run_prompt}"
+
+    console.print(
+        "[dim]/procedure list · teach [name] · show <name> · run <name> · remove <name>[/dim]\n"
+    )
+    return None
 
 
 def _chat_resume(command: str, config: Any, registry: Any) -> None:
@@ -900,6 +979,135 @@ def procedure_run(
         pause_for_approval=pause_for_approval,
         extra_prompt_block=proc.to_prompt(),
     )
+
+
+# --- The friendly teach flow (shared by `procedure teach` and chat `/procedure teach`) ---
+
+_METHODS_SET = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+
+
+def _ask_slot(label: str, current: str = "") -> str:
+    """Ask one slot warmly; enter keeps the current value."""
+    hint = f" [dim](enter to keep: {current})[/dim]" if current else ""
+    console.print(f"[cyan]{label}[/cyan]{hint}")
+    answer = console.input("  › ").strip()
+    return answer or current
+
+
+def _parse_endpoint(answer: str, cur_method: str, cur_url: str) -> tuple[str, str]:
+    """Parse a 'METHOD https://…' answer into (method, url); tolerant of just a URL."""
+    parts = answer.split()
+    if not parts:
+        return cur_method, cur_url
+    if parts[0].upper() in _METHODS_SET:
+        method = parts[0].upper()
+        url = parts[1] if len(parts) > 1 else cur_url
+        return method, url
+    return cur_method or "GET", parts[0]
+
+
+def _parse_headers(answer: str, current: dict[str, str]) -> dict[str, str]:
+    """Parse ';'-separated 'Name: value' pairs; 'none' clears; blank keeps current."""
+    if not answer:
+        return current
+    if answer.lower() in ("none", "-", "skip"):
+        return {}
+    headers: dict[str, str] = {}
+    for item in answer.split(";"):
+        item = item.strip()
+        if ":" in item:
+            key, value = item.split(":", 1)
+            headers[key.strip()] = value.strip()
+    return headers or current
+
+
+def _teach_procedure(name_arg: str | None) -> None:
+    """Interactively teach (or edit) a test procedure — asks warmly, then saves."""
+    from halia.procedures import Procedure, get_procedure, save_procedure
+
+    name = name_arg or console.input("[cyan]Name this test procedure ›[/cyan] ").strip()
+    if not name:
+        console.print("[yellow]I'll need a name to save it — nothing stored.[/yellow]")
+        return
+
+    cur = get_procedure(name)
+    if cur is not None:
+        console.print(f"[dim]Editing '{name}'. Press enter to keep each value as-is.[/dim]\n")
+    else:
+        cur = Procedure(name=name)
+        console.print(
+            f"[dim]Let's set up '{name}'. Answer what you can — enter skips a field.[/dim]\n"
+        )
+
+    target = _ask_slot("What are we testing? (e.g. POST /auth/login)", cur.target)
+    data_spec = _ask_slot(
+        "What test data does it need? Describe the rows for me to synthesize, "
+        "or say 'user provides' for real/gated data.",
+        cur.data_spec,
+    )
+    method, url = _parse_endpoint(
+        _ask_slot(
+            "Which endpoint should I call? Method and URL (e.g. POST https://api…/login)",
+            f"{cur.method} {cur.url}".strip(),
+        ),
+        cur.method,
+        cur.url,
+    )
+    headers = _parse_headers(
+        _ask_slot(
+            "Any default headers, like an auth token? (e.g. Authorization: Bearer {token}; "
+            "';'-separate, 'none' to clear)",
+            "; ".join(f"{k}: {v}" for k, v in cur.headers.items()),
+        ),
+        cur.headers,
+    )
+    cols_answer = _ask_slot(
+        "What columns should the results CSV have? "
+        "(comma-separated, e.g. test_id, email, actual_status, verdict)",
+        ", ".join(cur.result_columns),
+    )
+    result_columns = [c.strip() for c in cols_answer.split(",") if c.strip()]
+    pass_rule = _ask_slot(
+        "How do we know a case passed? A clear, checkable rule "
+        "(e.g. actual_status == expect_status)",
+        cur.pass_rule,
+    )
+    description = _ask_slot("A one-line description? (optional)", cur.description)
+
+    proc = Procedure(
+        name=name,
+        description=description,
+        target=target,
+        data_spec=data_spec,
+        method=method,
+        url=url,
+        headers=headers,
+        result_columns=result_columns,
+        pass_rule=pass_rule,
+    )
+    save_procedure(proc)
+    console.print(f"\n[green]✓ saved[/green] '[bold]{name}[/bold]'.")
+    missing = proc.missing_slots()
+    if missing:
+        console.print(
+            f"[yellow]Still incomplete[/yellow] — it won't run until you add: "
+            f"{', '.join(missing)}. [dim](just `teach {name}` again to fill them in.)[/dim]"
+        )
+    else:
+        console.print(
+            f"[green]Ready to run[/green] — `halia procedure run {name}` "
+            f"[dim](or `/procedure run {name}` in chat).[/dim]"
+        )
+
+
+@procedure_app.command("teach")
+def procedure_teach(
+    name: Annotated[
+        str | None, typer.Argument(help="Procedure name (prompted if omitted).")
+    ] = None,
+) -> None:
+    """Teach a test procedure conversationally (asks only what it needs, then saves)."""
+    _teach_procedure(name)
 
 
 if __name__ == "__main__":
