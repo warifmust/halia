@@ -61,6 +61,7 @@ def test_to_prompt_embeds_the_grounding_discipline() -> None:
     assert "TEST PROCEDURE: login-api" in text
     assert "POST https://example.com/auth/login" in text
     assert "http_request" in text  # points at the grounded action tool
+    assert "check_expectation" in text  # verdict via the deterministic assert skill
     assert "Never guess a verdict" in text
     assert "test_id, email, actual_status, verdict" in text  # exact output schema
     assert "Authorization: Bearer {token}" in text

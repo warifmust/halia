@@ -636,6 +636,28 @@ halia procedure teach login-api      # asks: what are we testing? test data? end
 - Deterministic (no model tokens for the elicitation) yet warmly worded — on-thesis: the
   schema decides *what* to ask, the copy makes it *feel* human. mypy --strict + ruff clean.
 
+## 35. `check_expectation` — deterministic PASS/FAIL verdict (the trust capstone)
+
+**Goal:** a test's verdict must be a real, grounded comparison in the audit trail — not
+the model's impression. Completes the procedure trust story: `http_request` gives the
+exact actual, `check_expectation` gives the exact verdict.
+
+```bash
+# used inside a procedure run; also callable directly
+```
+
+- **Live demo:** `equals` 200/200 → `PASS` (quotes both sides); 500/200 → `FAIL`; `at_most`
+  19.99/20 → PASS (exact Decimal); `contains` "not found" → PASS; and a numeric op on a
+  non-number ("slow" < 2.0) → **`error`, not a false verdict** — it refuses to ground what
+  it can't. ✅
+- **Operators:** equals · not_equals · contains · not_contains · greater_than · less_than ·
+  at_least · at_most · matches (regex). Numeric ops use exact `Decimal`; output quotes
+  actual + expected for auditability; optional `label` (test id) echoed. Read-only
+  (`dangerous=False`), auto-joins the generalist, added to `qa` preset.
+- **Wired into procedures:** `Procedure.to_prompt()` step 3 now instructs the model to call
+  `check_expectation` for the verdict (grounded tool call) rather than judging by eye.
+  Unit-tested in `tests/test_expectation.py` (12).
+
 ## 27. `clean_csv` — transform-and-save (the last wrangling gap)
 
 **Goal:** the cleaning SQL can't do cleanly (standardise casing/dates, trim, dedupe, fill/

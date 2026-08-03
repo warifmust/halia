@@ -83,9 +83,9 @@ class Procedure:
             "The HTTP status/response is the grounded result."
         )
         lines.append(
-            "3. Decide pass/fail with the rule above, DETERMINISTICALLY — compare the actual "
-            "response to the expected value exactly (use calculate for any arithmetic). Never "
-            "guess a verdict; it must trace to the http_request response."
+            "3. Decide pass/fail with the rule above by calling check_expectation (actual value "
+            "vs expected) — it returns a deterministic PASS/FAIL that lands in the audit trail. "
+            "Never guess a verdict; it must trace to the http_request response."
         )
         if self.result_columns:
             lines.append(

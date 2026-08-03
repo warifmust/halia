@@ -13,6 +13,7 @@ from halia.skills.data import AggregateCsv, GroupByCsv, ReadCsv
 from halia.skills.db import QueryData, QueryDb
 from halia.skills.excel import ReadExcel
 from halia.skills.exec import RunCommand
+from halia.skills.expectation import CheckExpectation
 from halia.skills.export import MakeDocx, MakePdf, MakePptx
 from halia.skills.fs import ListFiles, ReadFile, WriteFile
 from halia.skills.http import HttpRequest
@@ -44,6 +45,7 @@ _SKILL_FACTORIES: dict[str, Callable[[], Skill]] = {
     "read_docx": ReadDocx,
     "check_requirements": CheckRequirements,
     "check_qa_artifact": CheckQaArtifact,
+    "check_expectation": CheckExpectation,
     "reconcile_csv": ReconcileCsv,
     "query_db": QueryDb,
     "query_data": QueryData,
