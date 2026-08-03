@@ -20,7 +20,7 @@ from halia.config.settings import Config
 from halia.conscience.verify import ungrounded_numbers
 from halia.core.checkpoint import Checkpoint
 from halia.core.planner import make_plan
-from halia.providers.base import ChatResult, Message, Provider, ToolCall
+from halia.providers.base import ChatResult, DeltaObserver, Message, Provider, ToolCall
 from halia.providers.openai_compat import OpenAICompatProvider
 from halia.skills.registry import SkillRegistry
 from halia.store.database import DB_PATH
@@ -172,6 +172,7 @@ class _Ctx:
     pause_on_approval: bool
     checkpoint_db: Path = DB_PATH
     history_budget: int = DEFAULT_HISTORY_BUDGET_CHARS
+    on_delta: DeltaObserver | None = None
 
 
 def _is_dangerous(registry: SkillRegistry, name: str) -> bool:
@@ -253,7 +254,11 @@ def _loop(
     while iters_used < ctx.max_iters:
         iters_used += 1
         # Send a bounded window of history (full transcript stays in `messages`).
-        result = ctx.provider.chat(_window(messages, ctx.history_budget), tools=tools)
+        window = _window(messages, ctx.history_budget)
+        if ctx.on_delta is not None:
+            result = ctx.provider.chat(window, tools=tools, on_delta=ctx.on_delta)
+        else:
+            result = ctx.provider.chat(window, tools=tools)
 
         if not result.tool_calls:
             answer = (result.content or "").strip()
@@ -383,6 +388,7 @@ def converse(
     observer: Observer | None = None,
     approver: Approver | None = None,
     history_budget: int = DEFAULT_HISTORY_BUDGET_CHARS,
+    on_delta: DeltaObserver | None = None,
 ) -> RunResult:
     """Run one chat turn over an existing conversation (the multi-turn / chat primitive).
 
@@ -399,7 +405,7 @@ def converse(
         provider=provider, config=config, registry=registry, prompt=prompt,
         extra_system="", plan="", max_iters=max_iters,
         max_corrections=DEFAULT_MAX_CORRECTIONS, observer=observer, approver=approver,
-        pause_on_approval=False, history_budget=history_budget,
+        pause_on_approval=False, history_budget=history_budget, on_delta=on_delta,
     )
     return _loop(ctx, messages, [], 0, 0)
 

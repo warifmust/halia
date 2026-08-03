@@ -10,8 +10,12 @@ dependency surface.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, TypedDict
+
+# Called with each text delta as a streamed answer arrives (optional, TUI/streaming).
+DeltaObserver = Callable[[str], None]
 
 # A chat message is just JSON going to the API; its shape varies (system/user,
 # assistant-with-tool_calls, tool-result), so a permissive dict is the pragmatic type.
@@ -42,7 +46,14 @@ class Provider(Protocol):
     """Anything that can turn chat messages into a `ChatResult`."""
 
     def chat(
-        self, messages: list[Message], tools: list[dict[str, Any]] | None = None
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+        on_delta: DeltaObserver | None = None,
     ) -> ChatResult:
-        """Send `messages` (+ optional `tools`) and return the model's turn."""
+        """Send `messages` (+ optional `tools`) and return the model's turn.
+
+        When `on_delta` is given, stream the answer and call it with each text delta;
+        the fully assembled `ChatResult` is still returned (same contract either way).
+        """
         ...

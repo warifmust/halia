@@ -11,6 +11,7 @@ next; here we just prove the input feels right.
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 from prompt_toolkit import PromptSession
@@ -127,14 +128,36 @@ def run_tui(profile: str | None = None, allow_commands: bool = False) -> None:
             continue
 
         messages.append({"role": "user", "content": user_input})
+        # Stream the answer token-by-token; print the "halia ›" header on the first delta
+        # (so it lands after any tool-call trace, not before).
+        streamed = False
+
+        def on_delta(token: str) -> None:
+            nonlocal streamed
+            if not streamed:
+                console.print("[bold]halia ›[/bold] ", end="")
+                streamed = True
+            sys.stdout.write(token)
+            sys.stdout.flush()
+
         try:
-            result = converse(messages, config, registry, observer=_show_step, approver=approve)
+            result = converse(
+                messages, config, registry,
+                observer=_show_step, approver=approve, on_delta=on_delta,
+            )
         except (ProviderError, RunLimitError) as exc:
+            if streamed:
+                sys.stdout.write("\n")
             console.print(f"[red]error:[/red] {exc}\n")
             messages.pop()  # drop the failed turn so history stays clean
             continue
         messages.append({"role": "assistant", "content": result.answer})
-        console.print(f"[bold]halia ›[/bold] {result.answer}")
+        if streamed:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        else:
+            # No text was streamed (e.g. a tool-only turn that ended empty) — print it whole.
+            console.print(f"[bold]halia ›[/bold] {result.answer}")
         if result.unverified:
             figures = ", ".join(result.unverified)
             console.print(f"[yellow]⚠ unverified figures:[/yellow] {figures}")

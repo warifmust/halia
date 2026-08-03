@@ -73,3 +73,58 @@ def test_empty_reply_raises() -> None:
 
     with pytest.raises(ProviderError, match="no content"):
         _provider(handler).chat([{"role": "user", "content": "hi"}])
+
+
+# --- streaming (on_delta) ---
+
+
+def _sse(*chunks: dict) -> str:
+    """Build an SSE body from OpenAI-style streaming chunks, ending with [DONE]."""
+    lines = [f"data: {json.dumps(c)}" for c in chunks]
+    lines.append("data: [DONE]")
+    return "\n\n".join(lines) + "\n\n"
+
+
+def test_stream_emits_content_deltas_and_assembles_answer() -> None:
+    body = _sse(
+        {"choices": [{"delta": {"content": "Hel"}}]},
+        {"choices": [{"delta": {"content": "lo"}}]},
+        {"choices": [{"delta": {"content": " world"}}]},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["stream"] is True
+        return httpx.Response(200, text=body)
+
+    seen: list[str] = []
+    result = _provider(handler).chat([{"role": "user", "content": "hi"}], on_delta=seen.append)
+    assert seen == ["Hel", "lo", " world"]  # streamed piece by piece
+    assert result.content == "Hello world"  # and assembled whole
+    assert result.tool_calls == []
+
+
+def test_stream_assembles_fragmented_tool_calls() -> None:
+    body = _sse(
+        {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "call_1", "function": {"name": "calc", "arguments": '{"a"'}}
+        ]}}]},
+        {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "function": {"arguments": ":2}"}}
+        ]}}]},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=body)
+
+    result = _provider(handler).chat([{"role": "user", "content": "hi"}], on_delta=lambda s: None)
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0]["name"] == "calc"
+    assert result.tool_calls[0]["arguments"] == '{"a":2}'  # fragments concatenated
+
+
+def test_stream_http_error_raises() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    with pytest.raises(ProviderError):
+        _provider(handler).chat([{"role": "user", "content": "hi"}], on_delta=lambda s: None)
