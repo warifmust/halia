@@ -239,6 +239,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "check_qa_artifact",  # bug report / test case completeness (the hook)
             "check_requirements",  # requirement → test-case traceability
             "check_expectation",  # deterministic PASS/FAIL verdict on a comparison
+            "save_procedure",  # remember a taught test procedure from chat (approval-gated)
             "http_request",  # call/test API endpoints (approval-gated)
             "read_file",
             "read_pdf",

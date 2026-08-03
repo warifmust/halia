@@ -622,6 +622,34 @@ halia procedure run login-api
 - **Full trust chain proven:** `http_request` = exact *actual*, `check_expectation` = exact
   *verdict*, results CSV = the deliverable. Store unit-tested in `tests/test_procedures.py`.
 
+## 37. Teach a procedure by CHATTING — `save_procedure` skill (model-driven teach)
+
+**Goal:** the user's north star — teach QA in your own words ("first do this, then run
+that, output in this format"), and halia reasons it into a saved procedure itself, asking
+for anything missing. Same store as `/procedure teach`; either the user or halia can drive.
+
+- **✅ Live run (deepseek-v4-pro):** one natural-language chat turn — *"remember this as
+  'login-smoke': first POST to postman-echo with email+password JSON, then check 200 and
+  that it echoes the email; make 3 test users; output columns test_id, email, status,
+  verdict; go ahead and save it"* — and halia: (1) **reasoned it into structured slots**
+  (name/target/data_spec/method/url/headers/result_columns and a sensible pass_rule), (2)
+  hit the **approval gate showing exactly what it would save** (the confirm step), (3)
+  called **`save_procedure`** → persisted, runnable=True, (4) then **ran it** (3 synthesized
+  users → `http_request` → `check_expectation` → results table), and pointed the user to
+  `/procedure run login-smoke` for next time. ✅
+- **`save_procedure` skill:** `dangerous=True` (persistence → the gate IS the confirm; halia
+  never saves silently). **Merge semantics** — omitted fields are left unchanged, so a
+  procedure can be built up over turns ("add a pass rule"). Auto-joins the generalist (teach
+  from any chat) + the `qa` preset.
+- **Conversational approval:** the gate now reads natural language — `_is_affirmative`
+  accepts "yep / sure / go ahead", rejects "no / wait / stop" AND corrections ("yes but
+  change the url" → not a clean yes → re-propose). Safe default: unclear → No. Benefits
+  every gated skill, not just this one.
+- **`steps` field + persona nudge:** `Procedure` gained ordered `steps` (a "first do X, then
+  Y" flow needs no single endpoint — the action requirement is now "a url OR steps"). The
+  system prompt tells halia to offer to remember repeatable tasks, gather the required
+  parts, confirm, then save. Unit-tested in `tests/test_procedure_tool.py` + procedure tests.
+
 ## 36. Gated-data flow — user-provided test data (`data_source: provided`)
 
 **Goal:** for gated/real data (e.g. live accounts), halia must NOT synthesize — the user

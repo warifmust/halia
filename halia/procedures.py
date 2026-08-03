@@ -24,7 +24,9 @@ from halia.store.database import DB_PATH, connect
 # Slots that must be filled before a procedure can run. These drive the teach-time
 # elicitation (ask only for a MISSING required slot, once, then persist) — see the
 # interaction layer. `name` is always required and handled separately.
-_REQUIRED = ("target", "data_spec", "url", "result_columns", "pass_rule")
+# Always-required slots. The ACTION requirement (a url OR steps) is checked separately,
+# so a procedure can be a single endpoint call OR a multi-step "first do X, then Y" flow.
+_REQUIRED_CORE = ("target", "data_spec", "result_columns", "pass_rule")
 
 
 @dataclass(frozen=True)
@@ -36,6 +38,7 @@ class Procedure:
     target: str = ""  # what is under test, e.g. "POST /auth/login"
     data_spec: str = ""  # how to get test data (what rows/shape)
     data_source: str = "synthesize"  # "synthesize" (halia generates) | "provided" (user supplies)
+    steps: list[str] = field(default_factory=list)  # ordered "first do X, then Y" instructions
     method: str = "GET"  # the action: HTTP method …
     url: str = ""  # … and endpoint (may contain {placeholders} filled at run time)
     headers: dict[str, str] = field(default_factory=dict)  # default request headers
@@ -45,10 +48,11 @@ class Procedure:
     def missing_slots(self) -> list[str]:
         """Required slots that are still empty (drives teach-time elicitation)."""
         missing: list[str] = []
-        for slot in _REQUIRED:
-            value = getattr(self, slot)
-            if not value:  # "" or [] or {}
+        for slot in _REQUIRED_CORE:
+            if not getattr(self, slot):  # "" or [] or {}
                 missing.append(slot)
+        if not self.url and not self.steps:
+            missing.append("action (a url or steps)")
         return missing
 
     def is_runnable(self) -> bool:
@@ -68,8 +72,13 @@ class Procedure:
         lines.append(f"What is under test: {self.target or '(unspecified)'}")
         source = "provided by the user" if self.provides_own_data() else "synthesized by halia"
         lines.append(f"Test data ({source}): {self.data_spec or '(unspecified)'}")
-        action = f"Action: {self.method} {self.url}".rstrip()
-        lines.append(action)
+        if self.steps:
+            lines.append("Steps (in order):")
+            for i, step in enumerate(self.steps, 1):
+                lines.append(f"  {i}. {step}")
+        if self.url:
+            action = f"Action: {self.method} {self.url}".rstrip()
+            lines.append(action)
         if self.headers:
             rendered = ", ".join(f"{k}: {v}" for k, v in self.headers.items())
             lines.append(f"  request headers: {rendered}")
@@ -91,14 +100,20 @@ class Procedure:
                 "1. Synthesize the test data described above, then write_file it to a CSV so "
                 "it's inspectable. Realistic but non-sensitive values are fine."
             )
-        lines.append(
-            f"2. For each case, call the endpoint with http_request ({self.method} {self.url}). "
-            "The HTTP status/response is the grounded result."
-        )
+        if self.url:
+            lines.append(
+                f"2. For each case, call the endpoint with http_request ({self.method} "
+                f"{self.url}). The HTTP status/response is the grounded result."
+            )
+        else:
+            lines.append(
+                "2. Carry out the steps above for each case, using tools for anything "
+                "measurable. Any value you will judge on must come from a tool result."
+            )
         lines.append(
             "3. Decide pass/fail with the rule above by calling check_expectation (actual value "
             "vs expected) — it returns a deterministic PASS/FAIL that lands in the audit trail. "
-            "Never guess a verdict; it must trace to the http_request response."
+            "Never guess a verdict; it must trace to a tool result."
         )
         if self.result_columns:
             lines.append(
@@ -126,15 +141,16 @@ def save_procedure(procedure: Procedure, db_path: Path = DB_PATH) -> None:
         created_at = existing[0] if existing else _now()
         conn.execute(
             "INSERT OR REPLACE INTO procedures (name, description, target, data_spec, "
-            "data_source, method, url, headers_json, result_columns_json, pass_rule, "
-            "created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "data_source, steps_json, method, url, headers_json, result_columns_json, "
+            "pass_rule, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 procedure.name,
                 procedure.description,
                 procedure.target,
                 procedure.data_spec,
                 procedure.data_source,
+                json.dumps(procedure.steps),
                 procedure.method,
                 procedure.url,
                 json.dumps(procedure.headers),
@@ -150,25 +166,27 @@ def save_procedure(procedure: Procedure, db_path: Path = DB_PATH) -> None:
 
 
 def _row_to_procedure(row: tuple[Any, ...]) -> Procedure:
-    headers: Any = json.loads(row[7])
-    columns: Any = json.loads(row[8])
+    steps: Any = json.loads(row[5])
+    headers: Any = json.loads(row[8])
+    columns: Any = json.loads(row[9])
     return Procedure(
         name=row[0],
         description=row[1],
         target=row[2],
         data_spec=row[3],
         data_source=row[4],
-        method=row[5],
-        url=row[6],
+        steps=list(steps),
+        method=row[6],
+        url=row[7],
         headers=dict(headers),
         result_columns=list(columns),
-        pass_rule=row[9],
+        pass_rule=row[10],
     )
 
 
 _COLUMNS = (
-    "name, description, target, data_spec, data_source, method, url, headers_json, "
-    "result_columns_json, pass_rule"
+    "name, description, target, data_spec, data_source, steps_json, method, url, "
+    "headers_json, result_columns_json, pass_rule"
 )
 
 

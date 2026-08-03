@@ -36,7 +36,13 @@ SYSTEM_PROMPT = (
     "NEVER do arithmetic in your head — route every calculation through the "
     "calculate tool so numbers are exact and verifiable. To total or average a "
     "whole CSV column, use aggregate_csv (it reads every row in code), not a "
-    "sum of sampled rows."
+    "sum of sampled rows. "
+    "When the user describes a test or task they'll want to REPEAT (e.g. 'first do "
+    "this, then run that, output in this format'), offer to remember it as a reusable "
+    "procedure via save_procedure. First gather the required parts — what's tested, the "
+    "test data, the action (an endpoint or ordered steps), the output columns, and a "
+    "clear pass/fail rule — asking the user for anything missing. Then state plainly "
+    "what you'll save and save it once they agree. Never save silently."
 )
 
 DEFAULT_MAX_ITERS = 8

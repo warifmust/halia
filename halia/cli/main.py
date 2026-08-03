@@ -100,12 +100,37 @@ def _write_target_dir(name: str, arguments: str) -> str | None:
     return os.path.dirname(os.path.abspath(path)) if isinstance(path, str) and path else None
 
 
+# Natural-language yes: the gate understands "yep / sure / go ahead" as well as "y".
+_AFFIRMATIVE = {
+    "y", "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "aye", "allow", "allowed",
+    "approve", "approved", "proceed", "confirm", "confirmed", "do it", "go ahead", "go",
+    "sounds good", "please do", "yes please", "lets do it", "let's do it", "please",
+}
+# Cues that mean "not a clean yes" — negation OR a correction ("yes, but change the url").
+_NEGATIVE_CUES = (
+    "no", "nope", "nah", "not", "don't", "dont", "stop", "wait", "hold", "cancel",
+    "but", "change", "instead", "except", "actually", "hmm",
+)
+
+
+def _is_affirmative(reply: str) -> bool:
+    """True only for a clear yes with no negation/correction cue (safe default: False)."""
+    text = reply.strip().lower().rstrip(".!")
+    if not text:
+        return False
+    words = set(text.split())
+    if any(cue in words for cue in _NEGATIVE_CUES):
+        return False
+    return text in _AFFIRMATIVE or bool(words & _AFFIRMATIVE)
+
+
 def _make_approver() -> Any:
     """A stateful approver: approve once, or trust all writes to a directory this session.
 
-    Trusting a directory only skips the *prompt* — the permission floor still applies, so
-    sensitive paths (.ssh, .env, credentials, …) are denied regardless. Session-scoped;
-    nothing is persisted.
+    The prompt is answered in natural language ("yep", "no wait") via `_is_affirmative`;
+    anything unclear defaults to No. Trusting a directory only skips the *prompt* — the
+    permission floor still applies, so sensitive paths (.ssh, .env, …) are denied
+    regardless. Session-scoped; nothing is persisted.
     """
     trusted_dirs: set[str] = set()
 
@@ -116,15 +141,15 @@ def _make_approver() -> Any:
         console.print(f"[yellow]halia wants to run[/yellow] [bold]{name}[/bold]: {arguments}")
         if target_dir is not None:
             choice = console.input(
-                "Allow? [bold]y[/bold]es / [bold]a[/bold]ll writes to this folder / "
-                "[bold]N[/bold]o: "
+                "Allow? [bold]yes[/bold] / [bold]a[/bold]ll writes to this folder / "
+                "[bold]no[/bold]: "
             ).strip().lower()
             if choice in ("a", "all"):
                 trusted_dirs.add(target_dir)
                 console.print(f"[dim]trusting writes to {target_dir} for this session[/dim]")
                 return True
-            return choice in ("y", "yes")
-        return typer.confirm("Allow?", default=False)
+            return _is_affirmative(choice)
+        return _is_affirmative(console.input("Allow? "))
 
     return approve
 
@@ -879,6 +904,10 @@ def procedure_add(
         list[str] | None,
         typer.Option("--column", help="An output CSV column (repeatable)."),
     ] = None,
+    step: Annotated[
+        list[str] | None,
+        typer.Option("--step", help="An ordered step for a multi-step procedure (repeatable)."),
+    ] = None,
     header: Annotated[
         list[str] | None,
         typer.Option("--header", help="A default request header 'Name: value' (repeatable)."),
@@ -906,6 +935,7 @@ def procedure_add(
         target=target,
         data_spec=data_spec,
         data_source="provided" if provided else "synthesize",
+        steps=step or [],
         method=method.upper(),
         url=url,
         headers=headers,
@@ -1099,6 +1129,7 @@ _FIELD_ALIASES = {
     "target": "target",
     "data": "data_spec", "data_spec": "data_spec", "data-spec": "data_spec",
     "source": "data_source", "data_source": "data_source", "data-source": "data_source",
+    "steps": "steps", "step": "steps",
     "method": "method",
     "url": "url",
     "endpoint": "endpoint",  # "METHOD URL" → sets both
@@ -1109,7 +1140,7 @@ _FIELD_ALIASES = {
     "header": "header", "headers": "header",
 }
 _SETTABLE = (
-    "target, data, source, method, url, endpoint, pass-rule, columns, header, description"
+    "target, data, source, steps, method, url, endpoint, pass-rule, columns, header, description"
 )
 
 
@@ -1136,6 +1167,9 @@ def _apply_field(proc: Any, field: str, value: str) -> Any:
     if key == "result_columns":
         cols = [c.strip() for c in value.split(",") if c.strip()]
         return replace(proc, result_columns=cols)
+    if key == "steps":
+        steps = [s.strip() for s in value.split(";") if s.strip()]
+        return replace(proc, steps=steps)
     if key == "header":
         if ":" not in value:
             raise ValueError("header must be 'Name: value'")
@@ -1175,6 +1209,12 @@ def _teach_procedure(name_arg: str | None) -> None:
         cur.data_source,
     )
     data_source = "provided" if source_answer.strip().lower().startswith("prov") else "synthesize"
+    steps_answer = _ask_slot(
+        "Any ordered steps? (first do X; then Y; …) — ';'-separate, or blank for a single "
+        "endpoint call.",
+        "; ".join(cur.steps),
+    )
+    steps = [s.strip() for s in steps_answer.split(";") if s.strip()]
     method, url = _parse_endpoint(
         _ask_slot(
             "Which endpoint should I call? Method and URL (e.g. POST https://api…/login)",
@@ -1210,6 +1250,7 @@ def _teach_procedure(name_arg: str | None) -> None:
         target=target,
         data_spec=data_spec,
         data_source=data_source,
+        steps=steps,
         method=method,
         url=url,
         headers=headers,

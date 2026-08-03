@@ -40,8 +40,24 @@ def test_roundtrip_preserves_all_fields(tmp_path: Any) -> None:
 def test_missing_slots_reports_required_gaps() -> None:
     empty = Procedure(name="bare")
     missing = empty.missing_slots()
-    assert set(missing) == {"target", "data_spec", "url", "result_columns", "pass_rule"}
+    assert set(missing) == {
+        "target", "data_spec", "result_columns", "pass_rule", "action (a url or steps)"
+    }
     assert empty.is_runnable() is False
+
+
+def test_steps_satisfy_the_action_requirement() -> None:
+    # A multi-step procedure needs no url — steps ARE the action.
+    proc = Procedure(
+        name="multi", target="onboarding flow", data_spec="1 user",
+        steps=["create the account", "verify the welcome email arrives"],
+        result_columns=["step", "verdict"], pass_rule="each step succeeds",
+    )
+    assert proc.missing_slots() == []
+    assert proc.is_runnable() is True
+    text = proc.to_prompt()
+    assert "Steps (in order):" in text
+    assert "1. create the account" in text
 
 
 def test_full_procedure_is_runnable() -> None:

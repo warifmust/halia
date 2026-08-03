@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS procedures (
     target             TEXT NOT NULL DEFAULT '',
     data_spec          TEXT NOT NULL DEFAULT '',
     data_source        TEXT NOT NULL DEFAULT 'synthesize',
+    steps_json         TEXT NOT NULL DEFAULT '[]',
     method             TEXT NOT NULL DEFAULT 'GET',
     url                TEXT NOT NULL DEFAULT '',
     headers_json       TEXT NOT NULL DEFAULT '{}',
@@ -100,6 +101,7 @@ _RUNS_MIGRATIONS = {
 # Columns added to `procedures` after its first release.
 _PROCEDURES_MIGRATIONS = {
     "data_source": "TEXT NOT NULL DEFAULT 'synthesize'",
+    "steps_json": "TEXT NOT NULL DEFAULT '[]'",
 }
 
 

@@ -18,6 +18,7 @@ from halia.skills.export import MakeDocx, MakePdf, MakePptx
 from halia.skills.fs import ListFiles, ReadFile, WriteFile
 from halia.skills.http import HttpRequest
 from halia.skills.pdf import ReadPdf
+from halia.skills.procedure_tool import SaveProcedure
 from halia.skills.qa import CheckQaArtifact
 from halia.skills.readability import Readability
 from halia.skills.reconcile import ReconcileCsv
@@ -46,6 +47,7 @@ _SKILL_FACTORIES: dict[str, Callable[[], Skill]] = {
     "check_requirements": CheckRequirements,
     "check_qa_artifact": CheckQaArtifact,
     "check_expectation": CheckExpectation,
+    "save_procedure": SaveProcedure,
     "reconcile_csv": ReconcileCsv,
     "query_db": QueryDb,
     "query_data": QueryData,
