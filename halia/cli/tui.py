@@ -50,7 +50,7 @@ def render_banner(console: Console | None = None) -> None:
     con.print(Text(HALIA_BANNER, style="bold yellow"))
     con.print(
         "[dim]trust-first agent · Enter to send · Option+Enter for a newline · "
-        "/clear resets · /exit quits[/dim]\n"
+        "/procedure · /resume · /clear · /exit[/dim]\n"
     )
 
 
@@ -98,16 +98,59 @@ def build_session(**kwargs: Any) -> PromptSession[str]:
     return PromptSession(key_bindings=build_key_bindings(), multiline=True, **kwargs)
 
 
-def run_tui(profile: str | None = None, allow_commands: bool = False) -> None:
-    """Banner + a real chat loop: the prompt_toolkit input feeds the converse() loop."""
+def run_tui(
+    profile: str | None = None, allow_commands: bool = False, resume: str | None = None
+) -> None:
+    """Banner + a real chat loop: the prompt_toolkit input feeds the converse() loop.
+
+    Conversations persist to SQLite (like `halia chat`) and survive a restart; pass
+    `resume` to continue a saved session. Slash commands (/procedure, /resume, /clear)
+    mirror the chat command.
+    """
+    from dataclasses import replace
+
     # Imported lazily — cli.main imports this module for the `tui` command (avoid a cycle).
-    from halia.cli.main import _make_approver, _prepare_context, _show_step, console
+    from halia.audit.record import new_record, save_run
+    from halia.cli.main import (
+        _chat_procedure,
+        _chat_resume,
+        _make_approver,
+        _prepare_context,
+        _resumed_age_note,
+        _show_step,
+        console,
+    )
     from halia.core.agent import SYSTEM_PROMPT, RunLimitError, converse
+    from halia.core.session import get_session, new_session, save_session
     from halia.providers.base import ProviderError
 
     render_banner()
-    config, registry, extra_system = _prepare_context(profile, allow_commands)
-    messages: list[Message] = [{"role": "system", "content": SYSTEM_PROMPT + extra_system}]
+
+    if resume is not None:
+        sess = get_session(resume)
+        if sess is None:
+            console.print(f"[yellow]no session '{resume}'[/yellow] — see `halia sessions`.")
+            return
+        config, registry, _ = _prepare_context(sess.profile, sess.allow_commands)
+        config = replace(config, model=sess.model)
+        messages: list[Message] = list(sess.messages)
+        console.print(
+            f"[dim]resumed session [bold]{sess.id}[/bold] — {sess.turn_count()} turns, "
+            f"last active {_resumed_age_note(sess.updated_at)}[/dim]\n"
+        )
+    else:
+        config, registry, extra_system = _prepare_context(profile, allow_commands)
+        messages = [{"role": "system", "content": SYSTEM_PROMPT + extra_system}]
+        sess = new_session(config.provider, config.model, profile, allow_commands, messages)
+        save_session(sess)
+        console.print(
+            f"[dim]session [bold]{sess.id}[/bold] — resume later with "
+            f"`halia tui --resume {sess.id}`[/dim]\n"
+        )
+
+    def persist() -> None:
+        save_session(replace(sess, messages=list(messages)))
+
     approve = _make_approver()  # one trust scope for the whole session
     session = build_session()
 
@@ -124,8 +167,17 @@ def run_tui(profile: str | None = None, allow_commands: bool = False) -> None:
             break
         if user_input.lower() == "/clear":
             del messages[1:]  # keep the system prompt
+            persist()
             console.print("[dim]context cleared.[/dim]\n")
             continue
+        if user_input.lower().startswith("/resume"):
+            _chat_resume(user_input, config, registry)
+            continue
+        if user_input.lower().startswith("/procedure"):
+            to_run = _chat_procedure(user_input)
+            if to_run is None:
+                continue
+            user_input = to_run  # a `/procedure run` — fall through to execute it
 
         messages.append({"role": "user", "content": user_input})
         # Stream the answer token-by-token; print the "halia ›" header on the first delta
@@ -152,6 +204,7 @@ def run_tui(profile: str | None = None, allow_commands: bool = False) -> None:
             messages.pop()  # drop the failed turn so history stays clean
             continue
         messages.append({"role": "assistant", "content": result.answer})
+        persist()  # conversation survives a restart from here
         if streamed:
             sys.stdout.write("\n")
             sys.stdout.flush()
@@ -162,3 +215,9 @@ def run_tui(profile: str | None = None, allow_commands: bool = False) -> None:
             figures = ", ".join(result.unverified)
             console.print(f"[yellow]⚠ unverified figures:[/yellow] {figures}")
         console.print()
+
+        record = new_record(
+            config.provider, config.model, user_input, result.answer, result.steps,
+            unverified=result.unverified, corrections=result.corrections,
+        )
+        save_run(record)

@@ -57,17 +57,24 @@ def setup() -> None:
 
 @app.command()
 def tui(
+    vertical: Annotated[
+        str | None,
+        typer.Argument(help="Optional vertical/profile to run in (e.g. qa, finance)."),
+    ] = None,
     profile: Annotated[
-        str | None, typer.Option("--profile", help="Use a named profile or preset (e.g. finance).")
+        str | None, typer.Option("--profile", help="Vertical/profile (same as the argument).")
     ] = None,
     allow_commands: Annotated[
         bool, typer.Option("--allow-commands", help="Enable shell commands (gated by approval).")
     ] = False,
+    resume: Annotated[
+        str | None, typer.Option("--resume", help="Resume a saved session by id/prefix.")
+    ] = None,
 ) -> None:
-    """Experimental REPL-style chat shell (banner + rich input; multi-line paste, word nav)."""
+    """REPL-style chat shell (banner, rich input, streaming, sessions). `halia tui qa` for QA."""
     from halia.cli.tui import run_tui
 
-    run_tui(profile=profile, allow_commands=allow_commands)
+    run_tui(profile=vertical or profile, allow_commands=allow_commands, resume=resume)
 
 
 @app.command()
