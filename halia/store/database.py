@@ -59,6 +59,20 @@ CREATE TABLE IF NOT EXISTS checkpoints (
 );
 CREATE INDEX IF NOT EXISTS idx_checkpoints_created_at ON checkpoints (created_at DESC);
 
+CREATE TABLE IF NOT EXISTS procedures (
+    name                TEXT PRIMARY KEY,
+    description         TEXT NOT NULL DEFAULT '',
+    target             TEXT NOT NULL DEFAULT '',
+    data_spec          TEXT NOT NULL DEFAULT '',
+    method             TEXT NOT NULL DEFAULT 'GET',
+    url                TEXT NOT NULL DEFAULT '',
+    headers_json       TEXT NOT NULL DEFAULT '{}',
+    result_columns_json TEXT NOT NULL DEFAULT '[]',
+    pass_rule          TEXT NOT NULL DEFAULT '',
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
     id             TEXT PRIMARY KEY,
     created_at     TEXT NOT NULL,
