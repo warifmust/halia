@@ -1,6 +1,6 @@
 [project]
 name = "halia"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A trust-first general agent."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -29,6 +29,11 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# Single source of truth for the version: halia/__init__.py `__version__`.
+# Scheme: MAJOR.SPRINT.HOTFIX — small change → bump HOTFIX; big change → bump SPRINT, reset HOTFIX.
+[tool.hatch.version]
+path = "halia/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["halia"]
