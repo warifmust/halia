@@ -50,7 +50,7 @@ def render_banner(console: Console | None = None) -> None:
     con.print(Text(HALIA_BANNER, style="bold yellow"))
     con.print(
         "[dim]trust-first agent · Enter to send · Option+Enter for a newline · "
-        "/procedure · /iters · /resume · /clear · /exit[/dim]\n"
+        "/procedure · /iters · /local · /resume · /clear · /exit[/dim]\n"
     )
 
 
@@ -103,6 +103,7 @@ def run_tui(
     allow_commands: bool = False,
     resume: str | None = None,
     max_iters: int = 30,
+    allow_local: bool = False,
 ) -> None:
     """Banner + a real chat loop: the prompt_toolkit input feeds the converse() loop.
 
@@ -125,8 +126,10 @@ def run_tui(
     )
     from halia.core.agent import SYSTEM_PROMPT, RunLimitError, converse
     from halia.core.session import get_session, new_session, save_session
+    from halia.permissions.network import set_allow_local
     from halia.providers.base import ProviderError
 
+    set_allow_local(allow_local)
     render_banner()
 
     if resume is not None:
@@ -160,7 +163,10 @@ def run_tui(
     approve = _make_approver()  # one trust scope for the whole session
     session = build_session()
     budget = max_iters  # tool-call rounds per turn; raise it live with /iters
-    console.print(f"[dim]tool-call budget: {budget}/turn (raise with /iters N)[/dim]\n")
+    local_note = " · local egress ON" if allow_local else ""
+    console.print(
+        f"[dim]tool-call budget: {budget}/turn (raise with /iters N){local_note}[/dim]\n"
+    )
 
     while True:
         try:
@@ -178,6 +184,20 @@ def run_tui(
             del messages[1:]  # keep the system prompt
             persist()
             console.print("[dim]context cleared.[/dim]\n")
+            continue
+        if user_input.lower().startswith("/local"):
+            from halia.permissions.network import allow_local_enabled, set_allow_local
+
+            parts = user_input.split()
+            if len(parts) >= 2 and parts[1].lower() in ("on", "off"):
+                set_allow_local(parts[1].lower() == "on")
+            else:
+                set_allow_local(not allow_local_enabled())  # bare /local toggles
+            state = "ON" if allow_local_enabled() else "OFF"
+            console.print(
+                f"[dim]local egress {state} — http_request "
+                f"{'can' if allow_local_enabled() else 'cannot'} reach localhost/LAN.[/dim]\n"
+            )
             continue
         if user_input.lower().startswith("/iters"):
             parts = user_input.split()

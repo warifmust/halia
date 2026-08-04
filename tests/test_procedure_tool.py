@@ -88,10 +88,18 @@ def test_is_affirmative_accepts_natural_yes() -> None:
         assert _is_affirmative(yes) is True, yes
 
 
-def test_is_affirmative_rejects_no_and_corrections() -> None:
+def test_is_affirmative_rejects_no_and_stops() -> None:
     from halia.cli.main import _is_affirmative
 
     for no in ["no", "nope", "wait", "stop", "not yet", "hold on", "cancel", ""]:
         assert _is_affirmative(no) is False, no
-    # a "yes, but change X" is a correction, not a clean yes → must not auto-approve
-    assert _is_affirmative("yes but change the url") is False
+
+
+def test_is_affirmative_first_word_wins() -> None:
+    from halia.cli.main import _is_affirmative
+
+    # a stray "no" later in an affirmative reply must NOT flip it (the real-world bug)
+    assert _is_affirmative("yes, and no bearer token needed") is True
+    assert _is_affirmative("sure, go ahead") is True
+    # a leading no/stop still wins
+    assert _is_affirmative("no, wait — the url is wrong") is False

@@ -68,3 +68,36 @@ def test_fetch_url_blocks_metadata_ip() -> None:
 def test_fetch_url_blocks_localhost() -> None:
     out = FetchUrl().run({"url": "http://localhost:8080/admin"})
     assert out.startswith("blocked:")
+
+
+# --- allow_local opt-in (local dev-server testing) ---
+
+
+@pytest.mark.parametrize("ip", ["127.0.0.1", "::1", "10.0.0.1", "192.168.1.5"])
+def test_allow_local_permits_loopback_and_private(ip: str) -> None:
+    check_egress("http://localhost:3155/", resolver=_resolves_to(ip), allow_local=True)  # no raise
+
+
+@pytest.mark.parametrize("ip", ["169.254.169.254", "224.0.0.1", "0.0.0.0"])
+def test_allow_local_still_blocks_metadata_and_special(ip: str) -> None:
+    # even with local access on, cloud-metadata / multicast / unspecified stay blocked
+    with pytest.raises(EgressDenied):
+        check_egress("http://whatever/", resolver=_resolves_to(ip), allow_local=True)
+
+
+def test_allow_local_process_toggle() -> None:
+    from halia.permissions.network import allow_local_enabled, set_allow_local
+
+    try:
+        set_allow_local(True)
+        assert allow_local_enabled() is True
+        check_egress("http://localhost/", resolver=_resolves_to("127.0.0.1"))  # process default
+    finally:
+        set_allow_local(False)  # restore for other tests
+    with pytest.raises(EgressDenied):
+        check_egress("http://localhost/", resolver=_resolves_to("127.0.0.1"))
+
+
+def test_error_hints_at_allow_local() -> None:
+    with pytest.raises(EgressDenied, match="allow-local"):
+        check_egress("http://localhost/", resolver=_resolves_to("127.0.0.1"))

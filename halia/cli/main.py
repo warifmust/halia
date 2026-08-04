@@ -67,6 +67,10 @@ def tui(
     allow_commands: Annotated[
         bool, typer.Option("--allow-commands", help="Enable shell commands (gated by approval).")
     ] = False,
+    allow_local: Annotated[
+        bool,
+        typer.Option("--allow-local", help="Let http_request reach localhost/LAN (dev testing)."),
+    ] = False,
     resume: Annotated[
         str | None, typer.Option("--resume", help="Resume a saved session by id/prefix.")
     ] = None,
@@ -79,7 +83,7 @@ def tui(
 
     run_tui(
         profile=vertical or profile, allow_commands=allow_commands,
-        resume=resume, max_iters=max_iters,
+        resume=resume, max_iters=max_iters, allow_local=allow_local,
     )
 
 
@@ -134,22 +138,29 @@ _AFFIRMATIVE = {
     "approve", "approved", "proceed", "confirm", "confirmed", "do it", "go ahead", "go",
     "sounds good", "please do", "yes please", "lets do it", "let's do it", "please",
 }
-# Cues that mean "not a clean yes" — negation OR a correction ("yes, but change the url").
+# Clear negatives/stop-signals. First decisive word wins, so a leading one of these means no.
 _NEGATIVE_CUES = (
-    "no", "nope", "nah", "not", "don't", "dont", "stop", "wait", "hold", "cancel",
-    "but", "change", "instead", "except", "actually", "hmm",
+    "no", "nope", "nah", "not", "don't", "dont", "stop", "wait", "hold", "cancel", "never",
 )
 
 
 def _is_affirmative(reply: str) -> bool:
-    """True only for a clear yes with no negation/correction cue (safe default: False)."""
+    """First yes/no word wins, so 'yes, no token needed' approves (safe default: False).
+
+    Scanning for the FIRST decisive word — rather than failing on any stray 'no' — means
+    'yes, and no bearer token needed' reads as yes, while 'no, wait' and 'not sure' read
+    as no. Nothing decisive → False.
+    """
     text = reply.strip().lower().rstrip(".!")
-    if not text:
-        return False
-    words = set(text.split())
-    if any(cue in words for cue in _NEGATIVE_CUES):
-        return False
-    return text in _AFFIRMATIVE or bool(words & _AFFIRMATIVE)
+    if text in _AFFIRMATIVE:
+        return True
+    for word in text.split():
+        clean = word.strip(",.!?;:")
+        if clean in _AFFIRMATIVE:
+            return True
+        if clean in _NEGATIVE_CUES:
+            return False
+    return False
 
 
 def _make_approver() -> Any:
@@ -366,8 +377,16 @@ def run(
     notify: Annotated[
         bool, typer.Option("--notify", help="Push the result to the configured gateway.")
     ] = False,
+    allow_local: Annotated[
+        bool,
+        typer.Option("--allow-local", help="Let http_request reach localhost/LAN (dev testing)."),
+    ] = False,
 ) -> None:
     """Run halia's agent loop on a task (can use tools)."""
+    if allow_local:
+        from halia.permissions.network import set_allow_local
+
+        set_allow_local(True)
     _execute_run(
         prompt, max_iters, quiet, allow_commands, profile, plan, pause_for_approval, notify=notify
     )
@@ -1247,8 +1266,16 @@ def procedure_run(
     notify: Annotated[
         bool, typer.Option("--notify", help="Push the result to the configured gateway.")
     ] = False,
+    allow_local: Annotated[
+        bool,
+        typer.Option("--allow-local", help="Let http_request reach localhost/LAN (dev testing)."),
+    ] = False,
 ) -> None:
     """Execute a saved test procedure (injects its instructions into the run)."""
+    if allow_local:
+        from halia.permissions.network import set_allow_local
+
+        set_allow_local(True)
     from halia.procedures import get_procedure
 
     proc = get_procedure(name)
