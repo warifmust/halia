@@ -146,13 +146,16 @@ def run_tui(
         messages = [{"role": "system", "content": SYSTEM_PROMPT + extra_system}]
         sess = new_session(config.provider, config.model, profile, allow_commands, messages)
         save_session(sess)
-        console.print(
-            f"[dim]session [bold]{sess.id}[/bold] — resume later with "
-            f"`halia tui --resume {sess.id}`[/dim]\n"
-        )
 
     def persist() -> None:
         save_session(replace(sess, messages=list(messages)))
+
+    def farewell() -> None:
+        # The resume hint belongs here, on the way OUT — you only resume after closing.
+        console.print(
+            f"[dim]session {sess.id} — resume with `halia tui --resume {sess.id}`[/dim]"
+        )
+        console.print("[dim]bye.[/dim]")
 
     approve = _make_approver()  # one trust scope for the whole session
     session = build_session()
@@ -163,12 +166,13 @@ def run_tui(
         try:
             user_input = session.prompt(PROMPT).strip()
         except (EOFError, KeyboardInterrupt):
-            console.print("[dim]bye.[/dim]")
+            console.print()
+            farewell()
             break
         if not user_input:
             continue
         if user_input.lower() in ("/exit", "/quit"):
-            console.print("[dim]bye.[/dim]")
+            farewell()
             break
         if user_input.lower() == "/clear":
             del messages[1:]  # keep the system prompt
