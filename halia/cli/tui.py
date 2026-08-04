@@ -50,7 +50,7 @@ def render_banner(console: Console | None = None) -> None:
     con.print(Text(HALIA_BANNER, style="bold yellow"))
     con.print(
         "[dim]trust-first agent · Enter to send · Option+Enter for a newline · "
-        "/procedure · /resume · /clear · /exit[/dim]\n"
+        "/procedure · /iters · /resume · /clear · /exit[/dim]\n"
     )
 
 
@@ -99,7 +99,10 @@ def build_session(**kwargs: Any) -> PromptSession[str]:
 
 
 def run_tui(
-    profile: str | None = None, allow_commands: bool = False, resume: str | None = None
+    profile: str | None = None,
+    allow_commands: bool = False,
+    resume: str | None = None,
+    max_iters: int = 30,
 ) -> None:
     """Banner + a real chat loop: the prompt_toolkit input feeds the converse() loop.
 
@@ -153,6 +156,8 @@ def run_tui(
 
     approve = _make_approver()  # one trust scope for the whole session
     session = build_session()
+    budget = max_iters  # tool-call rounds per turn; raise it live with /iters
+    console.print(f"[dim]tool-call budget: {budget}/turn (raise with /iters N)[/dim]\n")
 
     while True:
         try:
@@ -169,6 +174,14 @@ def run_tui(
             del messages[1:]  # keep the system prompt
             persist()
             console.print("[dim]context cleared.[/dim]\n")
+            continue
+        if user_input.lower().startswith("/iters"):
+            parts = user_input.split()
+            if len(parts) >= 2 and parts[1].isdigit() and int(parts[1]) > 0:
+                budget = int(parts[1])
+                console.print(f"[dim]tool-call budget set to {budget}/turn.[/dim]\n")
+            else:
+                console.print(f"[dim]tool-call budget is {budget}/turn. Usage: /iters N[/dim]\n")
             continue
         if user_input.lower().startswith("/resume"):
             _chat_resume(user_input, config, registry)
@@ -194,13 +207,19 @@ def run_tui(
 
         try:
             result = converse(
-                messages, config, registry,
+                messages, config, registry, max_iters=budget,
                 observer=_show_step, approver=approve, on_delta=on_delta,
             )
         except (ProviderError, RunLimitError) as exc:
             if streamed:
                 sys.stdout.write("\n")
-            console.print(f"[red]error:[/red] {exc}\n")
+            console.print(f"[red]error:[/red] {exc}")
+            if isinstance(exc, RunLimitError):
+                console.print(
+                    f"[dim]raise the budget with /iters {budget * 2} and ask again, "
+                    "or narrow the task.[/dim]"
+                )
+            console.print()
             messages.pop()  # drop the failed turn so history stays clean
             continue
         messages.append({"role": "assistant", "content": result.answer})

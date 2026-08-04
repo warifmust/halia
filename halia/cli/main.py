@@ -70,11 +70,17 @@ def tui(
     resume: Annotated[
         str | None, typer.Option("--resume", help="Resume a saved session by id/prefix.")
     ] = None,
+    max_iters: Annotated[
+        int, typer.Option("--max-iters", help="Tool-call rounds per turn (raise for big tasks).")
+    ] = 30,
 ) -> None:
     """REPL-style chat shell (banner, rich input, streaming, sessions). `halia tui qa` for QA."""
     from halia.cli.tui import run_tui
 
-    run_tui(profile=vertical or profile, allow_commands=allow_commands, resume=resume)
+    run_tui(
+        profile=vertical or profile, allow_commands=allow_commands,
+        resume=resume, max_iters=max_iters,
+    )
 
 
 @app.command()
