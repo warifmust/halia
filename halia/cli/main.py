@@ -172,8 +172,11 @@ def _make_approver() -> Any:
     regardless. Session-scoped; nothing is persisted.
     """
     trusted_dirs: set[str] = set()
+    trusted_tools: set[str] = set()
 
     def approve(name: str, arguments: str) -> bool:
+        if name in trusted_tools:
+            return True  # already trusted every call to this tool this session
         target_dir = _write_target_dir(name, arguments)
         if target_dir is not None and target_dir in trusted_dirs:
             return True  # already trusted this dir this session — no re-prompt
@@ -188,7 +191,17 @@ def _make_approver() -> Any:
                 console.print(f"[dim]trusting writes to {target_dir} for this session[/dim]")
                 return True
             return _is_affirmative(choice)
-        return _is_affirmative(console.input("Allow? "))
+        # Any other gated tool (http_request, save_procedure, …): offer to trust it for the
+        # whole session, so a batch (e.g. 100 endpoint tests) needs one 'a', not 100 'yes'.
+        choice = console.input(
+            f"Allow? [bold]yes[/bold] / [bold]a[/bold]ll {name} calls this session / "
+            f"[bold]no[/bold]: "
+        ).strip().lower()
+        if choice in ("a", "all"):
+            trusted_tools.add(name)
+            console.print(f"[dim]trusting all {name} calls for this session[/dim]")
+            return True
+        return _is_affirmative(choice)
 
     return approve
 

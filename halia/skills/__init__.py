@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from halia.skills.ask import AskUser
 from halia.skills.base import Skill
 from halia.skills.calc import Calculate
 from halia.skills.chart import MakeChart
@@ -37,6 +38,7 @@ _SKILL_FACTORIES: dict[str, Callable[[], Skill]] = {
     "web_search": WebSearch,
     "http_request": HttpRequest,
     "calculate": Calculate,
+    "ask_user": AskUser,
     "read_csv": ReadCsv,
     "aggregate_csv": AggregateCsv,
     "group_by": GroupByCsv,

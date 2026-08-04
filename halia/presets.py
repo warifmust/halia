@@ -105,7 +105,12 @@ _QA_PROMPT = (
     "API / endpoint test cases yourself: call the endpoint with http_request and decide "
     "pass/fail DETERMINISTICALLY with check_expectation (status, body), then report grounded "
     "results — never claim you 'cannot run tests'. Run only against a TEST or local server, "
-    "never production, and use real/gated data only if the user provides it. You do NOT "
+    "never production. First establish the happy-path BASELINE (a valid request → 2xx) so "
+    "you know what success looks like, THEN run negative cases. When you need something only "
+    "the user has — a Bearer token, a gated test-data value (a blacklisted user id, a "
+    "non-eKYC user), a feature-flag toggle, a decision — CALL ask_user to get it (secret=true "
+    "for tokens); do NOT invent gated/secret values, and do NOT silently skip a case for lack "
+    "of data — ask first, and only flag it as human-run if the user says to skip. You do NOT "
     "click through a GUI and do NOT write automated test CODE (jest, Playwright) — those "
     "stay with the human tester or developer; state clearly which cases you executed vs. "
     "which a human must run. (4) Write clear, unambiguous steps; separate observed FACTS "
@@ -246,6 +251,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "check_requirements",  # requirement → test-case traceability
             "check_expectation",  # deterministic PASS/FAIL verdict on a comparison
             "save_procedure",  # remember a taught test procedure from chat (approval-gated)
+            "ask_user",  # pause + ask the tester for a token / gated data / a decision
             "http_request",  # call/test API endpoints (approval-gated)
             "read_file",
             "read_pdf",
