@@ -12,9 +12,11 @@ next; here we just prove the input feels right.
 from __future__ import annotations
 
 import sys
+import time
 from typing import Any
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.input import ansi_escape_sequences as _aes
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
@@ -124,9 +126,14 @@ def run_tui(
         _show_step,
         console,
     )
-    from halia.core.agent import SYSTEM_PROMPT, RunLimitError, converse
+    from halia.core.agent import (
+        DEFAULT_HISTORY_BUDGET_CHARS,
+        SYSTEM_PROMPT,
+        RunLimitError,
+        converse,
+    )
     from halia.core.session import get_session, new_session, save_session
-    from halia.permissions.network import set_allow_local
+    from halia.permissions.network import allow_local_enabled, set_allow_local
     from halia.providers.base import ProviderError
 
     set_allow_local(allow_local)
@@ -161,12 +168,24 @@ def run_tui(
         console.print("[dim]bye.[/dim]")
 
     approve = _make_approver()  # one trust scope for the whole session
-    session = build_session()
     budget = max_iters  # tool-call rounds per turn; raise it live with /iters
-    local_note = " · local egress ON" if allow_local else ""
-    console.print(
-        f"[dim]tool-call budget: {budget}/turn (raise with /iters N){local_note}[/dim]\n"
-    )
+    active_profile = sess.profile or "general"
+    turn_secs = [0.0]  # last turn's wall time (list so the toolbar closure sees updates)
+
+    def ctx_pct() -> int:
+        """How full the sent-context window is (a char proxy for tokens)."""
+        used = sum(len(str(m.get("content") or "")) for m in messages)
+        used += sum(len(str(m.get("tool_calls") or "")) for m in messages)
+        return min(100, int(used / DEFAULT_HISTORY_BUDGET_CHARS * 100))
+
+    def bottom_toolbar() -> HTML:
+        local = "on" if allow_local_enabled() else "off"
+        return HTML(
+            f" <b>{active_profile}</b> · {config.model} · {sess.id[:6]} · "
+            f"ctx {ctx_pct()}% · budget {budget} · local {local} · {turn_secs[0]:.1f}s "
+        )
+
+    session = build_session(bottom_toolbar=bottom_toolbar)
 
     while True:
         try:
@@ -229,12 +248,14 @@ def run_tui(
             sys.stdout.write(token)
             sys.stdout.flush()
 
+        started = time.perf_counter()
         try:
             result = converse(
                 messages, config, registry, max_iters=budget,
                 observer=_show_step, approver=approve, on_delta=on_delta,
             )
         except (ProviderError, RunLimitError) as exc:
+            turn_secs[0] = time.perf_counter() - started
             if streamed:
                 sys.stdout.write("\n")
             console.print(f"[red]error:[/red] {exc}")
@@ -246,6 +267,7 @@ def run_tui(
             console.print()
             messages.pop()  # drop the failed turn so history stays clean
             continue
+        turn_secs[0] = time.perf_counter() - started
         messages.append({"role": "assistant", "content": result.answer})
         persist()  # conversation survives a restart from here
         if streamed:
