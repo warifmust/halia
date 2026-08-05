@@ -13,3 +13,6 @@ dist/
 
 # halia runtime (local config + secrets — never commit)
 .halia/
+
+# local working docs (project notes, roadmap, backlog — kept out of the repo)
+.claude/
