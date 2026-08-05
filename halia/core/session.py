@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -38,10 +38,15 @@ class Session:
     profile: str | None
     allow_commands: bool
     messages: list[Message]
+    # Earlier turns that compaction summarised out of the working window — the working
+    # `messages` may be compacted, but the full transcript is preserved here.
+    archived_messages: list[Message] = field(default_factory=list)
 
     def turn_count(self) -> int:
-        """Number of user turns in the conversation."""
-        return sum(1 for m in self.messages if m.get("role") == "user")
+        """Number of user turns in the conversation (working window + archive)."""
+        return sum(
+            1 for m in [*self.archived_messages, *self.messages] if m.get("role") == "user"
+        )
 
 
 def new_session(
@@ -63,6 +68,7 @@ def new_session(
         profile=profile,
         allow_commands=allow_commands,
         messages=list(messages),
+        archived_messages=[],
     )
 
 
@@ -77,7 +83,7 @@ def _derive_title(messages: list[Message]) -> str:
 
 _COLUMNS = (
     "id, created_at, updated_at, title, provider, model, profile, "
-    "allow_commands, messages_json"
+    "allow_commands, messages_json, archived_messages_json"
 )
 
 
@@ -88,7 +94,7 @@ def save_session(session: Session, db_path: Path = DB_PATH) -> None:
     try:
         conn.execute(
             f"INSERT OR REPLACE INTO sessions ({_COLUMNS}) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 session.id,
                 session.created_at,
@@ -99,6 +105,7 @@ def save_session(session: Session, db_path: Path = DB_PATH) -> None:
                 session.profile,
                 int(session.allow_commands),
                 json.dumps(session.messages),
+                json.dumps(session.archived_messages),
             ),
         )
         conn.commit()
@@ -117,6 +124,7 @@ def _row_to_session(row: Any) -> Session:
         profile=row[6],
         allow_commands=bool(row[7]),
         messages=list(json.loads(row[8])),
+        archived_messages=list(json.loads(row[9])) if len(row) > 9 and row[9] else [],
     )
 
 

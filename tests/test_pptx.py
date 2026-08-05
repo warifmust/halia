@@ -53,12 +53,19 @@ def test_no_separator_splits_on_headings() -> None:
     assert len(prs.slides) == 2
 
 
-def test_make_pptx_writes_deck_and_source(tmp_path: Any) -> None:
+def test_make_pptx_writes_only_deck_by_default(tmp_path: Any) -> None:
     out = tmp_path / "deck.pptx"
     result = MakePptx().run({"path": str(out), "content": _MD})
     assert "wrote 2-slide deck" in result
     assert out.read_bytes().startswith(b"PK")  # pptx is a zip
-    assert (tmp_path / "deck.md").read_text() == _MD  # editable master kept
+    assert not (tmp_path / "deck.md").exists()  # no sidecar by default
+
+
+def test_make_pptx_keeps_source_on_request(tmp_path: Any) -> None:
+    out = tmp_path / "deck.pptx"
+    result = MakePptx().run({"path": str(out), "content": _MD, "keep_source": True})
+    assert "markdown source kept" in result
+    assert (tmp_path / "deck.md").read_text() == _MD
 
 
 def test_make_pptx_supports_unicode(tmp_path: Any) -> None:

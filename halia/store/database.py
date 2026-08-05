@@ -104,6 +104,12 @@ _PROCEDURES_MIGRATIONS = {
     "steps_json": "TEXT NOT NULL DEFAULT '[]'",
 }
 
+# Columns added to `sessions` after its first release. `archived_messages_json` keeps the
+# full transcript that compaction summarised out of the working window.
+_SESSIONS_MIGRATIONS = {
+    "archived_messages_json": "TEXT NOT NULL DEFAULT '[]'",
+}
+
 
 def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
     """Add any missing columns to `table` (idempotent, additive-only migration)."""
@@ -120,5 +126,6 @@ def connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
     conn.executescript(_SCHEMA)
     _ensure_columns(conn, "runs", _RUNS_MIGRATIONS)
     _ensure_columns(conn, "procedures", _PROCEDURES_MIGRATIONS)
+    _ensure_columns(conn, "sessions", _SESSIONS_MIGRATIONS)
     conn.commit()
     return conn

@@ -55,3 +55,22 @@ def test_banner_is_present() -> None:
 def test_word_nav_bindings_registered() -> None:
     kb = build_key_bindings()
     assert len(kb.bindings) >= 4  # esc+left/right and ctrl+left/right
+
+
+def test_slash_completer_dropdown() -> None:
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+
+    from halia.cli.tui import _SlashCompleter
+
+    comp = _SlashCompleter()
+    ev = CompleteEvent()
+
+    def texts(s: str) -> list[str]:
+        return [c.text for c in comp.get_completions(Document(s), ev)]
+
+    assert "/help" in texts("/") and "/exit" in texts("/")  # bare / lists all
+    assert texts("/q") == ["/quit"]  # filters as you type
+    assert set(texts("/c")) == {"/commands", "/clear", "/compact"}
+    assert texts("hello") == []  # normal chat → no dropdown
+    assert texts("/local on") == []  # past the command word → no dropdown

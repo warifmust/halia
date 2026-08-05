@@ -26,7 +26,9 @@ def test_trims_oldest_turns_keeps_system() -> None:
     windowed = _window(msgs, 500)  # only the last couple of turns fit
     assert windowed[0]["role"] == "system"  # system always retained
     assert len(windowed) < len(msgs)  # older turns dropped
-    assert windowed[1]["role"] == "user"  # window begins at a user boundary
+    # a truncation note is inserted, then the window begins at a user boundary
+    assert "trimmed" in str(windowed[1]["content"])
+    assert windowed[2]["role"] == "user"
     # the most recent turn is always present
     assert windowed[-1]["content"] == msgs[-1]["content"]
 
@@ -43,8 +45,9 @@ def test_never_orphans_a_tool_message() -> None:
         {"role": "assistant", "content": "new answer"},
     ]
     windowed = _window(msgs, 50)  # tiny budget
-    # window must start at a user message — never at a bare `tool`/`assistant` turn
-    assert windowed[1]["role"] == "user"
+    # after system + truncation note, the window must start at a user message —
+    # never at a bare `tool`/`assistant` turn
+    assert windowed[2]["role"] == "user"
     assert not any(
         m["role"] == "tool" and windowed[i - 1].get("role") not in ("assistant",)
         for i, m in enumerate(windowed)

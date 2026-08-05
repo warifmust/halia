@@ -10,6 +10,7 @@ emit each step live via an `observer`, so a run is auditable, not opaque.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,6 +38,12 @@ SYSTEM_PROMPT = (
     "calculate tool so numbers are exact and verifiable. To total or average a "
     "whole CSV column, use aggregate_csv (it reads every row in code), not a "
     "sum of sampled rows. "
+    "FILES & PATHS: pass paths exactly as the user gives them — a leading ~ is expanded "
+    "by the tools, so pass '~/Works/foo' literally. NEVER invent an absolute path or guess "
+    "a username or home directory. If a path the user gave cannot be found, call ask_user "
+    "for the correct one — do NOT silently fall back to the current directory ('.') or "
+    "analyse a different location than the user asked for; working on the wrong target is "
+    "worse than pausing to ask. "
     "When the user describes a test or task they'll want to REPEAT (e.g. 'first do "
     "this, then run that, output in this format'), offer to remember it as a reusable "
     "procedure via save_procedure. First gather the required parts — what's tested, the "
@@ -49,8 +56,25 @@ DEFAULT_MAX_ITERS = 8
 
 # Cap on the conversation history *sent to the model* each turn (a char proxy for
 # tokens, ~4 chars/token). The full transcript is still persisted — this only bounds
-# what we transmit, so long chats don't bloat cost or overflow the context window.
-DEFAULT_HISTORY_BUDGET_CHARS = 40000
+# what we transmit. Sized for real work (reading a codebase, long QA runs); override
+# with HALIA_HISTORY_BUDGET for very large-context models or very long sessions.
+try:
+    DEFAULT_HISTORY_BUDGET_CHARS = int(os.environ.get("HALIA_HISTORY_BUDGET", "400000"))
+except ValueError:
+    DEFAULT_HISTORY_BUDGET_CHARS = 400000
+
+# Injected in place of dropped turns when the history is trimmed — so the model KNOWS
+# earlier work happened and doesn't gaslight the user with "this is a fresh session".
+_TRUNCATION_NOTE: Message = {
+    "role": "system",
+    "content": (
+        "[Context note: this conversation is long, so some EARLIER turns have been "
+        "trimmed to fit the window. Anything you did earlier — analyses, files you read, "
+        "prior answers — REALLY happened; it is simply not shown here. Do NOT claim there "
+        "is 'no prior context' or that this is a fresh session. If you need a specific "
+        "detail from earlier that you can't see, ask the user to re-share it.]"
+    ),
+}
 
 
 def _msg_chars(message: Message) -> int:
@@ -65,10 +89,16 @@ def _window(messages: list[Message], max_chars: int) -> list[Message]:
     Trims only at user-message boundaries, so an assistant tool-call turn always keeps
     its tool responses (splitting them would make an invalid request). If even the last
     turn exceeds the budget, it's still sent whole — better a big call than a broken one.
+    When turns are dropped, a truncation note is inserted so the model knows.
+
+    The protected prefix is the LEADING RUN of system messages — the system prompt plus
+    any compaction summary note that follows it — so windowing never drops the summary.
     """
-    has_system = bool(messages) and messages[0].get("role") == "system"
-    system = messages[:1] if has_system else []
-    body = messages[len(system):]
+    prefix_end = 0
+    while prefix_end < len(messages) and messages[prefix_end].get("role") == "system":
+        prefix_end += 1
+    system = messages[:prefix_end]
+    body = messages[prefix_end:]
 
     total = 0
     start = len(body)  # nothing kept yet
@@ -87,7 +117,147 @@ def _window(messages: list[Message], max_chars: int) -> list[Message]:
         )
     if start == 0:
         return messages  # everything fits — unchanged
-    return system + body[start:]
+    return system + [_TRUNCATION_NOTE] + body[start:]
+
+
+# --- Compaction ---------------------------------------------------------------------
+# When the sent-context window nears its budget, halia can COMPACT: summarise the older
+# turns into one dense note and keep only the recent turns verbatim — instead of hard-
+# dropping the oldest (what _window does). The full transcript is preserved by the caller
+# (archived in the session) and every tool result stays in the audit trail, so compaction
+# only rewrites what is TRANSMITTED — grounding is never lost.
+
+# Fraction of the history budget at which compaction triggers. Early enough that the
+# summarisation call itself still fits comfortably. Override with HALIA_COMPACT_AT.
+try:
+    COMPACT_THRESHOLD = float(os.environ.get("HALIA_COMPACT_AT", "0.85"))
+except ValueError:
+    COMPACT_THRESHOLD = 0.85
+
+# After a compaction, keep roughly this fraction of the budget as recent verbatim turns.
+_COMPACT_KEEP_RECENT = 0.4
+
+# Asked when the window crosses the compaction threshold; return True to compact now,
+# False to skip (fall back to plain truncation). The caller owns any "always" memory.
+CompactApprover = Callable[[], bool]
+
+# Called with the turns compaction summarised away, so the caller can archive the full
+# transcript before the working set is shrunk.
+CompactArchiver = Callable[[list[Message]], None]
+
+_COMPACT_SYSTEM = (
+    "You are a meticulous note-taker compacting a long assistant/tool conversation so it "
+    "fits a smaller context window. Write a DENSE summary of the conversation below that "
+    "preserves everything needed to continue the work faithfully:\n"
+    "- the user's original task and any constraints or preferences they stated\n"
+    "- key decisions, conclusions, and the current state of the work\n"
+    "- important facts, figures, file paths, ids, and endpoints — and, for any number or "
+    "result, WHICH tool produced it (the raw tool outputs remain in the audit trail)\n"
+    "- what has been done versus what is still pending or unresolved\n"
+    "Be factual and specific; do NOT invent anything not present below. Output the summary "
+    "as plain text (short headings and bullets are fine), nothing else."
+)
+
+
+def _total_chars(messages: list[Message]) -> int:
+    return sum(_msg_chars(m) for m in messages)
+
+
+def _compact_split(body: list[Message], keep_recent_chars: int) -> int:
+    """Index into `body` where the KEEP-verbatim tail begins (a user boundary).
+
+    Everything before it is summarised. Returns 0 when there is nothing worth
+    summarising (the whole body is within the keep-recent budget).
+    """
+    total = 0
+    start = len(body)
+    for i in range(len(body) - 1, -1, -1):
+        total += _msg_chars(body[i])
+        if total > keep_recent_chars:
+            break
+        start = i
+    # Begin the kept tail at a user boundary so an assistant tool-call turn is never split
+    # from its tool responses.
+    while start < len(body) and body[start].get("role") != "user":
+        start += 1
+    return start
+
+
+def _summarise(provider: Provider, old: list[Message]) -> str:
+    """Ask the model for a dense plain-text summary of the `old` turns."""
+    transcript = "\n\n".join(
+        f"[{m.get('role')}] {m.get('content') or ''}"
+        + (f"\n(tool_calls: {json.dumps(m.get('tool_calls'))})" if m.get("tool_calls") else "")
+        for m in old
+    )
+    req: list[Message] = [
+        {"role": "system", "content": _COMPACT_SYSTEM},
+        {"role": "user", "content": transcript},
+    ]
+    return (provider.chat(req).content or "").strip()
+
+
+def compact_history(
+    messages: list[Message],
+    config: Config,
+    provider: Provider | None = None,
+    keep_recent_chars: int | None = None,
+) -> list[Message]:
+    """Compact `messages` IN PLACE: replace older turns with one summary note.
+
+    Keeps the system prompt and the most recent turns verbatim; summarises the middle.
+    Returns the turns that were summarised away (for archiving); an empty list means
+    nothing was compacted (too little history to help, or an empty summary).
+    """
+    provider = provider if provider is not None else build_provider(config)
+    if keep_recent_chars is None:
+        keep_recent_chars = int(_COMPACT_KEEP_RECENT * DEFAULT_HISTORY_BUDGET_CHARS)
+    has_system = bool(messages) and messages[0].get("role") == "system"
+    system = messages[:1] if has_system else []
+    body = messages[len(system):]
+    split = _compact_split(body, keep_recent_chars)
+    if split <= 0:
+        return []  # nothing old enough to summarise
+    old, recent = body[:split], body[split:]
+    summary = _summarise(provider, old)
+    if not summary:
+        return []
+    note: Message = {
+        "role": "system",
+        "content": (
+            "[Summary of earlier conversation, compacted to save context. The full "
+            "transcript is archived and every tool result remains in the audit trail.]\n\n"
+            + summary
+        ),
+    }
+    messages[:] = system + [note] + recent
+    return old
+
+
+def _maybe_compact(ctx: _Ctx, messages: list[Message]) -> None:
+    """Before a model call: if the window is near full, offer to compact (once per run)."""
+    if ctx.compact_suppressed or ctx.compact_approver is None:
+        return
+    if _total_chars(messages) < ctx.compact_threshold * ctx.history_budget:
+        return
+    keep = int(_COMPACT_KEEP_RECENT * ctx.history_budget)
+    has_system = bool(messages) and messages[0].get("role") == "system"
+    body = messages[1:] if has_system else messages
+    if _compact_split(body, keep) <= 0:
+        ctx.compact_suppressed = True  # only recent turns remain — nothing to gain; stop checking
+        return
+    if not ctx.compact_approver():
+        ctx.compact_suppressed = True  # user declined — don't nag again this run
+        return
+    if ctx.on_activity is not None:
+        ctx.on_activity("compacting")
+    dropped = compact_history(messages, ctx.config, ctx.provider, keep_recent_chars=keep)
+    if not dropped:
+        ctx.compact_suppressed = True
+        return
+    if ctx.on_compact is not None:
+        ctx.on_compact(dropped)
+
 
 # How many times the conscience may bounce an answer back to reground flagged figures.
 DEFAULT_MAX_CORRECTIONS = 1
@@ -105,6 +275,10 @@ _CORRECTION_TEMPLATE = (
 
 # Called with each Step as it happens (for live display); does not affect the run.
 Observer = Callable[[Step], None]
+
+# Called when the agent starts an activity — "" for a model call (thinking), or a tool
+# name just before that tool runs. Lets a UI show what halia is doing right now.
+ActivityObserver = Callable[[str], None]
 
 # Called once with the drafted plan text (for live display), before the loop runs.
 PlanObserver = Callable[[str], None]
@@ -173,6 +347,11 @@ class _Ctx:
     checkpoint_db: Path = DB_PATH
     history_budget: int = DEFAULT_HISTORY_BUDGET_CHARS
     on_delta: DeltaObserver | None = None
+    on_activity: ActivityObserver | None = None
+    compact_approver: CompactApprover | None = None
+    on_compact: CompactArchiver | None = None
+    compact_threshold: float = COMPACT_THRESHOLD
+    compact_suppressed: bool = False
 
 
 def _is_dangerous(registry: SkillRegistry, name: str) -> bool:
@@ -201,6 +380,8 @@ def _execute_batch(
 ) -> None:
     """Run a tool-call batch, appending each step + its `tool` message (in place)."""
     for tc in calls:
+        if ctx.on_activity is not None:
+            ctx.on_activity(tc["name"])
         observation = _run_tool(ctx.registry, tc["name"], tc["arguments"], ctx.approver)
         step = Step(tool=tc["name"], arguments=tc["arguments"], observation=observation)
         steps.append(step)
@@ -253,6 +434,10 @@ def _loop(
     tools = ctx.registry.tool_schemas() or None
     while iters_used < ctx.max_iters:
         iters_used += 1
+        # Near the budget? Offer to compact older turns before we build the window.
+        _maybe_compact(ctx, messages)
+        if ctx.on_activity is not None:
+            ctx.on_activity("")  # about to call the model (thinking)
         # Send a bounded window of history (full transcript stays in `messages`).
         window = _window(messages, ctx.history_budget)
         if ctx.on_delta is not None:
@@ -389,6 +574,9 @@ def converse(
     approver: Approver | None = None,
     history_budget: int = DEFAULT_HISTORY_BUDGET_CHARS,
     on_delta: DeltaObserver | None = None,
+    on_activity: ActivityObserver | None = None,
+    compact_approver: CompactApprover | None = None,
+    on_compact: CompactArchiver | None = None,
 ) -> RunResult:
     """Run one chat turn over an existing conversation (the multi-turn / chat primitive).
 
@@ -406,6 +594,7 @@ def converse(
         extra_system="", plan="", max_iters=max_iters,
         max_corrections=DEFAULT_MAX_CORRECTIONS, observer=observer, approver=approver,
         pause_on_approval=False, history_budget=history_budget, on_delta=on_delta,
+        on_activity=on_activity, compact_approver=compact_approver, on_compact=on_compact,
     )
     return _loop(ctx, messages, [], 0, 0)
 

@@ -49,14 +49,14 @@ class AskUser:
                 "skip this step or flag it for a human."
             )
 
-        print(f"\n\033[1;36m[halia needs input]\033[0m {question.strip()}")
+        print(f"\n{question.strip()}")
         try:
             if bool(args.get("secret")):
                 import getpass
 
-                answer = getpass.getpass("  (hidden) › ")
+                answer = getpass.getpass("❯ (hidden) ")
             else:
-                answer = input("  › ")
+                answer = input("❯ ")
         except (EOFError, KeyboardInterrupt):
             return "no answer (user cancelled) — skip this step or flag it for a human."
 

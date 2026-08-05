@@ -43,11 +43,18 @@ def test_bold_becomes_a_bold_run() -> None:
     assert any(r.text == "bold" and r.bold for r in runs)
 
 
-def test_make_docx_writes_doc_and_source(tmp_path: Any) -> None:
+def test_make_docx_writes_only_doc_by_default(tmp_path: Any) -> None:
     out = tmp_path / "report.docx"
     result = MakeDocx().run({"path": str(out), "content": _MD})
     assert "wrote Word document" in result
     assert out.read_bytes().startswith(b"PK")  # docx is a zip
+    assert not (tmp_path / "report.md").exists()  # no sidecar by default
+
+
+def test_make_docx_keeps_source_on_request(tmp_path: Any) -> None:
+    out = tmp_path / "report.docx"
+    result = MakeDocx().run({"path": str(out), "content": _MD, "keep_source": True})
+    assert "markdown source kept" in result
     assert (tmp_path / "report.md").read_text() == _MD
 
 

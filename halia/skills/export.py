@@ -11,6 +11,7 @@ simple tables, rules) with fpdf2 — lean, no browser, no LibreOffice.
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from pathlib import Path
@@ -21,6 +22,10 @@ from fpdf.enums import XPos, YPos
 
 from halia.permissions.guard import PermissionDenied, check_writable
 from halia.skills.chart import parse_chart_block
+
+# fpdf2 logs a WARNING per emoji/glyph the bundled font can't draw (e.g. ✅ ❌ in a doc).
+# That's noise in the tool trace — quiet it; the character simply won't render in the PDF.
+logging.getLogger("fpdf").setLevel(logging.ERROR)
 
 _HEADING_SIZES = {1: 20, 2: 16, 3: 14, 4: 12, 5: 11, 6: 11}
 # Core PDF fonts are latin-1 only; map common typographic characters so content
@@ -362,8 +367,8 @@ class MakePdf:
         "Render markdown/text content to a clean, printable PDF (headings, bold, bullet "
         "and numbered lists, simple tables). To embed a bar chart, include a fenced block:\n"
         "```chart\ntype: line\ntitle: My Chart\nLabel A: 12\nLabel B: 8\n```\n"
-        "(type is bar or line — line for trends). The editable markdown source is saved "
-        "alongside the PDF — edit that and re-render."
+        "(type is bar or line — line for trends). By default only the PDF is written; "
+        "pass keep_source=true to also save the editable .md source alongside for re-rendering."
     )
     dangerous = True  # writes files
     parameters: dict[str, Any] = {
@@ -373,6 +378,11 @@ class MakePdf:
             "path": {"type": "string", "description": "Output .pdf file path."},
             "content": {"type": "string", "description": "The markdown/text content."},
             "title": {"type": "string", "description": "Optional title (rendered as a heading)."},
+            "keep_source": {
+                "type": "boolean",
+                "description": "Also write the editable .md source alongside (default false — "
+                "only the PDF is produced).",
+            },
         },
         "required": ["path", "content"],
     }
@@ -381,6 +391,7 @@ class MakePdf:
         path = args.get("path")
         content = args.get("content")
         title = args.get("title")
+        keep_source = bool(args.get("keep_source", False))
         if not isinstance(path, str) or not path.strip():
             return "error: 'path' is required"
         if not isinstance(content, str) or not content.strip():
@@ -389,19 +400,23 @@ class MakePdf:
             content = f"# {title.strip()}\n\n{content}"
 
         pdf_path = Path(path).expanduser()
-        md_path = pdf_path.with_suffix(".md")  # the editable master, kept alongside
+        md_path = pdf_path.with_suffix(".md")  # the editable master, kept only on request
         try:
             check_writable(pdf_path)
-            check_writable(md_path)
+            if keep_source:
+                check_writable(md_path)
         except PermissionDenied as exc:
             return f"blocked: {exc}"
 
         try:
             render_markdown_pdf(content).output(str(pdf_path))
-            md_path.write_text(content, encoding="utf-8")
+            if keep_source:
+                md_path.write_text(content, encoding="utf-8")
         except OSError as exc:
             return f"error writing {path}: {exc}"
-        return f"wrote PDF to {pdf_path} (editable markdown source kept at {md_path})"
+        if keep_source:
+            return f"wrote PDF to {pdf_path} (editable markdown source kept at {md_path})"
+        return f"wrote PDF to {pdf_path}"
 
 
 # --- PPTX: markdown -> slides -----------------------------------------------------
@@ -667,8 +682,8 @@ class MakeDocx:
     name = "make_docx"
     description = (
         "Render markdown/text content to an editable Word (.docx) document (headings, bold, "
-        "bullet and numbered lists, simple tables). Full Unicode. The editable markdown "
-        "source is saved alongside — edit that and re-render."
+        "bullet and numbered lists, simple tables). Full Unicode. By default only the .docx is "
+        "written; pass keep_source=true to also save the editable .md source alongside."
     )
     dangerous = True  # writes files
     parameters: dict[str, Any] = {
@@ -678,6 +693,11 @@ class MakeDocx:
             "path": {"type": "string", "description": "Output .docx file path."},
             "content": {"type": "string", "description": "The markdown/text content."},
             "title": {"type": "string", "description": "Optional title (rendered as a heading)."},
+            "keep_source": {
+                "type": "boolean",
+                "description": "Also write the editable .md source alongside (default false — "
+                "only the .docx is produced).",
+            },
         },
         "required": ["path", "content"],
     }
@@ -686,6 +706,7 @@ class MakeDocx:
         path = args.get("path")
         content = args.get("content")
         title = args.get("title")
+        keep_source = bool(args.get("keep_source", False))
         if not isinstance(path, str) or not path.strip():
             return "error: 'path' is required"
         if not isinstance(content, str) or not content.strip():
@@ -697,16 +718,20 @@ class MakeDocx:
         md_path = docx_path.with_suffix(".md")
         try:
             check_writable(docx_path)
-            check_writable(md_path)
+            if keep_source:
+                check_writable(md_path)
         except PermissionDenied as exc:
             return f"blocked: {exc}"
 
         try:
             render_markdown_docx(content).save(str(docx_path))
-            md_path.write_text(content, encoding="utf-8")
+            if keep_source:
+                md_path.write_text(content, encoding="utf-8")
         except OSError as exc:
             return f"error writing {path}: {exc}"
-        return f"wrote Word document to {docx_path} (editable markdown source kept at {md_path})"
+        if keep_source:
+            return f"wrote Word document to {docx_path} (markdown source kept at {md_path})"
+        return f"wrote Word document to {docx_path}"
 
 
 class MakePptx:
@@ -718,7 +743,8 @@ class MakePptx:
         "```chart\ntype: line\ntitle: My Chart\nLabel A: 12\nLabel B: 8\n```\n"
         "(type is bar or line). Produces clean CONTENT and arrangement; the user styles the "
         "design in PowerPoint. "
-        "The editable markdown source is saved alongside."
+        "By default only the .pptx is written; pass keep_source=true to also save the "
+        "editable .md source alongside."
     )
     dangerous = True  # writes files
     parameters: dict[str, Any] = {
@@ -730,6 +756,11 @@ class MakePptx:
                 "type": "string",
                 "description": "Markdown content; '---' on its own line starts a new slide.",
             },
+            "keep_source": {
+                "type": "boolean",
+                "description": "Also write the editable .md source alongside (default false — "
+                "only the .pptx is produced).",
+            },
         },
         "required": ["path", "content"],
     }
@@ -737,6 +768,7 @@ class MakePptx:
     def run(self, args: dict[str, Any]) -> str:
         path = args.get("path")
         content = args.get("content")
+        keep_source = bool(args.get("keep_source", False))
         if not isinstance(path, str) or not path.strip():
             return "error: 'path' is required"
         if not isinstance(content, str) or not content.strip():
@@ -746,7 +778,8 @@ class MakePptx:
         md_path = pptx_path.with_suffix(".md")
         try:
             check_writable(pptx_path)
-            check_writable(md_path)
+            if keep_source:
+                check_writable(md_path)
         except PermissionDenied as exc:
             return f"blocked: {exc}"
 
@@ -754,7 +787,10 @@ class MakePptx:
         n = len(deck.slides)
         try:
             deck.save(str(pptx_path))
-            md_path.write_text(content, encoding="utf-8")
+            if keep_source:
+                md_path.write_text(content, encoding="utf-8")
         except OSError as exc:
             return f"error writing {path}: {exc}"
-        return f"wrote {n}-slide deck to {pptx_path} (editable markdown source kept at {md_path})"
+        if keep_source:
+            return f"wrote {n}-slide deck to {pptx_path} (markdown source kept at {md_path})"
+        return f"wrote {n}-slide deck to {pptx_path}"

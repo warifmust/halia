@@ -8,11 +8,19 @@ Anthropic's native API) get their own provider later.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 import httpx
 
 from halia.providers.base import ChatResult, DeltaObserver, Message, ProviderError, ToolCall
+
+# Read timeout per request (or per streamed chunk). Generous by default for heavy reasoning
+# + large outputs; override with HALIA_TIMEOUT (seconds).
+try:
+    _DEFAULT_TIMEOUT = float(os.environ.get("HALIA_TIMEOUT", "180"))
+except ValueError:
+    _DEFAULT_TIMEOUT = 180.0
 
 
 class OpenAICompatProvider:
@@ -23,7 +31,7 @@ class OpenAICompatProvider:
         base_url: str,
         api_key: str,
         model: str,
-        timeout: float = 60.0,
+        timeout: float = _DEFAULT_TIMEOUT,
         client: httpx.Client | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")

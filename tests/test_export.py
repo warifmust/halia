@@ -41,19 +41,28 @@ def test_pdf_roundtrips_back_to_text(tmp_path: Any) -> None:
     assert "Send letters home" in text
 
 
-def test_make_pdf_writes_pdf_and_markdown_source(tmp_path: Any) -> None:
+def test_make_pdf_writes_only_pdf_by_default(tmp_path: Any) -> None:
     out = tmp_path / "report.pdf"
     result = MakePdf().run({"path": str(out), "content": _MD})
     assert "wrote PDF" in result
     assert out.read_bytes().startswith(b"%PDF")
-    # the editable markdown master is kept alongside
+    # by default NO markdown sidecar is written (avoids stray duplicate files)
+    assert not (tmp_path / "report.md").exists()
+
+
+def test_make_pdf_keeps_source_on_request(tmp_path: Any) -> None:
+    out = tmp_path / "report.pdf"
+    result = MakePdf().run({"path": str(out), "content": _MD, "keep_source": True})
+    assert "markdown source kept" in result
     md = tmp_path / "report.md"
     assert md.exists() and md.read_text() == _MD
 
 
 def test_make_pdf_title_is_prepended(tmp_path: Any) -> None:
     out = tmp_path / "t.pdf"
-    MakePdf().run({"path": str(out), "content": "Body text.", "title": "My Title"})
+    MakePdf().run(
+        {"path": str(out), "content": "Body text.", "title": "My Title", "keep_source": True}
+    )
     assert (tmp_path / "t.md").read_text().startswith("# My Title")
 
 

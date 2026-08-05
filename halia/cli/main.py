@@ -12,16 +12,56 @@ from typing import Annotated, Any
 
 import typer
 from rich.console import Console
+from rich.highlighter import RegexHighlighter
+from rich.theme import Theme
 
 from halia import __version__
+
+
+class _ToolHighlighter(RegexHighlighter):
+    """Colour a tool call: function=blue, JSON key=yellow, value=green, numbers=green.
+
+    Brackets/commas/braces stay the terminal default (white on dark). Keeps the readable
+    multicolour of the default highlighter, minus the red strings that looked like errors.
+    """
+
+    base_style = "tool."
+    highlights = [
+        r"(?P<func>[A-Za-z_]\w*)(?=\()",  # the tool/function name before '('
+        r'(?P<key>"[^"]*")(?=\s*:)',  # a JSON key (string right before ':')
+        r':\s*(?P<value>"[^"]*")',  # a string value (after ':')
+        r"(?P<value>\b(?:true|false|null)\b)",  # literals
+        r"(?P<num>-?\d+\.?\d*)",  # numbers
+        # HTTP methods, coloured by verb (applied last so they win over the generic value):
+        r'(?P<m_get>"GET")',
+        r'(?P<m_post>"POST")',
+        r'(?P<m_put>"(?:PUT|PATCH)")',
+        r'(?P<m_del>"DELETE")',
+        r'(?P<m_other>"(?:HEAD|OPTIONS)")',
+    ]
+
+
+_TOOL_THEME = Theme(
+    {
+        "tool.func": "blue",
+        "tool.key": "yellow",
+        "tool.value": "green",
+        "tool.num": "green",
+        "tool.m_get": "bold green",  # safe read
+        "tool.m_post": "bold cyan",  # create
+        "tool.m_put": "bold yellow",  # update (PUT/PATCH)
+        "tool.m_del": "bold red",  # destructive
+        "tool.m_other": "bold magenta",
+    }
+)
+_tool_hl = _ToolHighlighter()
 
 app = typer.Typer(
     name="halia",
     help="halia — a trust-first general agent.",
-    no_args_is_help=True,
     add_completion=False,
 )
-console = Console()
+console = Console(theme=_TOOL_THEME)
 
 
 def _version_callback(value: bool) -> None:
@@ -30,15 +70,36 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def _main(
+    ctx: typer.Context,
     version: Annotated[
         bool,
         typer.Option("--version", callback=_version_callback, is_eager=True,
                      help="Show the halia version and exit."),
     ] = False,
+    allow_commands: Annotated[
+        bool, typer.Option("--allow-commands", help="Enable shell commands (gated by approval).")
+    ] = False,
+    allow_local: Annotated[
+        bool, typer.Option("--allow-local", help="Let http_request reach localhost/LAN.")
+    ] = False,
+    resume: Annotated[
+        str | None, typer.Option("--resume", help="Resume a saved session by id/prefix.")
+    ] = None,
+    max_iters: Annotated[
+        int, typer.Option("--max-iters", help="Tool-call rounds per turn (raise for big tasks).")
+    ] = 30,
 ) -> None:
-    """halia — a trust-first general agent."""
+    """halia — a trust-first general agent. Run with no arguments to open the chat shell."""
+    if ctx.invoked_subcommand is None:
+        # bare `halia` (and `halia --resume …`, `--allow-local`, …) → open the chat shell.
+        from halia.cli.tui import run_tui
+
+        run_tui(
+            allow_commands=allow_commands, allow_local=allow_local,
+            resume=resume, max_iters=max_iters,
+        )
 
 
 @app.command()
@@ -53,38 +114,6 @@ def setup() -> None:
     from halia.config.wizard import run_setup
 
     run_setup(console)
-
-
-@app.command()
-def tui(
-    vertical: Annotated[
-        str | None,
-        typer.Argument(help="Optional vertical/profile to run in (e.g. qa, finance)."),
-    ] = None,
-    profile: Annotated[
-        str | None, typer.Option("--profile", help="Vertical/profile (same as the argument).")
-    ] = None,
-    allow_commands: Annotated[
-        bool, typer.Option("--allow-commands", help="Enable shell commands (gated by approval).")
-    ] = False,
-    allow_local: Annotated[
-        bool,
-        typer.Option("--allow-local", help="Let http_request reach localhost/LAN (dev testing)."),
-    ] = False,
-    resume: Annotated[
-        str | None, typer.Option("--resume", help="Resume a saved session by id/prefix.")
-    ] = None,
-    max_iters: Annotated[
-        int, typer.Option("--max-iters", help="Tool-call rounds per turn (raise for big tasks).")
-    ] = 30,
-) -> None:
-    """REPL-style chat shell (banner, rich input, streaming, sessions). `halia tui qa` for QA."""
-    from halia.cli.tui import run_tui
-
-    run_tui(
-        profile=vertical or profile, allow_commands=allow_commands,
-        resume=resume, max_iters=max_iters, allow_local=allow_local,
-    )
 
 
 @app.command()
@@ -111,9 +140,30 @@ def ask(prompt: Annotated[str, typer.Argument(help="What to ask halia.")]) -> No
     console.print(answer)
 
 
+def _short_args(arguments: str) -> str:
+    """Shorten a tool call's args for display — replace big content/text blobs with a size."""
+    import json
+
+    try:
+        obj = json.loads(arguments)
+    except (json.JSONDecodeError, TypeError):
+        return arguments if len(arguments) <= 300 else arguments[:300] + " …"
+    if isinstance(obj, dict):
+        for key in ("content", "text"):
+            value = obj.get(key)
+            if isinstance(value, str) and len(value) > 80:
+                obj[key] = f"<{len(value)} chars>"
+        return json.dumps(obj, ensure_ascii=False)
+    return arguments
+
+
 def _show_step(step: Any) -> None:
-    console.print(f"[dim]→ {step.tool}({step.arguments})[/dim]")
-    console.print(f"[dim]  ↳ {step.preview()}[/dim]")
+    # The call line is syntax-highlighted (func=blue, key=yellow, value=green, methods by
+    # verb) so it's readable and unmistakably a tool call, not an error. Big content blobs
+    # (make_pdf/write_file) are collapsed to a size so the trace stays clean.
+    console.print(_tool_hl(f"→ {step.tool}({_short_args(step.arguments)})"))
+    # Result line: a muted grey — clearly secondary, and darker than the bold status line.
+    console.print(f"  ↳ {step.preview()}", style="grey50", highlight=False, markup=False)
 
 
 def _write_target_dir(name: str, arguments: str) -> str | None:
@@ -122,6 +172,14 @@ def _write_target_dir(name: str, arguments: str) -> str | None:
     Covers any tool that writes to a `path` argument (write_file, make_chart, …) — the
     ones consulted here are always dangerous, so read tools with a path never reach this.
     """
+    resolved = _write_target_path(arguments)
+    import os
+
+    return os.path.dirname(resolved) if resolved is not None else None
+
+
+def _write_target_path(arguments: str) -> str | None:
+    """The absolute file path a file-writing tool targets (~ expanded), or None."""
     import json
     import os
 
@@ -129,7 +187,9 @@ def _write_target_dir(name: str, arguments: str) -> str | None:
         path = json.loads(arguments).get("path")
     except (json.JSONDecodeError, AttributeError):
         return None
-    return os.path.dirname(os.path.abspath(path)) if isinstance(path, str) and path else None
+    if isinstance(path, str) and path:
+        return os.path.abspath(os.path.expanduser(path))
+    return None
 
 
 # Natural-language yes: the gate understands "yep / sure / go ahead" as well as "y".
@@ -173,34 +233,43 @@ def _make_approver() -> Any:
     """
     trusted_dirs: set[str] = set()
     trusted_tools: set[str] = set()
+    trust_all = {"on": False}  # 'always' → stop asking for anything this session
 
     def approve(name: str, arguments: str) -> bool:
+        if trust_all["on"]:
+            return True  # user chose 'always' — trust everything for this session
         if name in trusted_tools:
             return True  # already trusted every call to this tool this session
         target_dir = _write_target_dir(name, arguments)
         if target_dir is not None and target_dir in trusted_dirs:
             return True  # already trusted this dir this session — no re-prompt
-        console.print(f"[yellow]halia wants to run[/yellow] [bold]{name}[/bold]: {arguments}")
+        console.print()
+        console.print(f"[bold white on yellow] approve [/bold white on yellow] [bold]{name}[/bold]")
         if target_dir is not None:
-            choice = console.input(
-                "Allow? [bold]yes[/bold] / [bold]a[/bold]ll writes to this folder / "
-                "[bold]no[/bold]: "
-            ).strip().lower()
-            if choice in ("a", "all"):
-                trusted_dirs.add(target_dir)
-                console.print(f"[dim]trusting writes to {target_dir} for this session[/dim]")
-                return True
-            return _is_affirmative(choice)
-        # Any other gated tool (http_request, save_procedure, …): offer to trust it for the
-        # whole session, so a batch (e.g. 100 endpoint tests) needs one 'a', not 100 'yes'.
+            # A file write: show the RESOLVED absolute destination (not a relative path or a
+            # huge content blob), so the user knows exactly where it lands before approving.
+            console.print(f"  → writes to {_write_target_path(arguments)}", style="white")
+            all_label = f"all writes to {target_dir}"
+        else:
+            args_preview = arguments if len(arguments) <= 220 else arguments[:220] + " …"
+            console.print(f"  {args_preview}", highlight=False, markup=False, style="white")
+            all_label = f"all {name} calls"
         choice = console.input(
-            f"Allow? [bold]yes[/bold] / [bold]a[/bold]ll {name} calls this session / "
-            f"[bold]no[/bold]: "
+            f"  [green]yes[/green] · [cyan]all[/cyan] ({all_label}) · "
+            f"[magenta]always[/magenta] (everything this session) · [red]no[/red]  ❯ "
         ).strip().lower()
-        if choice in ("a", "all"):
-            trusted_tools.add(name)
-            console.print(f"[dim]trusting all {name} calls for this session[/dim]")
+        if choice in ("always", "everything"):
+            trust_all["on"] = True
+            console.print("  [dim]trusting every tool for the rest of this session[/dim]\n")
             return True
+        if choice in ("a", "all"):
+            if target_dir is not None:
+                trusted_dirs.add(target_dir)
+            else:
+                trusted_tools.add(name)
+            console.print(f"  [dim]trusting {all_label} this session[/dim]\n")
+            return True
+        console.print()
         return _is_affirmative(choice)
 
     return approve
@@ -406,10 +475,17 @@ def run(
 
 
 def _make_preset_command(preset_name: str) -> Callable[..., None]:
-    """Build a `run`-style command bound to one preset (own scope → no late-binding)."""
+    """Build a command bound to one preset (own scope → no late-binding).
+
+    With a task → one-shot run in that persona. Without a task → open the chat shell in
+    that persona (so `halia qa` drops you into the QA TUI, `halia qa "…"` runs it once).
+    """
 
     def _cmd(
-        prompt: Annotated[str, typer.Argument(help="The task for halia to work on.")],
+        prompt: Annotated[
+            str | None,
+            typer.Argument(help="Task to run one-shot; omit to open the chat shell."),
+        ] = None,
         max_iters: Annotated[int, typer.Option(help="Max tool-call iterations.")] = 8,
         quiet: Annotated[
             bool, typer.Option("--quiet", "-q", help="Hide the tool-call trace.")
@@ -418,22 +494,35 @@ def _make_preset_command(preset_name: str) -> Callable[..., None]:
             bool,
             typer.Option("--allow-commands", help="Enable shell commands (gated by approval)."),
         ] = False,
+        allow_local: Annotated[
+            bool,
+            typer.Option("--allow-local", help="Let http_request reach localhost/LAN."),
+        ] = False,
         plan: Annotated[
             bool,
             typer.Option("--plan", help="Draft a short plan before executing (one extra call)."),
         ] = False,
     ) -> None:
+        if prompt is None or not prompt.strip():
+            from halia.cli.tui import run_tui
+
+            run_tui(profile=preset_name, allow_commands=allow_commands, allow_local=allow_local)
+            return
+        if allow_local:
+            from halia.permissions.network import set_allow_local
+
+            set_allow_local(True)
         _execute_run(prompt, max_iters, quiet, allow_commands, preset_name, plan)
 
     return _cmd
 
 
 def _register_preset_commands() -> None:
-    """Register one command per built-in preset, so `halia finance "…"` works directly."""
+    """Register one command per built-in preset: `halia qa` (chat) or `halia qa "…"` (one-shot)."""
     from halia.presets import BUILTIN_PRESETS
 
     for preset_name in BUILTIN_PRESETS:
-        app.command(name=preset_name, help=f"Run halia in the '{preset_name}' persona.")(
+        app.command(name=preset_name, help=f"Chat in the '{preset_name}' persona (or run a task).")(
             _make_preset_command(preset_name)
         )
 
