@@ -60,3 +60,29 @@ def test_sign_insensitivity_still_catches_invented() -> None:
     # magnitude matching must not ground a number that isn't in tools at all
     steps = [Step("reconcile_csv", "{}", "CHK-1042: -1200.00 vs -1250.00")]
     assert "999.00" in ungrounded_numbers("There is also a $999.00 fee.", steps)
+
+
+def test_version_after_capitalized_word_is_not_a_figure() -> None:
+    # "Sonnet 4.5" / "GPT-4.5" / "Claude 3.5" are names, not computed figures — no tools ran,
+    # yet the decimal must NOT be flagged (the false positive we saw in a chat turn).
+    assert ungrounded_numbers("I'm Sonnet 4.5, your assistant.", []) == []
+    assert ungrounded_numbers("Running GPT-4.5 under the hood.", []) == []
+    assert ungrounded_numbers("That's Claude 3.5 Sonnet, not Version 4.5.", []) == []
+    assert ungrounded_numbers("See Table 4.5 for details.", []) == []
+
+
+def test_real_figure_after_lowercase_or_label_still_caught() -> None:
+    # The heuristic must not swallow genuine figures: a lowercase connector, a colon label,
+    # or a currency mark before the number still gets ground-checked.
+    assert ungrounded_numbers("The total is 4.5 million.", []) == ["4.5"]
+    assert ungrounded_numbers("Revenue: 4.5 recorded.", []) == ["4.5"]
+    assert "4.5" in ungrounded_numbers("It costs $4.5 today.", [])
+    assert ungrounded_numbers("revenue was 4.5 overall.", []) == ["4.5"]
+
+
+def test_money_after_capitalized_word_still_caught() -> None:
+    # Version-like X.Y is exempt after a capital, but a 2-decimal / comma money figure is
+    # NOT — even when a capitalized (often sentence-initial) word precedes it.
+    assert ungrounded_numbers("Still 730.50 remains.", []) == ["730.50"]
+    assert ungrounded_numbers("Total 42.00 outstanding.", []) == ["42.00"]
+    assert "1250.00" in ungrounded_numbers("Balance 1,250.00 today.", [])

@@ -21,6 +21,15 @@ from halia.audit.trace import Step
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 # A number not glued to a letter/digit/dot (so ids like T1 and versions 1.2.3 don't match).
 _NUM = re.compile(r"(?<![A-Za-z0-9.])\$?-?\d[\d,]*(?:\.\d+)?")
+# A capitalized word / acronym directly before the number (one space or hyphen, nothing
+# else) marks a NAME or VERSION rather than a computed figure — "Sonnet 4.5", "GPT-4.5",
+# "Claude 3.5", "Version 4.5", "Table 4.5".
+_NAME_PREFIX = re.compile(r"[A-Z][A-Za-z]*[ \-]$")
+# ...but only when the number is VERSION-LIKE: a lone single-decimal (4.5, 3.5, 10.2), no
+# currency/comma and not a 2-decimal cents figure. This keeps genuine money safe even after
+# a capitalized (often sentence-initial) word — "Still 730.50", "Total 42.00", "Balance
+# 1,250.00" are all still ground-checked; only true X.Y version tokens are waved through.
+_VERSION_LIKE = re.compile(r"\d+\.\d")
 
 
 def _extract(text: str, figures_only: bool) -> set[Decimal]:
@@ -31,6 +40,14 @@ def _extract(text: str, figures_only: bool) -> set[Decimal]:
         # A "figure" to verify has a decimal point, currency sign, or thousands comma;
         # bare integers (counts, years, ids) are too noisy to check in the answer.
         if figures_only and not any(mark in token for mark in ".$,"):
+            continue
+        # A version/model/identifier like "Sonnet 4.5" is not a figure to ground-check —
+        # but only wave through a version-like X.Y so real money is never skipped.
+        if (
+            figures_only
+            and _VERSION_LIKE.fullmatch(token)
+            and _NAME_PREFIX.search(cleaned[: match.start()])
+        ):
             continue
         normalized = token.lstrip("$").replace(",", "").strip()
         try:
