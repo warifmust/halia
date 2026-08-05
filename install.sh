@@ -48,8 +48,9 @@ uv tool update-shell >/dev/null 2>&1 || true
 
 echo
 echo "✓ halia installed. Next:"
-echo "    halia setup        # choose a provider + paste your API key"
-echo "    halia qa            # start the QA chat shell"
+echo "    halia setup         # choose a provider + paste your API key"
+echo "    halia               # start the chat shell (or 'halia qa' for the QA vertical)"
+echo "    halia --resume <id> # pick up a past session"
 echo "    halia gateway setup # (optional) Telegram notifications"
 echo
 echo "If 'halia' isn't found, open a new terminal (uv adds ~/.local/bin to PATH)."
