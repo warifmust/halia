@@ -345,6 +345,7 @@ def run_tui(
     active_profile = run_profile or "general"
     turn_secs = [0.0]  # last turn's wall time (list so the toolbar closure sees updates)
     footer = _Footer(console)  # live 'working' line during a turn
+    streaming = {"on": False}  # is an answer currently streaming to the screen this turn?
     compact_always = {"on": False}  # remembers an "always compact" choice for the session
 
     def compact_consent() -> bool:
@@ -482,17 +483,27 @@ def run_tui(
             user_input = to_run  # a `/procedure run` — fall through to execute it
 
         messages.append({"role": "user", "content": user_input})
-        # The live footer stays up for the WHOLE turn (thinking, tool-arg generation, tools),
-        # swapping its message via on_activity — so there's never a "hung" gap. Tool-trace
-        # lines print above it; it pauses only for an approval prompt. The answer prints when
-        # ready (not token-streamed) so it never fights the footer.
+        # The footer shows liveness while halia THINKS (before the first token) and while
+        # tools run. The moment the model starts emitting the answer, on_delta stops the
+        # footer and STREAMS the tokens live — the text itself becomes the liveness. Tool
+        # traces and approval prompts still interrupt cleanly (each closes the stream first).
+        streaming["on"] = False  # reset per turn (any prior turn's stream is already closed)
+
+        def close_stream() -> None:
+            if streaming["on"]:
+                console.print()  # end the streamed line before anything else prints
+                streaming["on"] = False
+
         def approve_and_clear(name: str, arguments: str) -> bool:
+            close_stream()
             footer.stop()  # pause the live line for the interactive prompt
             ok = bool(approve(name, arguments))
             footer.start()  # resume (state preserved)
             return ok
 
         def on_activity(label: str) -> None:
+            # A new phase (next model call, or a tool) begins — close any streamed answer.
+            close_stream()
             # ask_user reads from the terminal — get the footer out of the way so it
             # doesn't animate over the prompt; it resumes on the next activity.
             if label == "ask_user":
@@ -501,20 +512,29 @@ def run_tui(
                 footer.start()  # idempotent; resumes if it was stopped (e.g. after ask_user)
                 footer.set_activity(label)
 
+        def on_delta(token: str) -> None:
+            if not token:
+                return
+            if not streaming["on"]:
+                footer.stop()  # first token — hand the screen over to the streamed text
+                console.print("[bold]halia ›[/bold] ", end="")
+                streaming["on"] = True
+            console.print(token, end="", markup=False, highlight=False, soft_wrap=True)
+
         started = time.perf_counter()
         footer.reset()
         footer.start()
         try:
-            # A no-op on_delta makes the provider STREAM the response — each chunk resets the
-            # read timeout, so a long generation doesn't time out — without displaying tokens
-            # (the footer is the liveness indicator; the answer prints whole when ready).
+            # Real on_delta streams the answer token-by-token (and keeps the connection warm —
+            # each chunk resets the read timeout, so long generations never time out).
             result = converse(
                 messages, config, registry, max_iters=budget,
                 observer=_show_step, approver=approve_and_clear,
-                on_activity=on_activity, on_delta=lambda _token: None,
+                on_activity=on_activity, on_delta=on_delta,
                 compact_approver=compact_consent, on_compact=on_compact,
             )
         except (ProviderError, RunLimitError) as exc:
+            close_stream()
             footer.stop()
             turn_secs[0] = time.perf_counter() - started
             console.print(f"[red]error:[/red] {exc}")
@@ -530,7 +550,12 @@ def run_tui(
         turn_secs[0] = time.perf_counter() - started
         messages.append({"role": "assistant", "content": result.answer})
         persist()  # conversation survives a restart from here
-        console.print(f"[bold]halia ›[/bold] {escape(result.answer)}")
+        if streaming["on"]:
+            console.print()  # newline to close the streamed answer
+            streaming["on"] = False
+        else:
+            # No tokens streamed (e.g. an answer produced without content deltas) — print whole.
+            console.print(f"[bold]halia ›[/bold] {escape(result.answer)}")
         if result.unverified:
             figures = ", ".join(result.unverified)
             console.print(f"[yellow]⚠ unverified figures:[/yellow] {figures}")
