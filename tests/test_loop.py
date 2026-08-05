@@ -75,6 +75,46 @@ def test_loop_hits_iteration_cap() -> None:
     assert provider.calls == 3
 
 
+def _balanced(messages: list[Message]) -> bool:
+    """Every assistant tool_calls message is followed by a tool response for each call."""
+    i = 0
+    while i < len(messages):
+        m = messages[i]
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            n = len(m["tool_calls"])
+            j, count = i + 1, 0
+            while j < len(messages) and messages[j].get("role") == "tool":
+                count += 1
+                j += 1
+            if count < n:
+                return False
+            i = j
+        else:
+            i += 1
+    return True
+
+
+def test_runlimit_leaves_balanced_messages() -> None:
+    # A model that never stops calling tools → converse hits the cap with tool exchanges
+    # already appended to the caller's messages. Those must stay BALANCED (no dangling
+    # tool_calls without responses) so the next request can't 400. Regression for the TUI
+    # bug where a blind messages.pop() orphaned the final tool_calls after the cap.
+    from halia.core.agent import converse
+
+    looping = ChatResult(
+        content=None, tool_calls=[ToolCall(id="1", name="list_files", arguments="{}")]
+    )
+    provider = FakeProvider([looping] * 10)
+    messages: list[Message] = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "go"},
+    ]
+    with pytest.raises(RunLimitError):
+        converse(messages, _CFG, default_registry(), provider=provider, max_iters=3)
+    assert _balanced(messages)
+    assert messages[-1]["role"] == "tool"  # stopped on a complete batch
+
+
 def test_unknown_tool_becomes_observation() -> None:
     provider = FakeProvider(
         [

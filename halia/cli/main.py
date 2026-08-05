@@ -89,7 +89,7 @@ def _main(
     ] = None,
     max_iters: Annotated[
         int, typer.Option("--max-iters", help="Tool-call rounds per turn (raise for big tasks).")
-    ] = 30,
+    ] = 50,
 ) -> None:
     """halia — a trust-first general agent. Run with no arguments to open the chat shell."""
     if ctx.invoked_subcommand is None:
@@ -141,20 +141,31 @@ def ask(prompt: Annotated[str, typer.Argument(help="What to ask halia.")]) -> No
 
 
 def _short_args(arguments: str) -> str:
-    """Shorten a tool call's args for display — replace big content/text blobs with a size."""
+    """Shorten a tool call's args for display — collapse any big blob to a size.
+
+    Covers strings (content/text), lists (make_excel `sheets`/`rows`, make_chart data),
+    and nested dicts — anything whose JSON is long — while keeping short, useful args
+    (path, title, name, method, url) visible in full.
+    """
     import json
 
     try:
         obj = json.loads(arguments)
     except (json.JSONDecodeError, TypeError):
         return arguments if len(arguments) <= 300 else arguments[:300] + " …"
-    if isinstance(obj, dict):
-        for key in ("content", "text"):
-            value = obj.get(key)
-            if isinstance(value, str) and len(value) > 80:
-                obj[key] = f"<{len(value)} chars>"
-        return json.dumps(obj, ensure_ascii=False)
-    return arguments
+    if not isinstance(obj, dict):
+        return arguments if len(arguments) <= 300 else arguments[:300] + " …"
+    out: dict[str, Any] = {}
+    for key, value in obj.items():
+        if isinstance(value, str) and len(value) > 80:
+            out[key] = f"<{len(value)} chars>"
+        elif isinstance(value, list) and len(json.dumps(value)) > 80:
+            out[key] = f"<{len(value)} items>"
+        elif isinstance(value, dict) and len(json.dumps(value)) > 80:
+            out[key] = f"<{len(value)} keys>"
+        else:
+            out[key] = value
+    return json.dumps(out, ensure_ascii=False)
 
 
 def _show_step(step: Any) -> None:

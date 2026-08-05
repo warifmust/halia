@@ -274,7 +274,7 @@ def run_tui(
     profile: str | None = None,
     allow_commands: bool = False,
     resume: str | None = None,
-    max_iters: int = 30,
+    max_iters: int = 50,
     allow_local: bool = False,
 ) -> None:
     """Banner + a real chat loop: the prompt_toolkit input feeds the converse() loop.
@@ -482,6 +482,7 @@ def run_tui(
                 continue
             user_input = to_run  # a `/procedure run` — fall through to execute it
 
+        turn_start = len(messages)  # so a failed turn can be rolled back to a valid state
         messages.append({"role": "user", "content": user_input})
         # The footer shows liveness while halia THINKS (before the first token) and while
         # tools run. The moment the model starts emitting the answer, on_delta stops the
@@ -533,18 +534,28 @@ def run_tui(
                 on_activity=on_activity, on_delta=on_delta,
                 compact_approver=compact_consent, on_compact=on_compact,
             )
-        except (ProviderError, RunLimitError) as exc:
+        except RunLimitError as exc:
             close_stream()
             footer.stop()
             turn_secs[0] = time.perf_counter() - started
             console.print(f"[red]error:[/red] {exc}")
-            if isinstance(exc, RunLimitError):
-                console.print(
-                    f"[dim]raise the budget with /iters {budget * 2} and ask again, "
-                    "or narrow the task.[/dim]"
-                )
-            console.print()
-            messages.pop()  # drop the failed turn so history stays clean
+            console.print(
+                f"[dim]raise the budget with /iters {budget * 2} and say 'continue', "
+                "or narrow the task.[/dim]\n"
+            )
+            # The loop stopped between whole batches, so messages are balanced (every
+            # assistant tool_calls has its tool responses) — KEEP them and persist, so
+            # 'continue' resumes with full context instead of 400-ing on a dangling call.
+            persist()
+            continue
+        except ProviderError as exc:
+            close_stream()
+            footer.stop()
+            turn_secs[0] = time.perf_counter() - started
+            console.print(f"[red]error:[/red] {exc}\n")
+            # Roll the whole failed turn back to the last valid state — never leave a
+            # half-appended tool exchange (a lone tool_calls with no responses 400s next call).
+            del messages[turn_start:]
             continue
         footer.stop()  # clear the working line before printing the answer
         turn_secs[0] = time.perf_counter() - started
