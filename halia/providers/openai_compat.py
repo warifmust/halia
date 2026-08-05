@@ -1,8 +1,8 @@
-"""OpenAI-compatible chat provider (OpenAI, DeepSeek, OpenRouter, …).
+"""OpenAI-compatible chat provider (OpenAI, DeepSeek, OpenRouter, MiMo, …).
 
-A thin client over httpx — no litellm. Auth defaults to `Authorization: Bearer
-<key>`, which covers the launch providers; other schemes (MiMo's `api-key`,
-Anthropic's native API) get their own provider later.
+A thin client over httpx — no litellm. Auth is configurable: `Bearer` (OpenAI,
+DeepSeek, OpenRouter), `api-key` (MiMo), or any custom header. Anthropic's
+native API gets its own provider (`providers/anthropic.py`).
 """
 
 from __future__ import annotations
@@ -24,7 +24,11 @@ except ValueError:
 
 
 class OpenAICompatProvider:
-    """Calls `{base_url}/chat/completions` and returns a `ChatResult`."""
+    """Calls `{base_url}/chat/completions` and returns a `ChatResult`.
+
+    `auth_header` controls how the API key is sent: "Bearer" → `Authorization: Bearer
+    <key>`, "api-key" → `api-key: <key>`, etc. Defaults to "Bearer".
+    """
 
     def __init__(
         self,
@@ -33,17 +37,22 @@ class OpenAICompatProvider:
         model: str,
         timeout: float = _DEFAULT_TIMEOUT,
         client: httpx.Client | None = None,
+        auth_header: str = "Bearer",
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._model = model
+        self._auth_header = auth_header
         # An injectable client keeps this testable (MockTransport) without network.
         self._client = client if client is not None else httpx.Client(timeout=timeout)
 
     def _endpoint(self) -> tuple[str, dict[str, str]]:
         headers = {"Content-Type": "application/json"}
         if self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
+            if self._auth_header == "Bearer":
+                headers["Authorization"] = f"Bearer {self._api_key}"
+            else:
+                headers[self._auth_header] = self._api_key
         return f"{self._base_url}/chat/completions", headers
 
     def chat(

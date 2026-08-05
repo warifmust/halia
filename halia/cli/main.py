@@ -117,6 +117,55 @@ def setup() -> None:
 
 
 @app.command()
+def use(
+    provider: Annotated[
+        str, typer.Argument(help="Provider to switch to (openai, deepseek, anthropic, …).")
+    ],
+    model: Annotated[
+        str | None,
+        typer.Option("--model", "-m", help="Model to use (defaults to the provider's default)."),
+    ] = None,
+) -> None:
+    """Quickly switch to a different provider without re-entering your API key."""
+    from halia.config.settings import (
+        PROVIDERS,
+        read_config,
+        read_secret,
+        write_config,
+    )
+
+    provider = provider.lower()
+    if provider not in PROVIDERS:
+        known = ", ".join(sorted(PROVIDERS))
+        console.print(f"[red]Unknown provider '{provider}'.[/red] Known: {known}.")
+        raise typer.Exit(1)
+
+    spec = PROVIDERS[provider]
+    resolved_model = model or spec.default_model
+
+    # Check whether an API key exists for this provider.
+    existing_key = read_secret(provider)
+    if not existing_key:
+        console.print(
+            f"[yellow]No API key stored for {provider}.[/yellow] "
+            f"Run [bold]halia setup[/bold] to configure it."
+        )
+        raise typer.Exit(1)
+
+    # Write the new provider + model to config (secrets are untouched).
+    data = read_config()
+    data["provider"] = provider
+    data["model"] = resolved_model
+    write_config(data)
+
+    console.print(
+        f"[green]✓[/green] Switched to [bold]{provider}[/bold] "
+        f"(model: [cyan]{resolved_model}[/cyan]). "
+        f"API key was reused."
+    )
+
+
+@app.command()
 def ask(prompt: Annotated[str, typer.Argument(help="What to ask halia.")]) -> None:
     """Ask halia a single question (one-shot, no tools)."""
     from halia.config.settings import ConfigError, load_config
@@ -129,10 +178,11 @@ def ask(prompt: Annotated[str, typer.Argument(help="What to ask halia.")]) -> No
         console.print(f"[red]config error:[/red] {exc}")
         raise typer.Exit(1) from exc
 
+    from halia.core.agent import persona_overlay
     from halia.memory.facts import memory_block
 
     try:
-        answer = run_ask(prompt, config, extra_system=memory_block())
+        answer = run_ask(prompt, config, extra_system=memory_block() + persona_overlay())
     except ProviderError as exc:
         console.print(f"[red]provider error:[/red] {exc}")
         raise typer.Exit(1) from exc
@@ -265,10 +315,12 @@ def _make_approver() -> Any:
             args_preview = arguments if len(arguments) <= 220 else arguments[:220] + " …"
             console.print(f"  {args_preview}", highlight=False, markup=False, style="white")
             all_label = f"all {name} calls"
-        choice = console.input(
+        console.print(
             f"  [green]yes[/green] · [cyan]all[/cyan] ({all_label}) · "
-            f"[magenta]always[/magenta] (everything this session) · [red]no[/red]  ❯ "
-        ).strip().lower()
+            f"[magenta]always[/magenta] (everything this session) · [red]no[/red]"
+        )
+        from halia.cli.input import ask
+        choice = ask("  ❯ ").strip().lower()
         if choice in ("always", "everything"):
             trust_all["on"] = True
             console.print("  [dim]trusting every tool for the rest of this session[/dim]\n")
@@ -287,10 +339,14 @@ def _make_approver() -> Any:
 
 
 def _prepare_context(profile: str | None, allow_commands: bool) -> tuple[Any, Any, str]:
-    """Resolve (config, registry, extra_system) from a profile/preset + memory. Exits on error."""
+    """Resolve (config, registry, extra_system) from profile/preset + memory + persona.
+
+    Exits with an error message on config/profile problems.
+    """
     from dataclasses import replace
 
     from halia.config.settings import ConfigError, load_config
+    from halia.core.agent import persona_overlay
     from halia.memory.facts import memory_block
     from halia.presets import resolve_profile
     from halia.skills import build_registry, default_registry
@@ -301,7 +357,7 @@ def _prepare_context(profile: str | None, allow_commands: bool) -> tuple[Any, An
         console.print(f"[red]config error:[/red] {exc}")
         raise typer.Exit(1) from exc
 
-    extra_system = memory_block()
+    extra_system = memory_block() + persona_overlay()
     if profile is not None:
         prof = resolve_profile(profile)  # user profile wins, else a built-in preset
         if prof is None:
@@ -332,6 +388,7 @@ def _execute_run(
     extra_prompt_block: str = "",
     notify: bool = False,
     unattended: bool = False,
+    compact: bool = False,
 ) -> None:
     """Shared body for `run` and the persona-preset commands (`halia finance`, …).
 
@@ -339,10 +396,18 @@ def _execute_run(
     inject a saved test procedure's instructions — see `procedure run`). `notify` pushes
     the result to the configured gateway when the run finishes. `unattended` auto-approves
     gated skills (for scheduled/headless runs) — the permission FLOOR still applies.
+    `compact` auto-summarises older turns when the context window fills up (no prompt;
+    for long headless/scheduled runs).
     """
+    # Honour HALIA_COMPACT_AUTO=true as a default for headless runs without --compact.
+    import os
+
     from halia.core.agent import RunLimitError
     from halia.core.agent import run as run_agent
     from halia.providers.base import ProviderError
+
+    if not compact and os.environ.get("HALIA_COMPACT_AUTO", "").lower() == "true":
+        compact = True
 
     show = _show_step
     approve = (lambda name, arguments: True) if unattended else _make_approver()
@@ -367,6 +432,7 @@ def _execute_run(
             plan=plan,
             on_plan=None if quiet else show_plan,
             pause_on_approval=pause_for_approval,
+            compact=compact,
         )
     except (ProviderError, RunLimitError) as exc:
         console.print(f"[red]error:[/red] {exc}")
@@ -470,6 +536,15 @@ def run(
     notify: Annotated[
         bool, typer.Option("--notify", help="Push the result to the configured gateway.")
     ] = False,
+    compact: Annotated[
+        bool,
+        typer.Option(
+            "--compact",
+            help="Auto-compact older turns when the context window fills up "
+            "(no prompt; for long headless/scheduled runs). Set HALIA_COMPACT_AUTO=true "
+            "to enable by default.",
+        ),
+    ] = False,
     allow_local: Annotated[
         bool,
         typer.Option("--allow-local", help="Let http_request reach localhost/LAN (dev testing)."),
@@ -481,7 +556,8 @@ def run(
 
         set_allow_local(True)
     _execute_run(
-        prompt, max_iters, quiet, allow_commands, profile, plan, pause_for_approval, notify=notify
+        prompt, max_iters, quiet, allow_commands, profile, plan, pause_for_approval,
+        notify=notify, compact=compact,
     )
 
 
@@ -634,7 +710,8 @@ def chat(
 
     while True:
         try:
-            user_input = console.input("[cyan]you ›[/cyan] ").strip()
+            from halia.cli.input import ask
+            user_input = ask("you › ").strip()
         except (EOFError, KeyboardInterrupt):
             console.print("\n[dim]bye.[/dim]")
             break
@@ -1331,7 +1408,8 @@ def _collect_provided_data(data_file: str | None) -> str:
         "[cyan]This procedure uses data you provide.[/cyan] Enter a file path, "
         "or paste rows and end with an empty line:"
     )
-    first = console.input("  › ").strip()
+    from halia.cli.input import ask
+    first = ask("› ").strip()
     if not first:
         return ""  # nothing supplied — to_prompt still tells the model to ask
     if os.path.isfile(os.path.expanduser(first)):
@@ -1341,7 +1419,7 @@ def _collect_provided_data(data_file: str | None) -> str:
         )
     lines = [first]
     while True:
-        more = console.input("  › ")
+        more = ask("› ")
         if not more.strip():
             break
         lines.append(more)
@@ -1433,9 +1511,11 @@ _METHODS_SET = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
 
 def _ask_slot(label: str, current: str = "") -> str:
     """Ask one slot warmly; enter keeps the current value."""
+    from halia.cli.input import ask
+
     hint = f" [dim](enter to keep: {current})[/dim]" if current else ""
     console.print(f"[cyan]{label}[/cyan]{hint}")
-    answer = console.input("  › ").strip()
+    answer = ask("› ").strip()
     return answer or current
 
 
@@ -1524,9 +1604,10 @@ def _apply_field(proc: Any, field: str, value: str) -> Any:
 
 def _teach_procedure(name_arg: str | None) -> None:
     """Interactively teach (or edit) a test procedure — asks warmly, then saves."""
+    from halia.cli.input import ask
     from halia.procedures import Procedure, get_procedure, save_procedure
 
-    name = name_arg or console.input("[cyan]Name this test procedure ›[/cyan] ").strip()
+    name = name_arg or ask("Name this test procedure › ").strip()
     if not name:
         console.print("[yellow]I'll need a name to save it — nothing stored.[/yellow]")
         return

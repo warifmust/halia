@@ -25,11 +25,11 @@ def test_write_target_dir_none_for_other_tools() -> None:
 def test_trusting_a_dir_skips_reprompt(monkeypatch: Any) -> None:
     prompts: list[str] = []
 
-    def fake_input(_prompt: str = "") -> str:
-        prompts.append(_prompt)
+    def fake_ask(prompt_text: str = "", default: str = "", is_password: bool = False) -> str:
+        prompts.append(prompt_text)
         return "a"  # user chooses "all writes to this folder"
 
-    monkeypatch.setattr(main.console, "input", fake_input)
+    monkeypatch.setattr("halia.cli.input.ask", fake_ask)
     approve = _make_approver()
 
     # first write to /tmp/reports → prompts, user trusts the folder
@@ -44,7 +44,7 @@ def test_trusting_a_dir_skips_reprompt(monkeypatch: Any) -> None:
 
 
 def test_deny_choice_blocks(monkeypatch: Any) -> None:
-    monkeypatch.setattr(main.console, "input", lambda _p="": "n")
+    monkeypatch.setattr("halia.cli.input.ask", lambda *a, **kw: "n")
     approve = _make_approver()
     assert approve("write_file", '{"path": "/tmp/x/a.txt", "content": "1"}') is False
 
@@ -52,11 +52,11 @@ def test_deny_choice_blocks(monkeypatch: Any) -> None:
 def test_yes_choice_is_one_shot(monkeypatch: Any) -> None:
     calls: list[str] = []
 
-    def fake_input(_prompt: str = "") -> str:
-        calls.append(_prompt)
+    def fake_ask(prompt_text: str = "", default: str = "", is_password: bool = False) -> str:
+        calls.append(prompt_text)
         return "y"  # approve once, do NOT trust the folder
 
-    monkeypatch.setattr(main.console, "input", fake_input)
+    monkeypatch.setattr("halia.cli.input.ask", fake_ask)
     approve = _make_approver()
     assert approve("write_file", '{"path": "/tmp/x/a.txt", "content": "1"}') is True
     assert approve("write_file", '{"path": "/tmp/x/b.txt", "content": "2"}') is True

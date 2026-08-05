@@ -26,6 +26,27 @@ from halia.providers.openai_compat import OpenAICompatProvider
 from halia.skills.registry import SkillRegistry
 from halia.store.database import DB_PATH
 
+# Path to the user-editable persona overlay — injected into every system prompt so
+# the user can tune halia's behaviour (e.g. QA e2e framing) without a code change.
+PERSONA_PATH = Path.home() / ".halia" / "PERSONA.md"
+
+
+def persona_overlay() -> str:
+    """Read ~/.halia/PERSONA.md if it exists; return it as a prompt block (or '')."""
+    try:
+        if PERSONA_PATH.is_file():
+            text = PERSONA_PATH.read_text(encoding="utf-8", errors="replace").strip()
+            if text:
+                return (
+                    "\n\n[User persona overlay — these instructions supplement "
+                    "the built-in prompt and take precedence where they conflict:]\n\n"
+                    + text
+                )
+    except OSError:
+        pass
+    return ""
+
+
 SYSTEM_PROMPT = (
     "You are halia, a careful, trustworthy assistant. "
     "Be concise and accurate; if you are unsure, say so rather than guessing. "
@@ -310,10 +331,20 @@ class RunLimitError(RuntimeError):
 
 def build_provider(config: Config) -> Provider:
     """Construct the provider for the given config."""
+    kind = getattr(config, "provider_kind", "openai_compat")
+    if kind == "anthropic":
+        from halia.providers.anthropic import AnthropicProvider
+
+        return AnthropicProvider(
+            base_url=config.base_url,
+            api_key=config.api_key,
+            model=config.model,
+        )
     return OpenAICompatProvider(
         base_url=config.base_url,
         api_key=config.api_key,
         model=config.model,
+        auth_header=getattr(config, "auth_header", "Bearer"),
     )
 
 
@@ -323,7 +354,7 @@ def ask(
     """Answer a single prompt (one-shot, no tools). `provider` is injectable for tests."""
     provider = provider if provider is not None else build_provider(config)
     messages: list[Message] = [
-        {"role": "system", "content": SYSTEM_PROMPT + extra_system},
+        {"role": "system", "content": SYSTEM_PROMPT + persona_overlay() + extra_system},
         {"role": "user", "content": prompt},
     ]
     return (provider.chat(messages).content or "").strip()
@@ -490,6 +521,7 @@ def run(
     on_plan: PlanObserver | None = None,
     pause_on_approval: bool = False,
     checkpoint_db: Path = DB_PATH,
+    compact: bool = False,
 ) -> RunResult:
     """Run the tool-calling loop until a final answer, the iteration cap, or a pause.
 
@@ -498,11 +530,15 @@ def run(
     produced, the conscience bounces it back (up to `max_corrections` times). With
     `pause_on_approval=True`, a dangerous tool freezes the run into a checkpoint instead
     of prompting — resume it later with `resume()`.
+
+    With `compact=True`, older turns are auto-summarised when the context window nears
+    its budget (no prompt — for headless/scheduled runs). Set HALIA_COMPACT_AUTO=true
+    to enable by default.
     """
     provider = provider if provider is not None else build_provider(config)
 
     plan_text = ""
-    system_content = SYSTEM_PROMPT + extra_system
+    system_content = SYSTEM_PROMPT + persona_overlay() + extra_system
     if plan:
         plan_text = make_plan(prompt, config, provider, extra_system=extra_system)
         if plan_text:
@@ -523,6 +559,8 @@ def run(
         extra_system=extra_system, plan=plan_text, max_iters=max_iters,
         max_corrections=max_corrections, observer=observer, approver=approver,
         pause_on_approval=pause_on_approval, checkpoint_db=checkpoint_db,
+        compact_approver=(lambda: True) if compact else None,
+        on_compact=None,
     )
     return _loop(ctx, messages, [], 0, 0)
 

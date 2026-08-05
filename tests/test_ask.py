@@ -24,7 +24,7 @@ def test_reads_answer_when_interactive(monkeypatch: Any) -> None:
     import sys
 
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr("builtins.input", lambda *a: "Bearer abc123")
+    monkeypatch.setattr("halia.skills.ask.pt_prompt", lambda *a, **kw: "Bearer abc123")
     out = AskUser().run({"question": "token?"})
     assert out == "user answered: Bearer abc123"
 
@@ -33,7 +33,7 @@ def test_skip_answer(monkeypatch: Any) -> None:
     import sys
 
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr("builtins.input", lambda *a: "skip")
+    monkeypatch.setattr("halia.skills.ask.pt_prompt", lambda *a, **kw: "skip")
     assert "skip" in AskUser().run({"question": "blacklisted user id?"}).lower()
 
 
@@ -41,7 +41,7 @@ def test_empty_answer(monkeypatch: Any) -> None:
     import sys
 
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr("builtins.input", lambda *a: "  ")
+    monkeypatch.setattr("halia.skills.ask.pt_prompt", lambda *a, **kw: "  ")
     assert "no answer" in AskUser().run({"question": "x?"})
 
 
@@ -49,7 +49,7 @@ def test_secret_uses_getpass(monkeypatch: Any) -> None:
     import sys
 
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr("getpass.getpass", lambda *a: "s3cret")
+    monkeypatch.setattr("halia.skills.ask.pt_prompt", lambda *a, **kw: "s3cret")
     out = AskUser().run({"question": "token?", "secret": True})
     assert out == "user answered: s3cret"
 

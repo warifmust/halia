@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -28,12 +28,61 @@ class ProviderSpec:
     base_url: str
     key_env: str
     default_model: str
+    # How the API key is sent: "Bearer" (Authorization: Bearer <key>), "api-key"
+    # (api-key: <key> header), or "x-api-key" (Anthropic-style).
+    auth_header: str = "Bearer"
+    # For providers that need their own class: "openai_compat" (default) or "anthropic".
+    provider_kind: str = "openai_compat"
+    # Where the user can get an API key (shown in the setup wizard).
+    key_url: str = ""
+    # Optional note shown in the setup wizard (e.g. about consumer subscriptions).
+    note: str = ""
+    # Curated model list for the radio-button picker (first = default).
+    models: list[str] = field(default_factory=list)
 
 
 PROVIDERS: dict[str, ProviderSpec] = {
-    "openai": ProviderSpec("https://api.openai.com/v1", "OPENAI_API_KEY", "gpt-4o-mini"),
+    "openai": ProviderSpec(
+        "https://api.openai.com/v1", "OPENAI_API_KEY", "gpt-4o-mini",
+        key_url="https://platform.openai.com/api-keys",
+        note="API access is separate from a ChatGPT Plus subscription — billed per use.",
+        models=[
+            "gpt-5.2-pro", "gpt-5.2", "gpt-4.1-nano", "gpt-4o", "gpt-4o-mini",
+            "o1", "o1-mini", "o1-preview", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo",
+        ],
+    ),
     "deepseek": ProviderSpec(
-        "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY", "deepseek-v4-flash"
+        "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY", "deepseek-v4-flash",
+        key_url="https://platform.deepseek.com/api_keys",
+        models=["deepseek-v4-flash", "deepseek-v4-pro"],
+    ),
+    "openrouter": ProviderSpec(
+        "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", "deepseek-v4-flash",
+        key_url="https://openrouter.ai/keys",
+        note="One key → many models. Load credits once. Select 'Custom model…' to enter any model.",
+        models=[
+            "deepseek-v4-flash", "mimo-v2.5", "mimo-v2.5-pro", "hy3",
+            "deepseek-v4-pro", "gpt-5.6-sol", "gpt-5.6-luna", "claude-opus-5",
+            "grok-4.5", "gemini-3.5-flash", "gpt-oss-120b", "qwen-3.6-plus",
+            "Custom model…",
+        ],
+    ),
+    "mimo": ProviderSpec(
+        "https://api.xiaomimimo.com/v1", "MIMO_API_KEY", "mimo-v2.5",
+        auth_header="api-key",
+        key_url="https://mimo.ai/dashboard",
+        models=["mimo-v2.5", "mimo-v2.5-pro"],
+    ),
+    "anthropic": ProviderSpec(
+        "https://api.anthropic.com/v1", "ANTHROPIC_API_KEY", "claude-sonnet-5",
+        auth_header="x-api-key", provider_kind="anthropic",
+        key_url="https://console.anthropic.com/settings/keys",
+        note="API access is separate from a claude.ai Pro subscription — billed per use.",
+        models=[
+            "claude-sonnet-5", "claude-opus-4.8", "claude-opus-4.6",
+            "claude-sonnet-4.6", "claude-3.5-sonnet", "claude-3.5-haiku",
+            "claude-3-opus", "claude-3-sonnet",
+        ],
     ),
 }
 
@@ -46,6 +95,8 @@ class Config:
     model: str
     base_url: str
     api_key: str
+    auth_header: str = "Bearer"
+    provider_kind: str = "openai_compat"
 
 
 class ConfigError(RuntimeError):
@@ -118,4 +169,7 @@ def load_config() -> Config:
             f"{spec.key_env} (or HALIA_API_KEY) in your environment."
         )
 
-    return Config(provider=provider, model=model, base_url=base_url, api_key=api_key)
+    return Config(
+        provider=provider, model=model, base_url=base_url, api_key=api_key,
+        auth_header=spec.auth_header, provider_kind=spec.provider_kind,
+    )

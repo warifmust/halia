@@ -15,6 +15,11 @@ from __future__ import annotations
 import sys
 from typing import Any
 
+from prompt_toolkit import prompt as pt_prompt
+from prompt_toolkit.styles import Style
+
+_STYLE = Style.from_dict({"prompt": "bold ansigreen"})
+
 
 class AskUser:
     name = "ask_user"
@@ -51,12 +56,11 @@ class AskUser:
 
         print(f"\n{question.strip()}")
         try:
-            if bool(args.get("secret")):
-                import getpass
-
-                answer = getpass.getpass("❯ (hidden) ")
-            else:
-                answer = input("❯ ")
+            answer = pt_prompt(
+                [("class:prompt", "❯ ")],
+                is_password=bool(args.get("secret")),
+                style=_STYLE,
+            )
         except (EOFError, KeyboardInterrupt):
             return "no answer (user cancelled) — skip this step or flag it for a human."
 
