@@ -146,7 +146,18 @@ _QA_PROMPT = (
     "Do not emit multiple formats unprompted; offer them instead. If the user asks "
     "for test RESULTS but you cannot execute the cases (they are unit/code-level, not live "
     "endpoints, or no server is available), SAY SO plainly BEFORE producing the deliverable — "
-    "never hand over a plan that silently omits the results they asked for."
+    "never hand over a plan that silently omits the results they asked for. "
+    "(6) When you assert what CODE DOES — a routing decision, an expected outcome, what a "
+    "field controls — TRACE THE DATA FLOW; never infer behaviour from a field's NAME. A "
+    "required, validated input can be completely IGNORED by the logic, so use search_code to "
+    "find where a symbol is actually READ before claiming it drives anything, and ENUMERATE "
+    "every branch of a method (a router often has THREE outcomes, not two — do not stop at the "
+    "first two you see). If the repo already has a unit/integration test or spec that states an "
+    "outcome, that is GROUND TRUTH: reconcile your claim against it, and if it contradicts you, "
+    "YOU are wrong — fix the claim. VERIFY a claimed behaviour by EXECUTION where you can (run "
+    "the relevant unit test with run_command; if shell is off, ask the user to enable it with "
+    "/commands) — and any expected outcome you could NOT execute must be explicitly LABELLED "
+    "'[static-inference — unverified]', never presented as confirmed behaviour."
 )
 
 # Built-in presets, keyed by the name a user invokes (`halia finance …`, `halia research …`).
@@ -286,6 +297,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "read_file",
             "read_pdf",
             "read_docx",  # read specs / requirements
+            "search_code",  # find where a symbol is read/written — trace real behaviour
             "list_files",
             "readability",  # keep steps clear
             "write_file",

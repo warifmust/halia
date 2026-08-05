@@ -24,6 +24,7 @@ from halia.skills.qa import CheckQaArtifact
 from halia.skills.readability import Readability
 from halia.skills.reconcile import ReconcileCsv
 from halia.skills.registry import SkillRegistry
+from halia.skills.search import SearchCode
 from halia.skills.spreadsheet import MakeExcel
 from halia.skills.textmetrics import CountText
 from halia.skills.web import FetchUrl, WebSearch
@@ -46,6 +47,7 @@ _SKILL_FACTORIES: dict[str, Callable[[], Skill]] = {
     "read_excel": ReadExcel,
     "read_pdf": ReadPdf,
     "read_docx": ReadDocx,
+    "search_code": SearchCode,
     "check_requirements": CheckRequirements,
     "check_qa_artifact": CheckQaArtifact,
     "check_expectation": CheckExpectation,
