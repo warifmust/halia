@@ -52,6 +52,7 @@ class FetchUrl:
         "(HTML tags and scripts stripped, truncated to a safe size)."
     )
     dangerous = False
+    untrusted = True
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,
@@ -144,6 +145,7 @@ class WebSearch:
         "snippet. Use this to DISCOVER sources, then fetch_url to read a promising result."
     )
     dangerous = False
+    untrusted = True
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,

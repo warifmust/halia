@@ -73,6 +73,7 @@ class CheckExpectation:
         "less_than, at_least, at_most, matches (regex). Numeric operators use exact decimals."
     )
     dangerous = False
+    untrusted = False
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,

@@ -41,6 +41,7 @@ class CountText:
         "channel instead of guessing."
     )
     dangerous = False
+    untrusted = False
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,

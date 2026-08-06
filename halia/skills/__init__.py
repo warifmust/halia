@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 from halia.skills.ask import AskUser
-from halia.skills.base import Skill
+from halia.skills.base import Skill as Skill  # noqa: F401 — re-exported for external use
 from halia.skills.calc import Calculate
 from halia.skills.chart import MakeChart
 from halia.skills.clean import CleanCsv
@@ -31,7 +29,7 @@ from halia.skills.web import FetchUrl, WebSearch
 from halia.skills.word import ReadDocx
 
 # The full catalogue of skills, by name.
-_SKILL_FACTORIES: dict[str, Callable[[], Skill]] = {
+_SKILL_FACTORIES: dict[str, type] = {
     "read_file": ReadFile,
     "write_file": WriteFile,
     "list_files": ListFiles,

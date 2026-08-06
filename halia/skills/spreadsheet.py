@@ -69,7 +69,8 @@ class MakeExcel:
         "headers) for one sheet, or `sheets` (array of {name, rows}) for several. Opens in "
         "Excel and Google Sheets."
     )
-    dangerous = True  # writes a file
+    dangerous = True
+    untrusted = False  # writes a file
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,

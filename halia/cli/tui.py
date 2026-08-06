@@ -52,6 +52,7 @@ PROMPT = HTML("<b><ansigreen>❯</ansigreen></b> ")  # bold green chevron — cl
 # Slash commands: (command, description). Drives both /help and the completion dropdown.
 _SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/help", "show all commands"),
+    ("/image", "attach an image for vision analysis (path to file)"),
     ("/procedure", "manage test procedures (list/teach/show/set/run/remove)"),
     ("/iters", "set the tool-call budget per turn"),
     ("/local", "let http_request reach localhost/LAN"),
@@ -348,6 +349,7 @@ def run_tui(
     footer = _Footer(console)  # live 'working' line during a turn
     streaming = {"on": False}  # is an answer currently streaming to the screen this turn?
     compact_always = {"on": False}  # remembers an "always compact" choice for the session
+    pending_image_id: str | None = None  # set by /image, consumed by next user message
 
     def compact_consent() -> bool:
         # Asked when the window nears full (~85%). yes = once, always = auto for the session,
@@ -476,6 +478,31 @@ def run_tui(
             else:
                 console.print(f"[dim]tool-call budget is {budget}/turn. Usage: /iters N[/dim]\n")
             continue
+        if user_input.lower().startswith("/image"):
+            parts = user_input.split(maxsplit=1)
+            if len(parts) < 2 or not parts[1].strip():
+                console.print(
+                    "[yellow]Usage:[/yellow] /image <path-to-image>\n"
+                    "  Stores the image for vision analysis. Supported: PNG, JPG, GIF, WebP.\n"
+                )
+                continue
+            from halia.images import store_image
+
+            img_path = parts[1].strip()
+            try:
+                img = store_image(img_path)
+                w = f"{img.width}×{img.height}" if img.width else "?"
+                size_kb = f"{img.size_bytes / 1024:.0f}KB"
+                console.print(
+                    f"[green]✓[/green] Image stored: {img.id} "
+                    f"({w}, {size_kb})\n"
+                    f"  [dim]Ask me about this image and I'll analyse it.[/dim]\n"
+                )
+                # Store the image ID so the next user message can reference it
+                pending_image_id = img.id
+            except (FileNotFoundError, ValueError) as exc:
+                console.print(f"[red]error:[/red] {exc}\n")
+            continue
         if user_input.lower().startswith("/resume"):
             _chat_resume(user_input, config, registry)
             continue
@@ -486,7 +513,27 @@ def run_tui(
             user_input = to_run  # a `/procedure run` — fall through to execute it
 
         turn_start = len(messages)  # so a failed turn can be rolled back to a valid state
-        messages.append({"role": "user", "content": user_input})
+        # If an image was uploaded via /image, attach it to this message.
+        if pending_image_id is not None:
+            from halia.images import get_image_path
+
+            img_file = get_image_path(pending_image_id)
+            if img_file is not None:
+                import base64
+                import mimetypes
+
+                mime = mimetypes.guess_type(str(img_file))[0] or "image/png"
+                b64 = base64.b64encode(img_file.read_bytes()).decode()
+                user_content: Any = [
+                    {"type": "text", "text": user_input},
+                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                ]
+            else:
+                user_content = user_input
+            pending_image_id = None  # consumed
+        else:
+            user_content = user_input
+        messages.append({"role": "user", "content": user_content})
         # The footer shows liveness while halia THINKS (before the first token) and while
         # tools run. The moment the model starts emitting the answer, on_delta stops the
         # footer and STREAMS the tokens live — the text itself becomes the liveness. Tool

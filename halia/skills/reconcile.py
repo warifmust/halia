@@ -74,6 +74,7 @@ class ReconcileCsv:
         "this to check that two sources tie out."
     )
     dangerous = False
+    untrusted = False
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,

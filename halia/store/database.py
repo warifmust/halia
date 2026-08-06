@@ -87,6 +87,19 @@ CREATE TABLE IF NOT EXISTS sessions (
     messages_json  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions (updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS images (
+    id              TEXT PRIMARY KEY,
+    stored_at       TEXT NOT NULL,
+    original_path   TEXT NOT NULL,
+    filename        TEXT NOT NULL,
+    mime_type       TEXT NOT NULL DEFAULT 'image/png',
+    width           INTEGER NOT NULL DEFAULT 0,
+    height          INTEGER NOT NULL DEFAULT 0,
+    size_bytes      INTEGER NOT NULL DEFAULT 0,
+    content_hash    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_images_content_hash ON images (content_hash);
 """
 
 

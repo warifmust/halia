@@ -49,6 +49,7 @@ class SearchCode:
         "node_modules/.git/build output and binary files."
     )
     dangerous = False
+    untrusted = False
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,

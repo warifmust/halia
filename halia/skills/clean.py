@@ -131,7 +131,8 @@ class CleanCsv:
         "replace (column, map), rename (column, to), standardize_date (column, optional "
         "'from' strptime format). Use SQL (query_data) for filtering/joining/aggregating."
     )
-    dangerous = True  # writes a file
+    dangerous = True
+    untrusted = False  # writes a file
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,

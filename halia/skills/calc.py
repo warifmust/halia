@@ -64,6 +64,7 @@ class Calculate:
         "Use this for ALL arithmetic — never compute numbers yourself."
     )
     dangerous = False
+    untrusted = False
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,

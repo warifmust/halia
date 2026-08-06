@@ -31,6 +31,7 @@ class AskUser:
         "secret=true to hide the typed input (tokens/passwords)."
     )
     dangerous = False
+    untrusted = False
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,

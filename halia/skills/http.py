@@ -51,6 +51,7 @@ class HttpRequest:
         "approval-gated."
     )
     dangerous = True
+    untrusted = True
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,

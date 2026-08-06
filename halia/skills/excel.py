@@ -28,6 +28,7 @@ class ReadExcel:
         "sheet, returns its columns, row count, and a sample of rows."
     )
     dangerous = False
+    untrusted = False
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,

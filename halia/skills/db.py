@@ -29,6 +29,7 @@ class QueryDb:
         "exact computation over the data."
     )
     dangerous = False
+    untrusted = False
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,
@@ -160,6 +161,7 @@ class QueryData:
         "work; quote column names with spaces as \"like this\"."
     )
     dangerous = False
+    untrusted = False
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,

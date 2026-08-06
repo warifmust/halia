@@ -117,6 +117,124 @@ def setup() -> None:
 
 
 @app.command()
+def image(
+    path: Annotated[str, typer.Argument(help="Path to the image file.")],
+) -> None:
+    """Store an image for vision analysis."""
+    from halia.images import store_image
+
+    try:
+        img = store_image(path)
+        w = f"{img.width}×{img.height}" if img.width else "?"
+        size_kb = f"{img.size_bytes / 1024:.0f}KB"
+        console.print(
+            f"[green]✓[/green] Image stored: {img.id} ({w}, {size_kb})"
+        )
+        console.print(f"  [dim]{img.filename}[/dim]")
+        console.print(
+            "\n[dim]Use /image {img.id} in chat to attach it to a message.[/dim]"
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+
+@app.command()
+def uninstall(
+    force: Annotated[
+        bool,
+        typer.Option("--force", "-f", help="Skip confirmation prompts."),
+    ] = False,
+) -> None:
+    """Remove halia and all its data (config, secrets, DB, cron jobs).
+
+    Leaves a receipt of what was removed. Use --force to skip confirmations.
+    """
+    import shutil
+
+    from halia.config.settings import CONFIG_DIR, CONFIG_FILE, SECRETS_FILE
+    from halia.schedule import list_jobs, remove_job
+    from halia.store.database import DB_PATH
+
+    removed: list[str] = []
+
+    def confirm(msg: str) -> bool:
+        if force:
+            return True
+        from halia.cli.input import ask
+        return ask(f"{msg} [y/N] ").strip().lower() in ("y", "yes")
+
+    try:
+        # 1. Remove cron entries
+        jobs = list_jobs()
+        if jobs:
+            console.print(f"[cyan]Found {len(jobs)} scheduled job(s):[/cyan]")
+            for j in jobs:
+                console.print(f"  {j.name} — {j.cron}")
+            if confirm("Remove all scheduled jobs?"):
+                for j in jobs:
+                    remove_job(j.name)
+                    removed.append(f"cron: {j.name}")
+                console.print(f"  [dim]Removed {len(jobs)} cron job(s).[/dim]")
+
+        # 2. Remove config + secrets
+        if CONFIG_FILE.exists() or SECRETS_FILE.exists():
+            if confirm("Remove config and API keys (~/.halia/config.json, secrets.json)?"):
+                if CONFIG_FILE.exists():
+                    CONFIG_FILE.unlink()
+                    removed.append("config.json")
+                if SECRETS_FILE.exists():
+                    SECRETS_FILE.unlink()
+                    removed.append("secrets.json")
+                console.print("  [dim]Removed config and secrets.[/dim]")
+
+        # 3. Remove database
+        if DB_PATH.exists():
+            if confirm("Remove database (~/.halia/halia.db)?"):
+                DB_PATH.unlink()
+                removed.append("halia.db")
+                console.print("  [dim]Removed database.[/dim]")
+
+        # 4. Remove PERSONA.md
+        persona = CONFIG_DIR / "PERSONA.md"
+        if persona.exists():
+            if confirm("Remove PERSONA.md?"):
+                persona.unlink()
+                removed.append("PERSONA.md")
+
+        # 5. Remove ~/.halia directory if empty
+        try:
+            if CONFIG_DIR.exists() and not any(CONFIG_DIR.iterdir()):
+                CONFIG_DIR.rmdir()
+                removed.append("~/.halia/")
+        except OSError:
+            pass  # directory not empty or permission denied — leave it
+
+        # 6. Remove the halia binary
+        from pathlib import Path as _Path
+
+        which_result = shutil.which("halia")
+        bin_path = _Path(which_result) if which_result else _Path("")
+        if bin_path.is_file() and confirm(f"Remove halia binary ({bin_path})?"):
+            bin_path.unlink()
+            removed.append(str(bin_path))
+            console.print("  [dim]Removed halia binary.[/dim]")
+
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]error during uninstall:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    # Summary
+    if removed:
+        console.print(f"\n[green]✓ Removed {len(removed)} item(s):[/green]")
+        for item in removed:
+            console.print(f"  {item}")
+        console.print("\n[dim]halia has been uninstalled.[/dim]")
+    else:
+        console.print("[dim]Nothing to remove.[/dim]")
+
+
+@app.command()
 def use(
     provider: Annotated[
         str, typer.Argument(help="Provider to switch to (openai, deepseek, anthropic, …).")
@@ -253,6 +371,67 @@ def _write_target_path(arguments: str) -> str | None:
     return None
 
 
+def _generate_diff(name: str, arguments: str) -> str | None:
+    """Generate a unified diff for file-writing tools when the file already exists.
+
+    Returns a coloured unified diff string, or None if the diff isn't applicable
+    (file doesn't exist, tool isn't write_file, etc.).
+    """
+    import difflib
+    import json
+    import os
+
+    if name != "write_file":
+        return None
+
+    try:
+        obj = json.loads(arguments)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    path = obj.get("path")
+    new_content = obj.get("content")
+    if not isinstance(path, str) or not isinstance(new_content, str):
+        return None
+
+    resolved = os.path.abspath(os.path.expanduser(path))
+    if not os.path.isfile(resolved):
+        return None  # new file — no diff to show
+
+    try:
+        old_content = open(resolved, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return None
+
+    old_lines = old_content.splitlines(keepends=True)
+    new_lines = new_content.splitlines(keepends=True)
+
+    diff = list(difflib.unified_diff(
+        old_lines, new_lines,
+        fromfile=f"a/{os.path.basename(resolved)}",
+        tofile=f"b/{os.path.basename(resolved)}",
+        lineterm="",
+    ))
+
+    if not diff:
+        return "[dim]  (no changes)[/dim]"
+
+    # Colour the diff: red for removals, green for additions, blue for headers
+    coloured: list[str] = []
+    for line in diff:
+        if line.startswith("+++") or line.startswith("---"):
+            coloured.append(f"[dim red]{line}[/dim red]" if line.startswith("---") else f"[dim green]{line}[/dim green]")
+        elif line.startswith("@@"):
+            coloured.append(f"[bold cyan]{line}[/bold cyan]")
+        elif line.startswith("+"):
+            coloured.append(f"[green]{line}[/green]")
+        elif line.startswith("-"):
+            coloured.append(f"[red]{line}[/red]")
+        else:
+            coloured.append(f"[dim]{line}[/dim]")
+    return "\n".join(coloured)
+
+
 # Natural-language yes: the gate understands "yep / sure / go ahead" as well as "y".
 _AFFIRMATIVE = {
     "y", "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "aye", "allow", "allowed",
@@ -307,9 +486,13 @@ def _make_approver() -> Any:
         console.print()
         console.print(f"[bold white on yellow] approve [/bold white on yellow] [bold]{name}[/bold]")
         if target_dir is not None:
-            # A file write: show the RESOLVED absolute destination (not a relative path or a
-            # huge content blob), so the user knows exactly where it lands before approving.
+            # A file write: show the RESOLVED absolute destination and a diff if the file exists.
             console.print(f"  → writes to {_write_target_path(arguments)}", style="white")
+            diff = _generate_diff(name, arguments)
+            if diff:
+                console.print()
+                console.print(diff)
+                console.print()
             all_label = f"all writes to {target_dir}"
         else:
             args_preview = arguments if len(arguments) <= 220 else arguments[:220] + " …"
@@ -758,7 +941,7 @@ def chat(
 
     console.print(
         "[bold]halia[/bold] — chat. [dim]/exit quit · /clear reset · /resume <id> paused run · "
-        "/procedure teach|list|run a test procedure[/dim]"
+        "/procedure teach|list|run a test procedure · /image attach a vision image[/dim]"
     )
     if resume is not None:
         console.print(
@@ -780,6 +963,7 @@ def chat(
         save_session(replace(session, messages=list(messages)))
 
     approve = _make_approver()  # one trust scope for the whole chat session
+    pending_image_id: str | None = None  # set by /image, consumed by next user message
 
     while True:
         try:
@@ -798,6 +982,30 @@ def chat(
             persist()
             console.print("[dim]context cleared.[/dim]\n")
             continue
+        if user_input.lower().startswith("/image"):
+            parts = user_input.split(maxsplit=1)
+            if len(parts) < 2 or not parts[1].strip():
+                console.print(
+                    "[yellow]Usage:[/yellow] /image <path-to-image>\n"
+                    "  Stores the image for vision analysis. Supported: PNG, JPG, GIF, WebP."
+                )
+                continue
+            from halia.images import store_image
+
+            try:
+                img = store_image(parts[1].strip())
+                w = f"{img.width}×{img.height}" if img.width else "?"
+                size_kb = f"{img.size_bytes / 1024:.0f}KB"
+                console.print(
+                    f"[green]✓[/green] Image stored: {img.id} ({w}, {size_kb})"
+                )
+                console.print(
+                    "  [dim]Ask me about this image and I'll analyse it.[/dim]"
+                )
+                pending_image_id = img.id
+            except (FileNotFoundError, ValueError) as exc:
+                console.print(f"[red]error:[/red] {exc}")
+            continue
         if user_input.lower().startswith("/resume"):
             _chat_resume(user_input, config, registry)
             continue
@@ -807,7 +1015,27 @@ def chat(
                 continue
             user_input = to_run  # a `/procedure run` — fall through to execute it
 
-        messages.append({"role": "user", "content": user_input})
+        # If an image was uploaded via /image, attach it to this message.
+        if pending_image_id is not None:
+            from halia.images import get_image_path
+
+            img_file = get_image_path(pending_image_id)
+            if img_file is not None:
+                import base64
+                import mimetypes
+
+                mime = mimetypes.guess_type(str(img_file))[0] or "image/png"
+                b64 = base64.b64encode(img_file.read_bytes()).decode()
+                user_content: Any = [
+                    {"type": "text", "text": user_input},
+                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                ]
+            else:
+                user_content = user_input
+            pending_image_id = None  # consumed
+        else:
+            user_content = user_input
+        messages.append({"role": "user", "content": user_content})
         try:
             result = converse(
                 messages, config, registry, observer=_show_step, approver=approve

@@ -18,6 +18,7 @@ class RunCommand:
     name = "run_command"
     description = "Run a shell command and return its exit code, stdout, and stderr."
     dangerous = True
+    untrusted = False
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,

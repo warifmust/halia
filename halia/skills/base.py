@@ -17,6 +17,7 @@ class Skill(Protocol):
     description: str
     parameters: dict[str, Any]  # JSON Schema
     dangerous: bool  # consequential (write/delete/exec) → requires approval to run
+    untrusted: bool  # ingests external data (web, user files) → quarantine observation
 
     def run(self, args: dict[str, Any]) -> str:
         """Execute with parsed arguments; return a text observation."""

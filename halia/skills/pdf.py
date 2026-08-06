@@ -25,6 +25,7 @@ class ReadPdf:
         "Scanned/image PDFs have no extractable text and would need OCR (not supported)."
     )
     dangerous = False
+    untrusted = True
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,

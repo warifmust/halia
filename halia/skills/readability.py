@@ -52,6 +52,7 @@ class Readability:
         "grade instead of guessing the level."
     )
     dangerous = False
+    untrusted = False
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,

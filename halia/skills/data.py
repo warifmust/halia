@@ -23,6 +23,7 @@ class ReadCsv:
     name = "read_csv"
     description = "Read a CSV file: return its columns, row count, and a sample of rows."
     dangerous = False
+    untrusted = True
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,
@@ -100,6 +101,7 @@ class AggregateCsv:
         "average a column instead of summing sampled rows yourself."
     )
     dangerous = False
+    untrusted = False
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,
@@ -189,6 +191,7 @@ class GroupByCsv:
         "sorted by the aggregate, largest first."
     )
     dangerous = False
+    untrusted = False
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,

@@ -45,6 +45,7 @@ class CheckQaArtifact:
         "adequate (do the steps actually reproduce?) is a separate judgment you must state."
     )
     dangerous = False
+    untrusted = False
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,

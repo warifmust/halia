@@ -19,6 +19,7 @@ class ReadFile:
     name = "read_file"
     description = "Read a UTF-8 text file and return its contents (truncated to a safe size)."
     dangerous = False
+    untrusted = True
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,
@@ -44,6 +45,7 @@ class WriteFile:
     name = "write_file"
     description = "Write text content to a file, creating it or OVERWRITING it if it exists."
     dangerous = True
+    untrusted = False
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,
@@ -72,6 +74,7 @@ class ListFiles:
     name = "list_files"
     description = "List the entries (files and directories) in a directory."
     dangerous = False
+    untrusted = False
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,

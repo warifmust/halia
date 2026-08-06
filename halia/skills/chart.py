@@ -376,7 +376,8 @@ class MakeChart:
         "[[x, y], …] (+ `xlabel`/`ylabel`). For histogram: `values` = the raw numbers (+ "
         "optional `bins`)."
     )
-    dangerous = True  # writes a file
+    dangerous = True
+    untrusted = False  # writes a file
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,

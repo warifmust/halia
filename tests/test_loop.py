@@ -46,7 +46,8 @@ def test_loop_executes_tool_then_answers(tmp_path: Any) -> None:
     # provenance recorded
     assert len(result.steps) == 1
     assert result.steps[0].tool == "read_file"
-    assert result.steps[0].observation == "secret sauce"
+    assert "secret sauce" in result.steps[0].observation
+    assert "UNTRUSTED SOURCE" in result.steps[0].observation
 
 
 def test_observer_sees_each_step(tmp_path: Any) -> None:

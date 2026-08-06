@@ -31,6 +31,7 @@ class SaveProcedure:
         "State plainly what you'll save and confirm with the user before calling this."
     )
     dangerous = True
+    untrusted = False
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,

@@ -370,7 +370,8 @@ class MakePdf:
         "(type is bar or line — line for trends). By default only the PDF is written; "
         "pass keep_source=true to also save the editable .md source alongside for re-rendering."
     )
-    dangerous = True  # writes files
+    dangerous = True
+    untrusted = False  # writes files
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,
@@ -685,7 +686,8 @@ class MakeDocx:
         "bullet and numbered lists, simple tables). Full Unicode. By default only the .docx is "
         "written; pass keep_source=true to also save the editable .md source alongside."
     )
-    dangerous = True  # writes files
+    dangerous = True
+    untrusted = False  # writes files
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,
@@ -746,7 +748,8 @@ class MakePptx:
         "By default only the .pptx is written; pass keep_source=true to also save the "
         "editable .md source alongside."
     )
-    dangerous = True  # writes files
+    dangerous = True
+    untrusted = False  # writes files
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,

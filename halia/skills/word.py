@@ -21,6 +21,7 @@ class ReadDocx:
         "Read a Word .docx file and return its text (paragraphs and tables, truncated)."
     )
     dangerous = False
+    untrusted = True
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,
