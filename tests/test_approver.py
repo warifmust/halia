@@ -2,7 +2,6 @@
 
 from typing import Any
 
-import halia.cli.main as main
 from halia.cli.main import _make_approver, _write_target_dir
 
 

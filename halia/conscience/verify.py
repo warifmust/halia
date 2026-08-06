@@ -37,6 +37,11 @@ def _extract(text: str, figures_only: bool) -> set[Decimal]:
     found: set[Decimal] = set()
     for match in _NUM.finditer(cleaned):
         token = match.group()
+        # Strip trailing punctuation (comma, period, semicolon) that the regex may
+        # capture as part of the token — "1945," is the year 1945, not a figure.
+        stripped = token.rstrip(",.;:!")
+        if stripped != token:
+            token = stripped
         # A "figure" to verify has a decimal point, currency sign, or thousands comma;
         # bare integers (counts, years, ids) are too noisy to check in the answer.
         if figures_only and not any(mark in token for mark in ".$,"):

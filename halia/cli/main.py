@@ -389,6 +389,8 @@ def _execute_run(
     notify: bool = False,
     unattended: bool = False,
     compact: bool = False,
+    budget: int = 0,
+    json_output: bool = False,
 ) -> None:
     """Shared body for `run` and the persona-preset commands (`halia finance`, …).
 
@@ -408,6 +410,22 @@ def _execute_run(
 
     if not compact and os.environ.get("HALIA_COMPACT_AUTO", "").lower() == "true":
         compact = True
+
+    # Honour HALIA_BUDGET_TOKENS env var as default.
+    if budget == 0:
+        env_budget = os.environ.get("HALIA_BUDGET_TOKENS", "0")
+        try:
+            budget = int(env_budget)
+        except ValueError:
+            pass
+
+    # Stdin piping: if input is piped (not a TTY), prepend it to the prompt.
+    stdin_data = _read_stdin()
+    if stdin_data:
+        # Cap at 50k chars to avoid blowing the context window.
+        if len(stdin_data) > 50_000:
+            stdin_data = stdin_data[:50_000] + "\n… (truncated at 50k chars)"
+        prompt = f"Here is the input data:\n\n{stdin_data}\n\n---\n\n{prompt}"
 
     show = _show_step
     approve = (lambda name, arguments: True) if unattended else _make_approver()
@@ -433,18 +451,61 @@ def _execute_run(
             on_plan=None if quiet else show_plan,
             pause_on_approval=pause_for_approval,
             compact=compact,
+            budget_tokens=budget,
         )
     except (ProviderError, RunLimitError) as exc:
         console.print(f"[red]error:[/red] {exc}")
         raise typer.Exit(1) from exc
 
-    _present_result(config, prompt, result, quiet, notify)
+    _present_result(config, prompt, result, quiet, notify, json_output=json_output)
+
+
+def _read_stdin() -> str:
+    """Read stdin if it's piped (not a TTY). Returns '' if no piped input."""
+    import sys
+    if sys.stdin.isatty():
+        return ""
+    try:
+        data = sys.stdin.read()
+        return data.strip() if data else ""
+    except (EOFError, KeyboardInterrupt):
+        return ""
 
 
 def _present_result(
-    config: Any, prompt: str, result: Any, quiet: bool, notify: bool = False
+    config: Any, prompt: str, result: Any, quiet: bool, notify: bool = False,
+    json_output: bool = False,
 ) -> None:
     """Render a finished-or-paused result: paused → checkpoint notice; done → answer + record."""
+    if json_output:
+        import json as _json
+
+        from halia.audit.record import new_record, save_run
+
+        record = new_record(
+            config.provider, config.model, prompt, result.answer, result.steps,
+            plan=result.plan, unverified=result.unverified, corrections=result.corrections,
+        )
+        save_run(record)
+        output = {
+            "id": record.id,
+            "answer": result.answer,
+            "steps": [{"tool": s.tool, "arguments": s.arguments} for s in result.steps],
+            "unverified": result.unverified,
+            "corrections": result.corrections,
+            "plan": result.plan,
+            "paused": result.paused,
+            "usage": {
+                "prompt_tokens": result.usage.prompt_tokens,
+                "completion_tokens": result.usage.completion_tokens,
+                "total_tokens": result.usage.total_tokens,
+            },
+        }
+        console.print(_json.dumps(output, ensure_ascii=False))
+        if notify:
+            _notify_result(prompt, f"✅ done\n\n{result.answer}")
+        return
+
     if result.paused:
         from halia.core.checkpoint import get_checkpoint
 
@@ -545,6 +606,18 @@ def run(
             "to enable by default.",
         ),
     ] = False,
+    budget: Annotated[
+        int,
+        typer.Option(
+            "--budget",
+            help="Max total tokens for the run (0 = unlimited). "
+            "Override with HALIA_BUDGET_TOKENS env var.",
+        ),
+    ] = 0,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output the result as JSON (for scripting/piping)."),
+    ] = False,
     allow_local: Annotated[
         bool,
         typer.Option("--allow-local", help="Let http_request reach localhost/LAN (dev testing)."),
@@ -557,7 +630,7 @@ def run(
         set_allow_local(True)
     _execute_run(
         prompt, max_iters, quiet, allow_commands, profile, plan, pause_for_approval,
-        notify=notify, compact=compact,
+        notify=notify, compact=compact, budget=budget, json_output=json_output,
     )
 
 

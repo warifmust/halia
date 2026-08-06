@@ -27,7 +27,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.text import Text
 
-from halia.providers.base import Message
+from halia.providers.base import Message, Usage
 
 # Shift+Enter has no universal byte sequence — most terminals send the SAME code as
 # plain Enter, so it can't be told apart. Terminals that DO emit a distinct sequence
@@ -344,6 +344,7 @@ def run_tui(
     run_profile = sess.profile  # None for the general profile — used to rebuild the registry
     active_profile = run_profile or "general"
     turn_secs = [0.0]  # last turn's wall time (list so the toolbar closure sees updates)
+    total_usage = Usage()  # accumulated token usage across the session
     footer = _Footer(console)  # live 'working' line during a turn
     streaming = {"on": False}  # is an answer currently streaming to the screen this turn?
     compact_always = {"on": False}  # remembers an "always compact" choice for the session
@@ -393,9 +394,11 @@ def run_tui(
         filled = round(pct / 10)
         bar = "▓" * filled + "░" * (10 - filled)
         local = "on" if allow_local_enabled() else "off"
+        tok = f"{total_usage.total_tokens:,}" if total_usage.total_tokens else "0"
         return (
             f" {active_profile} · {config.model} · {sess.id[:6]} · "
-            f"ctx {bar} {pct}% · budget {budget} · local {local} · {turn_secs[0]:.1f}s "
+            f"ctx {bar} {pct}% · budget {budget} · tok {tok} "
+            f"· local {local} · {turn_secs[0]:.1f}s "
         )
 
     session = build_session()
@@ -559,6 +562,7 @@ def run_tui(
             continue
         footer.stop()  # clear the working line before printing the answer
         turn_secs[0] = time.perf_counter() - started
+        total_usage = total_usage + result.usage
         messages.append({"role": "assistant", "content": result.answer})
         persist()  # conversation survives a restart from here
         if streaming["on"]:

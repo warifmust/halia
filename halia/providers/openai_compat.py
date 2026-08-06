@@ -13,7 +13,14 @@ from typing import Any
 
 import httpx
 
-from halia.providers.base import ChatResult, DeltaObserver, Message, ProviderError, ToolCall
+from halia.providers.base import (
+    ChatResult,
+    DeltaObserver,
+    Message,
+    ProviderError,
+    ToolCall,
+    Usage,
+)
 
 # Read timeout per request (or per streamed chunk). Generous by default for heavy reasoning
 # + large outputs; override with HALIA_TIMEOUT (seconds).
@@ -95,7 +102,8 @@ class OpenAICompatProvider:
         if content is None and not tool_calls:
             raise ProviderError(f"model returned no content and no tool calls: {message!r}")
 
-        return ChatResult(content=content, tool_calls=tool_calls)
+        usage = _parse_usage(data.get("usage"))
+        return ChatResult(content=content, tool_calls=tool_calls, usage=usage)
 
     def _chat_stream(
         self,
@@ -108,10 +116,13 @@ class OpenAICompatProvider:
         payload: dict[str, Any] = {"model": self._model, "messages": messages, "stream": True}
         if tools:
             payload["tools"] = tools
+        # Request usage in the final streaming chunk (OpenAI, DeepSeek, OpenRouter support this).
+        payload["stream_options"] = {"include_usage": True}
 
         content_parts: list[str] = []
         # tool-call deltas arrive fragmented, keyed by index → accumulate id/name/arguments.
         acc: dict[int, dict[str, str]] = {}
+        stream_usage: Usage = Usage()
         try:
             with self._client.stream("POST", url, json=payload, headers=headers) as resp:
                 if resp.status_code != 200:
@@ -127,6 +138,10 @@ class OpenAICompatProvider:
                         chunk = json.loads(data)
                     except json.JSONDecodeError:
                         continue
+                    # Usage arrives in the final chunk (choices may be empty there).
+                    usage_raw = chunk.get("usage")
+                    if usage_raw:
+                        stream_usage = _parse_usage(usage_raw)
                     choices = chunk.get("choices") or []
                     if not choices:
                         continue
@@ -156,7 +171,18 @@ class OpenAICompatProvider:
         ]
         if content is None and not tool_calls:
             raise ProviderError("stream returned no content and no tool calls")
-        return ChatResult(content=content, tool_calls=tool_calls)
+        return ChatResult(content=content, tool_calls=tool_calls, usage=stream_usage)
+
+
+def _parse_usage(raw: Any) -> Usage:
+    """Parse OpenAI-style usage: {prompt_tokens, completion_tokens, total_tokens}."""
+    if not raw or not isinstance(raw, dict):
+        return Usage()
+    return Usage(
+        prompt_tokens=int(raw.get("prompt_tokens", 0) or 0),
+        completion_tokens=int(raw.get("completion_tokens", 0) or 0),
+        total_tokens=int(raw.get("total_tokens", 0) or 0),
+    )
 
 
 def _parse_tool_calls(raw: Any) -> list[ToolCall]:

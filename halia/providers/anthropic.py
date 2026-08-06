@@ -14,7 +14,14 @@ from typing import Any
 
 import httpx
 
-from halia.providers.base import ChatResult, DeltaObserver, Message, ProviderError, ToolCall
+from halia.providers.base import (
+    ChatResult,
+    DeltaObserver,
+    Message,
+    ProviderError,
+    ToolCall,
+    Usage,
+)
 
 _ANTHROPIC_VERSION = "2023-06-01"
 
@@ -109,6 +116,8 @@ class AnthropicProvider:
         content_parts: list[str] = []
         # Accumulate tool-use blocks keyed by index (they arrive as content-block deltas).
         tool_acc: dict[int, dict[str, Any]] = {}
+        input_tokens = 0
+        output_tokens = 0
 
         try:
             with self._client.stream("POST", url, json=payload, headers=self._headers()) as resp:
@@ -125,7 +134,15 @@ class AnthropicProvider:
                         continue
 
                     ev_type = event.get("type", "")
-                    if ev_type == "content_block_delta":
+                    if ev_type == "message_start":
+                        # input_tokens arrives in the first event.
+                        msg_usage = event.get("message", {}).get("usage", {})
+                        input_tokens = int(msg_usage.get("input_tokens", 0) or 0)
+                    elif ev_type == "message_delta":
+                        # output_tokens arrives in the final delta event.
+                        delta_usage = event.get("usage", {})
+                        output_tokens = int(delta_usage.get("output_tokens", 0) or 0)
+                    elif ev_type == "content_block_delta":
                         delta = event.get("delta", {})
                         if delta.get("type") == "text_delta":
                             piece = delta.get("text", "")
@@ -157,7 +174,12 @@ class AnthropicProvider:
         ]
         if content is None and not tool_calls:
             raise ProviderError("stream returned no content and no tool calls")
-        return ChatResult(content=content, tool_calls=tool_calls)
+        usage = Usage(
+            prompt_tokens=input_tokens,
+            completion_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+        )
+        return ChatResult(content=content, tool_calls=tool_calls, usage=usage)
 
 
 # ── Message / tool conversion ──────────────────────────────────────────────────
@@ -255,4 +277,13 @@ def _parse_response(data: dict[str, Any]) -> ChatResult:
     if content is None and not tool_calls:
         raise ProviderError(f"model returned no content and no tool calls: {data!r}")
 
-    return ChatResult(content=content, tool_calls=tool_calls)
+    # Anthropic returns {input_tokens, output_tokens} (no total — compute it).
+    raw_usage = data.get("usage") or {}
+    input_tokens = int(raw_usage.get("input_tokens", 0) or 0)
+    output_tokens = int(raw_usage.get("output_tokens", 0) or 0)
+    usage = Usage(
+        prompt_tokens=input_tokens,
+        completion_tokens=output_tokens,
+        total_tokens=input_tokens + output_tokens,
+    )
+    return ChatResult(content=content, tool_calls=tool_calls, usage=usage)

@@ -21,7 +21,7 @@ from halia.config.settings import Config
 from halia.conscience.verify import ungrounded_numbers
 from halia.core.checkpoint import Checkpoint
 from halia.core.planner import make_plan
-from halia.providers.base import ChatResult, DeltaObserver, Message, Provider, ToolCall
+from halia.providers.base import ChatResult, DeltaObserver, Message, Provider, ToolCall, Usage
 from halia.providers.openai_compat import OpenAICompatProvider
 from halia.skills.registry import SkillRegistry
 from halia.store.database import DB_PATH
@@ -74,6 +74,12 @@ SYSTEM_PROMPT = (
 )
 
 DEFAULT_MAX_ITERS = 8
+
+# Budget cap: max total tokens per run. 0 = unlimited. Override with HALIA_BUDGET_TOKENS.
+try:
+    DEFAULT_BUDGET_TOKENS = int(os.environ.get("HALIA_BUDGET_TOKENS", "0"))
+except ValueError:
+    DEFAULT_BUDGET_TOKENS = 0
 
 # Cap on the conversation history *sent to the model* each turn (a char proxy for
 # tokens, ~4 chars/token). The full transcript is still persisted — this only bounds
@@ -287,11 +293,13 @@ DEFAULT_MAX_CORRECTIONS = 1
 # gets one chance to recompute them through tools (calculate/aggregate/reconcile) or
 # drop them — turning a warning into a grounded answer.
 _CORRECTION_TEMPLATE = (
-    "STOP. These figures in your answer were not produced by any tool: {figures}. "
-    "You may have computed them in your head, which is not allowed. Recompute each one "
-    "using the tools (calculate, aggregate_csv, reconcile_csv, …), then give the "
-    "corrected final answer. If a figure cannot be grounded in a tool result, remove it "
-    "rather than assert it."
+    "These figures in your answer were not produced by any tool: {figures}. "
+    "If they are arithmetic results (totals, averages, percentages), recompute them "
+    "using the tools (calculate, aggregate_csv, reconcile_csv, …). "
+    "If they are factual data (dates, names, identifiers, counts) that cannot be "
+    "computed by a tool, keep them but note they are from general knowledge, not a "
+    "tool result. Do NOT remove valid factual information — only recompute things "
+    "that should have been calculated."
 )
 
 # Called with each Step as it happens (for live display); does not affect the run.
@@ -323,6 +331,8 @@ class RunResult:
     # Set when the run paused for approval instead of finishing (answer is empty then).
     paused: bool = False
     checkpoint_id: str = ""
+    # Cumulative token usage across all model calls in this run.
+    usage: Usage = field(default_factory=Usage)
 
 
 class RunLimitError(RuntimeError):
@@ -330,22 +340,61 @@ class RunLimitError(RuntimeError):
 
 
 def build_provider(config: Config) -> Provider:
-    """Construct the provider for the given config."""
+    """Construct the provider for the given config.
+
+    If HALIA_FALLBACK_PROVIDERS is set (comma-separated provider names), wraps the
+    primary in a FallbackProvider that retries with the listed providers on failure.
+    Example: HALIA_FALLBACK_PROVIDERS=deepseek,openai
+    """
     kind = getattr(config, "provider_kind", "openai_compat")
+    primary: Provider
     if kind == "anthropic":
         from halia.providers.anthropic import AnthropicProvider
 
-        return AnthropicProvider(
+        primary = AnthropicProvider(
             base_url=config.base_url,
             api_key=config.api_key,
             model=config.model,
         )
-    return OpenAICompatProvider(
-        base_url=config.base_url,
-        api_key=config.api_key,
-        model=config.model,
-        auth_header=getattr(config, "auth_header", "Bearer"),
-    )
+    else:
+        primary = OpenAICompatProvider(
+            base_url=config.base_url,
+            api_key=config.api_key,
+            model=config.model,
+            auth_header=getattr(config, "auth_header", "Bearer"),
+        )
+
+    # Check for fallback providers.
+    import os
+    fallback_names = os.environ.get("HALIA_FALLBACK_PROVIDERS", "").strip()
+    if not fallback_names:
+        return primary
+
+    from halia.config.settings import PROVIDERS, read_secret
+    from halia.providers.fallback import FallbackProvider
+
+    fallbacks: list[Provider] = [primary]
+    for name in fallback_names.split(","):
+        name = name.strip().lower()
+        if name == config.provider or name not in PROVIDERS:
+            continue
+        key = read_secret(name)
+        if not key:
+            continue
+        spec = PROVIDERS[name]
+        fb_kind = getattr(spec, "provider_kind", "openai_compat")
+        if fb_kind == "anthropic":
+            from halia.providers.anthropic import AnthropicProvider as AP
+            fb: Provider = AP(base_url=spec.base_url, api_key=key, model=spec.default_model)
+        else:
+            fb = OpenAICompatProvider(
+                base_url=spec.base_url, api_key=key,
+                model=spec.default_model,
+                auth_header=getattr(spec, "auth_header", "Bearer"),
+            )
+        fallbacks.append(fb)
+
+    return FallbackProvider(fallbacks) if len(fallbacks) > 1 else primary
 
 
 def ask(
@@ -383,6 +432,12 @@ class _Ctx:
     on_compact: CompactArchiver | None = None
     compact_threshold: float = COMPACT_THRESHOLD
     compact_suppressed: bool = False
+    budget_tokens: int = 0  # max total tokens per run (0 = unlimited)
+    total_usage: Usage = field(default_factory=Usage)  # accumulated across iterations
+    # Circuit breaker: per-tool consecutive failure count. Resets on success.
+    _tool_failures: dict[str, int] = field(default_factory=dict)
+    # Max consecutive failures before a tool is marked unavailable.
+    max_tool_failures: int = 3
 
 
 def _is_dangerous(registry: SkillRegistry, name: str) -> bool:
@@ -410,11 +465,36 @@ def _execute_batch(
     ctx: _Ctx, calls: list[ToolCall], messages: list[Message], steps: list[Step]
 ) -> None:
     """Run a tool-call batch, appending each step + its `tool` message (in place)."""
+    circuit_notes: list[str] = []
     for tc in calls:
+        name = tc["name"]
+        # Circuit breaker: skip tools that have failed too many times consecutively.
+        if ctx._tool_failures.get(name, 0) >= ctx.max_tool_failures:
+            observation = (
+                f"circuit breaker: '{name}' has failed {ctx.max_tool_failures} times "
+                f"consecutively — skipping. Find an alternative approach."
+            )
+            step = Step(tool=name, arguments=tc["arguments"], observation=observation)
+            steps.append(step)
+            if ctx.observer is not None:
+                ctx.observer(step)
+            messages.append({"role": "tool", "tool_call_id": tc["id"], "content": observation})
+            circuit_notes.append(name)
+            continue
         if ctx.on_activity is not None:
-            ctx.on_activity(tc["name"])
-        observation = _run_tool(ctx.registry, tc["name"], tc["arguments"], ctx.approver)
-        step = Step(tool=tc["name"], arguments=tc["arguments"], observation=observation)
+            ctx.on_activity(name)
+        observation = _run_tool(ctx.registry, name, tc["arguments"], ctx.approver)
+        # Track success/failure for the circuit breaker.
+        is_error = (
+            observation.startswith("error ")
+            or observation.startswith("error:")
+            or observation.startswith("denied ")
+        )
+        if is_error:
+            ctx._tool_failures[name] = ctx._tool_failures.get(name, 0) + 1
+        else:
+            ctx._tool_failures.pop(name, None)  # success resets the counter
+        step = Step(tool=name, arguments=tc["arguments"], observation=observation)
         steps.append(step)
         if ctx.observer is not None:
             ctx.observer(step)
@@ -450,7 +530,7 @@ def _pause(
     save_checkpoint(cp, db_path=ctx.checkpoint_db)
     return RunResult(
         answer="", steps=steps, corrections=corrections, plan=ctx.plan,
-        paused=True, checkpoint_id=cp.id,
+        paused=True, checkpoint_id=cp.id, usage=ctx.total_usage,
     )
 
 
@@ -462,6 +542,13 @@ def _loop(
     iters_used: int,
 ) -> RunResult:
     """The ReAct loop, shared by `run` and `resume`. Returns a final or paused result."""
+    import time as _time
+
+    from halia.audit.logger import log_run_end, log_run_start
+
+    run_start = _time.perf_counter()
+    log_run_start(ctx.prompt[:80], ctx.prompt[:200], ctx.config.provider, ctx.config.model)
+
     tools = ctx.registry.tool_schemas() or None
     while iters_used < ctx.max_iters:
         iters_used += 1
@@ -476,6 +563,20 @@ def _loop(
         else:
             result = ctx.provider.chat(window, tools=tools)
 
+        # Accumulate token usage and check budget cap.
+        ctx.total_usage = ctx.total_usage + result.usage
+        if ctx.budget_tokens > 0 and ctx.total_usage.total_tokens >= ctx.budget_tokens:
+            answer = (result.content or "").strip() or ""
+            budget_msg = (
+                f"[budget exceeded: {ctx.total_usage.total_tokens:,} / "
+                f"{ctx.budget_tokens:,} tokens used]"
+            )
+            return RunResult(
+                answer=answer or budget_msg, steps=steps,
+                corrections=corrections, plan=ctx.plan,
+                usage=ctx.total_usage,
+            )
+
         if not result.tool_calls:
             answer = (result.content or "").strip()
             unverified = ungrounded_numbers(answer, steps)
@@ -489,9 +590,14 @@ def _loop(
                     }
                 )
                 continue
+            elapsed = (_time.perf_counter() - run_start) * 1000
+            log_run_end(
+                ctx.prompt[:80], answer[:200], len(steps),
+                ctx.total_usage.total_tokens, corrections, elapsed,
+            )
             return RunResult(
                 answer=answer, steps=steps, unverified=unverified,
-                corrections=corrections, plan=ctx.plan,
+                corrections=corrections, plan=ctx.plan, usage=ctx.total_usage,
             )
 
         # A dangerous tool with pausing on ⇒ freeze here for a human decision.
@@ -522,6 +628,7 @@ def run(
     pause_on_approval: bool = False,
     checkpoint_db: Path = DB_PATH,
     compact: bool = False,
+    budget_tokens: int = 0,
 ) -> RunResult:
     """Run the tool-calling loop until a final answer, the iteration cap, or a pause.
 
@@ -560,7 +667,7 @@ def run(
         max_corrections=max_corrections, observer=observer, approver=approver,
         pause_on_approval=pause_on_approval, checkpoint_db=checkpoint_db,
         compact_approver=(lambda: True) if compact else None,
-        on_compact=None,
+        on_compact=None, budget_tokens=budget_tokens,
     )
     return _loop(ctx, messages, [], 0, 0)
 

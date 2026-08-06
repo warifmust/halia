@@ -1,0 +1,131 @@
+"""Tests for circuit breaker and structured logging."""
+
+from __future__ import annotations
+
+import json
+import os
+from typing import Any
+from unittest.mock import MagicMock
+
+# --- Circuit breaker ---
+
+
+def test_circuit_breaker_skips_after_consecutive_failures() -> None:
+    """A tool that fails 3 times consecutively is skipped by the circuit breaker."""
+    from halia.audit.trace import Step
+    from halia.core.agent import _Ctx, _execute_batch
+
+    registry = MagicMock()
+    skill = MagicMock()
+    skill.name = "flaky_tool"
+    skill.dangerous = False
+    skill.run.return_value = "error: connection refused"
+    registry.get.return_value = skill
+    registry.tool_schemas.return_value = []
+
+    ctx = _Ctx(
+        provider=MagicMock(), config=MagicMock(), registry=registry,
+        prompt="test", extra_system="", plan="", max_iters=8,
+        max_corrections=1, observer=None, approver=None,
+        pause_on_approval=False, max_tool_failures=3,
+    )
+    messages: list[dict[str, Any]] = []
+    steps: list[Step] = []
+    calls = [
+        {"id": "c1", "name": "flaky_tool", "arguments": "{}"},
+        {"id": "c2", "name": "flaky_tool", "arguments": "{}"},
+        {"id": "c3", "name": "flaky_tool", "arguments": "{}"},
+        {"id": "c4", "name": "flaky_tool", "arguments": "{}"},
+    ]
+
+    _execute_batch(ctx, calls, messages, steps)  # type: ignore[arg-type]
+
+    # First 3 calls run the tool; 4th is circuit-broken.
+    assert skill.run.call_count == 3
+    assert len(messages) == 4
+    assert "circuit breaker" in messages[3]["content"]
+
+
+def test_circuit_breaker_resets_on_success() -> None:
+    """A successful call resets the failure counter."""
+    from halia.audit.trace import Step
+    from halia.core.agent import _Ctx, _execute_batch
+
+    registry = MagicMock()
+    skill = MagicMock()
+    skill.name = "flaky_tool"
+    skill.dangerous = False
+    # First call fails, second succeeds, third fails — counter resets.
+    skill.run.side_effect = ["error: timeout", "success", "error: timeout"]
+    registry.get.return_value = skill
+    registry.tool_schemas.return_value = []
+
+    ctx = _Ctx(
+        provider=MagicMock(), config=MagicMock(), registry=registry,
+        prompt="test", extra_system="", plan="", max_iters=8,
+        max_corrections=1, observer=None, approver=None,
+        pause_on_approval=False, max_tool_failures=3,
+    )
+    messages: list[dict[str, Any]] = []
+    steps: list[Step] = []
+    calls = [
+        {"id": "c1", "name": "flaky_tool", "arguments": "{}"},
+        {"id": "c2", "name": "flaky_tool", "arguments": "{}"},  # success resets
+        {"id": "c3", "name": "flaky_tool", "arguments": "{}"},  # starts counting again
+    ]
+
+    _execute_batch(ctx, calls, messages, steps)  # type: ignore[arg-type]
+
+    assert skill.run.call_count == 3  # all 3 ran (counter reset after success)
+    assert ctx._tool_failures.get("flaky_tool", 0) == 1
+
+
+# --- Structured logging ---
+
+
+def test_log_event_writes_jsonl(tmp_path: Any) -> None:
+    """log_event writes a JSON line to the configured file."""
+    from halia.audit import logger
+
+    log_file = tmp_path / "test.jsonl"
+    # Reset the module's initialized state.
+    logger._initialized = False
+    logger._log_file = None
+    os.environ["HALIA_LOG"] = str(log_file)
+    os.environ.pop("HALIA_LOG_LEVEL", None)
+
+    logger.log_event("test_event", tool="calc", duration_ms=42)
+
+    logger._initialized = False  # reset for other tests
+    os.environ.pop("HALIA_LOG", None)
+
+    lines = log_file.read_text().strip().split("\n")
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["event"] == "test_event"
+    assert entry["tool"] == "calc"
+    assert entry["duration_ms"] == 42
+    assert "ts" in entry
+
+
+def test_log_event_respects_level(tmp_path: Any) -> None:
+    """Events below the configured level are not written."""
+    from halia.audit import logger
+
+    log_file = tmp_path / "test.jsonl"
+    logger._initialized = False
+    logger._log_file = None
+    os.environ["HALIA_LOG"] = str(log_file)
+    os.environ["HALIA_LOG_LEVEL"] = "warn"
+
+    logger.log_event("debug_event", level="debug")
+    logger.log_event("info_event", level="info")
+    logger.log_event("warn_event", level="warn")
+
+    logger._initialized = False
+    os.environ.pop("HALIA_LOG", None)
+    os.environ.pop("HALIA_LOG_LEVEL", None)
+
+    lines = log_file.read_text().strip().split("\n")
+    assert len(lines) == 1
+    assert json.loads(lines[0])["event"] == "warn_event"

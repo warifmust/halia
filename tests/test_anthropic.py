@@ -149,10 +149,16 @@ def test_chat_once_success() -> None:
         body = json.loads(request.content)
         assert body["model"] == "claude-sonnet-5"
         assert "stream" not in body
-        return httpx.Response(200, json={"content": [{"type": "text", "text": "Hi!"}]})
+        return httpx.Response(200, json={
+            "content": [{"type": "text", "text": "Hi!"}],
+            "usage": {"input_tokens": 100, "output_tokens": 50},
+        })
 
     result = _provider(handler).chat([{"role": "user", "content": "hello"}])
     assert result.content == "Hi!"
+    assert result.usage.prompt_tokens == 100
+    assert result.usage.completion_tokens == 50
+    assert result.usage.total_tokens == 150
 
 
 def test_chat_once_http_error() -> None:
@@ -168,8 +174,10 @@ def test_chat_stream_text() -> None:
     """Streaming text response accumulates content and emits deltas."""
     deltas: list[str] = []
     lines = [
+        'data: {"type": "message_start", "message": {"usage": {"input_tokens": 100}}}',
         'data: {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Hello"}}',
         'data: {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "!"}}',
+        'data: {"type": "message_delta", "usage": {"output_tokens": 50}}',
     ]
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -182,3 +190,6 @@ def test_chat_stream_text() -> None:
     )
     assert result.content == "Hello!"
     assert deltas == ["Hello", "!"]
+    assert result.usage.prompt_tokens == 100
+    assert result.usage.completion_tokens == 50
+    assert result.usage.total_tokens == 150
