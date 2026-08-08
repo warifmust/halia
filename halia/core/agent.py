@@ -512,12 +512,17 @@ def _execute_batch(
             continue
         observation = _run_tool(ctx.registry, name, tc["arguments"], ctx.approver)
         # Track success/failure for the circuit breaker.
-        is_error = (
-            observation.startswith("error ")
-            or observation.startswith("error:")
-            or observation.startswith("denied ")
+        # Read-only tools (jq, grep, read_file) get errors from bad queries,
+        # not broken tools — don't count them as failures.
+        is_tool_error = (
+            name not in _READ_TOOLS
+            and (
+                observation.startswith("error ")
+                or observation.startswith("error:")
+                or observation.startswith("denied ")
+            )
         )
-        if is_error:
+        if is_tool_error:
             ctx._tool_failures[name] = ctx._tool_failures.get(name, 0) + 1
         else:
             ctx._tool_failures.pop(name, None)  # success resets the counter

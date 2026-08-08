@@ -24,11 +24,16 @@ _MAX_OUTPUT = 5000  # chars
 class JqQuery:
     name = "jq_query"
     description = (
-        "Extract, filter, or transform data from a JSON file using a query expression. "
-        "Supports dot-notation (config.database.host), array indexing (items[0]), "
-        "filtering ([].select(.active == true)), and basic aggregations (| length, "
-        "| keys, | values). Deterministic — no model interpretation needed. "
-        "Returns the extracted value as text."
+        "Extract, filter, or transform data from a JSON file. Examples:\n"
+        "  '.name' — simple field\n"
+        "  '.config.host' — nested field\n"
+        "  '.users[].name' — iterate array, extract field\n"
+        "  '.users[0].name' — array index\n"
+        "  '.users[?age > 30].name' — filter + extract field\n"
+        "  '.users | length' — count items\n"
+        "  '.users | map(select(.active == true))' — filter array\n"
+        "  '.users | keys' — list object keys\n"
+        "  '.users | values' — list object values"
     )
     dangerous = False
     untrusted = True  # reads user-supplied file content
@@ -117,26 +122,50 @@ def _jq_query(data: Any, query: str) -> Any:
         return _jq_pipe(left, parts[1].strip())
 
     # Handle filter expressions [?...]
-    filter_match = re.match(r"^(.+?)\[\?(.+?)\]$", query)
+    filter_match = re.match(r"^(.+?)\[\?(.+?)\](.*)$", query)
     if filter_match:
         base_query = filter_match.group(1).strip()
         filter_expr = filter_match.group(2).strip()
+        tail = filter_match.group(3).strip()
         items = _jq_query(data, base_query) if base_query else data
         if not isinstance(items, list):
             items = [items]
-        return [item for item in items if _eval_filter(item, filter_expr)]
+        result = [item for item in items if _eval_filter(item, filter_expr)]
+        # Apply trailing access to EACH filtered item
+        if tail:
+            out: list[Any] = []
+            for item in result:
+                r = _jq_query(item, tail.lstrip(".") if tail.startswith(".") else tail)
+                if isinstance(r, list):
+                    out.extend(r)
+                else:
+                    out.append(r)
+            return out
+        return result
 
     # Handle array iteration: .field[] or []
-    iter_match = re.match(r"^(.*?)\[\]$", query)
+    iter_match = re.match(r"^(.*?)\[\](.*)$", query)
     if iter_match:
         base = iter_match.group(1).strip()
+        tail = iter_match.group(2).strip()
         if base:
             items = _resolve_path(data, base)
         else:
             items = data
-        if isinstance(items, list):
-            return items
-        return [items]
+        if not isinstance(items, list):
+            items = [items]
+        # Apply trailing access to EACH item individually
+        if tail:
+            results: list[Any] = []
+            for item in items:
+                # Always use _jq_query for the tail (handles .name, .employees[], etc.)
+                r = _jq_query(item, tail.lstrip(".") if tail.startswith(".") else tail)
+                if isinstance(r, list):
+                    results.extend(r)
+                else:
+                    results.append(r)
+            return results
+        return items
 
     # Handle array index: [N]
     index_match = re.match(r"^\[(\d+)\]$", query)
@@ -178,6 +207,13 @@ def _resolve_path(data: Any, path: str) -> Any:
 def _jq_pipe(value: Any, op: str) -> Any:
     """Apply a pipe operation to a value."""
     op = op.strip()
+
+    # Nested pipe MUST be checked first — before any other handler sees `|`.
+    if "|" in op:
+        first, rest = op.split("|", 1)
+        intermediate = _jq_pipe(value, first.strip())
+        return _jq_pipe(intermediate, rest.strip())
+
     if op == "length":
         if isinstance(value, (list, dict, str)):
             return len(value)
@@ -202,10 +238,49 @@ def _jq_pipe(value: Any, op: str) -> Any:
                     flat.append(sub)
             return flat
         raise ValueError("flatten requires a list")
-    # Recurse into nested pipe
-    if "|" in op:
-        intermediate = _jq_pipe(value, op.split("|", 1)[0].strip())
-        return _jq_pipe(intermediate, op.split("|", 1)[1].strip())
+    # Handle select(expr) — filter a list by a condition
+    select_match = re.match(r"^select\((.+)\)$", op)
+    if select_match:
+        if not isinstance(value, list):
+            return value
+        expr = select_match.group(1).strip()
+        return [item for item in value if _eval_filter(item, expr)]
+    # Handle map(select(expr)) — filter then return full items
+    map_select_match = re.match(r"^map\(select\((.+)\)\)$", op)
+    if map_select_match:
+        if not isinstance(value, list):
+            return value
+        expr = map_select_match.group(1).strip()
+        return [item for item in value if _eval_filter(item, expr)]
+    # Handle field access: .name, .employees, .items[].sku, etc.
+    if op.startswith("."):
+        # Use _jq_query for field access so it handles [], filters, and nested patterns.
+        # _resolve_path only handles simple dot-notation (no []).
+        if isinstance(value, dict):
+            return _jq_query(value, op)
+        if isinstance(value, list):
+            results: list[Any] = []
+            for item in value:
+                r = _jq_query(item, op) if isinstance(item, dict) else item
+                if isinstance(r, list):
+                    results.extend(r)
+                else:
+                    results.append(r)
+            return results
+        raise ValueError(f"cannot access field on {type(value).__name__}")
+    # Handle string operations: contains([...])
+    contains_match = re.match(r"^contains\(\[(.+)\]\)$", op)
+    if contains_match:
+        if isinstance(value, list):
+            target = contains_match.group(1).strip().strip('"').strip("'")
+            return target in value
+        return False
+    # Handle contains("string") — does the list contain this string?
+    contains_str_match = re.match(r'^contains\("(.+)"\)$', op)
+    if contains_str_match:
+        if isinstance(value, list):
+            return contains_str_match.group(1) in value
+        return False
     raise ValueError(f"unknown pipe operation: '{op}'")
 
 
