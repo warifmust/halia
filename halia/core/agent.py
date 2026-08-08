@@ -70,7 +70,18 @@ SYSTEM_PROMPT = (
     "procedure via save_procedure. First gather the required parts — what's tested, the "
     "test data, the action (an endpoint or ordered steps), the output columns, and a "
     "clear pass/fail rule — asking the user for anything missing. Then state plainly "
-    "what you'll save and save it once they agree. Never save silently."
+    "what you'll save and save it once they agree. Never save silently. "
+    "TOOL SELECTION: use grep_file (not read_file) when searching for a pattern in a "
+    "known file — it's faster and cheaper. Use jq_query (not read_file) when extracting "
+    "data from JSON files — it's deterministic and avoids loading entire files. Use "
+    "search_code when you need to find a symbol across a whole codebase. Use read_file "
+    "only when you need to read the full content of a file. "
+    "WORKFLOW: For any task that requires tools, ALWAYS plan first — state what you need "
+    "to do, which tools you'll use, and in what order. Then execute step by step. "
+    "Start every tool-using task by calling learn_from_reference to check if the user "
+    "has taught any format/template files. If files are found, follow their format. "
+    "Only answer directly (no planning, no tools) for simple factual questions like "
+    "'what is X' or 'how do I Y' that don't need file access or computation."
 )
 
 DEFAULT_MAX_ITERS = 8
@@ -461,6 +472,12 @@ def _assistant_tool_msg(result: ChatResult) -> Message:
     }
 
 
+_READ_TOOLS = frozenset({
+    "read_file", "read_csv", "read_pdf", "read_docx", "read_excel",
+    "grep_file", "list_files", "search_code",
+})
+
+
 def _execute_batch(
     ctx: _Ctx, calls: list[ToolCall], messages: list[Message], steps: list[Step]
 ) -> None:
@@ -483,6 +500,16 @@ def _execute_batch(
             continue
         if ctx.on_activity is not None:
             ctx.on_activity(name)
+        # Read approval: check if this read tool's directory is approved.
+        check_read = getattr(ctx.approver, "check_read", None)
+        if name in _READ_TOOLS and check_read is not None and not check_read(name, tc["arguments"]):
+            observation = "denied by user: reading from this directory was not approved"
+            step = Step(tool=name, arguments=tc["arguments"], observation=observation)
+            steps.append(step)
+            if ctx.observer is not None:
+                ctx.observer(step)
+            messages.append({"role": "tool", "tool_call_id": tc["id"], "content": observation})
+            continue
         observation = _run_tool(ctx.registry, name, tc["arguments"], ctx.approver)
         # Track success/failure for the circuit breaker.
         is_error = (
@@ -608,6 +635,10 @@ def _loop(
             return _pause(ctx, messages, steps, result.tool_calls, iters_used, corrections)
 
         messages.append(_assistant_tool_msg(result))
+        # Show a thinking indicator while tools execute — bridges the gap between
+        # the model finishing its text output and the first tool starting.
+        if ctx.on_activity is not None:
+            ctx.on_activity("")
         _execute_batch(ctx, result.tool_calls, messages, steps)
 
     raise RunLimitError(f"hit iteration cap ({ctx.max_iters}) without a final answer")

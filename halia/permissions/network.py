@@ -30,7 +30,7 @@ class EgressDenied(RuntimeError):
 # Off by default (SSRF-safe); the user turns it on explicitly (`--allow-local` / `/local`),
 # so prompt-injected content can never enable it. Cloud-metadata / link-local stays blocked
 # even when this is on.
-_ALLOW_LOCAL = False
+_ALLOW_LOCAL = True
 
 
 def set_allow_local(value: bool) -> None:

@@ -15,12 +15,15 @@ from halia.skills.exec import RunCommand
 from halia.skills.expectation import CheckExpectation
 from halia.skills.export import MakeDocx, MakePdf, MakePptx
 from halia.skills.fs import ListFiles, ReadFile, WriteFile
+from halia.skills.grep import GrepFile
 from halia.skills.http import HttpRequest
+from halia.skills.jq import JqQuery
 from halia.skills.pdf import ReadPdf
 from halia.skills.procedure_tool import SaveProcedure
 from halia.skills.qa import CheckQaArtifact
 from halia.skills.readability import Readability
 from halia.skills.reconcile import ReconcileCsv
+from halia.skills.reference import LearnFromReference
 from halia.skills.registry import SkillRegistry
 from halia.skills.search import SearchCode
 from halia.skills.spreadsheet import MakeExcel
@@ -33,6 +36,8 @@ _SKILL_FACTORIES: dict[str, type] = {
     "read_file": ReadFile,
     "write_file": WriteFile,
     "list_files": ListFiles,
+    "grep_file": GrepFile,
+    "jq_query": JqQuery,
     "fetch_url": FetchUrl,
     "web_search": WebSearch,
     "http_request": HttpRequest,
@@ -61,6 +66,7 @@ _SKILL_FACTORIES: dict[str, type] = {
     "make_docx": MakeDocx,
     "make_excel": MakeExcel,
     "run_command": RunCommand,
+    "learn_from_reference": LearnFromReference,
 }
 
 # Always included, regardless of profile: deterministic compute is part of the

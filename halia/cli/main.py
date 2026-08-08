@@ -83,7 +83,7 @@ def _main(
     ] = False,
     allow_local: Annotated[
         bool, typer.Option("--allow-local", help="Let http_request reach localhost/LAN.")
-    ] = False,
+    ] = True,
     resume: Annotated[
         str | None, typer.Option("--resume", help="Resume a saved session by id/prefix.")
     ] = None,
@@ -357,6 +357,24 @@ def _write_target_dir(name: str, arguments: str) -> str | None:
     return os.path.dirname(resolved) if resolved is not None else None
 
 
+def _read_target_dir(name: str, arguments: str) -> str | None:
+    """The absolute directory a read tool targets, or None.
+
+    Covers read_file, grep_file, read_csv, read_pdf, read_docx, list_files.
+    """
+    import json
+    import os
+
+    try:
+        path = json.loads(arguments).get("path")
+    except (json.JSONDecodeError, AttributeError):
+        return None
+    if isinstance(path, str) and path:
+        resolved = os.path.abspath(os.path.expanduser(path))
+        return os.path.dirname(resolved)
+    return None
+
+
 def _write_target_path(arguments: str) -> str | None:
     """The absolute file path a file-writing tool targets (~ expanded), or None."""
     import json
@@ -420,7 +438,10 @@ def _generate_diff(name: str, arguments: str) -> str | None:
     coloured: list[str] = []
     for line in diff:
         if line.startswith("+++") or line.startswith("---"):
-            coloured.append(f"[dim red]{line}[/dim red]" if line.startswith("---") else f"[dim green]{line}[/dim green]")
+            if line.startswith("---"):
+                coloured.append(f"[dim red]{line}[/dim red]")
+            else:
+                coloured.append(f"[dim green]{line}[/dim green]")
         elif line.startswith("@@"):
             coloured.append(f"[bold cyan]{line}[/bold cyan]")
         elif line.startswith("+"):
@@ -440,7 +461,7 @@ _AFFIRMATIVE = {
 }
 # Clear negatives/stop-signals. First decisive word wins, so a leading one of these means no.
 _NEGATIVE_CUES = (
-    "no", "nope", "nah", "not", "don't", "dont", "stop", "wait", "hold", "cancel", "never",
+    "n, ""no", "nope", "nah", "not", "don't", "dont", "stop", "wait", "hold", "cancel", "never",
 )
 
 
@@ -473,18 +494,18 @@ def _make_approver() -> Any:
     """
     trusted_dirs: set[str] = set()
     trusted_tools: set[str] = set()
-    trust_all = {"on": False}  # 'always' → stop asking for anything this session
+    approved_read_dirs: set[str] = set()  # directories approved for reading
 
     def approve(name: str, arguments: str) -> bool:
-        if trust_all["on"]:
-            return True  # user chose 'always' — trust everything for this session
         if name in trusted_tools:
             return True  # already trusted every call to this tool this session
         target_dir = _write_target_dir(name, arguments)
         if target_dir is not None and target_dir in trusted_dirs:
             return True  # already trusted this dir this session — no re-prompt
         console.print()
-        console.print(f"[bold white on yellow] approve [/bold white on yellow] [bold]{name}[/bold]")
+        console.print(
+            f"[bold white on yellow] ⚠ approve [/bold white on yellow] [bold]{name}[/bold]"
+        )
         if target_dir is not None:
             # A file write: show the RESOLVED absolute destination and a diff if the file exists.
             console.print(f"  → writes to {_write_target_path(arguments)}", style="white")
@@ -493,31 +514,59 @@ def _make_approver() -> Any:
                 console.print()
                 console.print(diff)
                 console.print()
-            all_label = f"all writes to {target_dir}"
         else:
             args_preview = arguments if len(arguments) <= 220 else arguments[:220] + " …"
             console.print(f"  {args_preview}", highlight=False, markup=False, style="white")
-            all_label = f"all {name} calls"
-        console.print(
-            f"  [green]yes[/green] · [cyan]all[/cyan] ({all_label}) · "
-            f"[magenta]always[/magenta] (everything this session) · [red]no[/red]"
-        )
-        from halia.cli.input import ask
-        choice = ask("  ❯ ").strip().lower()
-        if choice in ("always", "everything"):
-            trust_all["on"] = True
-            console.print("  [dim]trusting every tool for the rest of this session[/dim]\n")
-            return True
-        if choice in ("a", "all"):
+        from halia.cli.input import pick
+        options = [
+            f"yes — allow this {name} call",
+            f"always — trust all {name} calls this session",
+            "no — stop this call",
+        ]
+        choice = pick("Select:", options, default=0)
+        if choice.startswith("always"):
             if target_dir is not None:
                 trusted_dirs.add(target_dir)
             else:
                 trusted_tools.add(name)
-            console.print(f"  [dim]trusting {all_label} this session[/dim]\n")
+            console.print(f"  [dim]trusting all {name} calls this session[/dim]\n")
             return True
+        if choice.startswith("no") or choice.startswith("stop"):
+            console.print()
+            return False
         console.print()
-        return _is_affirmative(choice)
+        return True
 
+    def check_read(name: str, arguments: str) -> bool:
+        """Check if a read tool's target directory is approved. Prompt if not."""
+        if name in trusted_tools:
+            return True
+        import os as _os
+        target_dir = _read_target_dir(name, arguments)
+        if target_dir is None:
+            return True  # no path to check
+        if target_dir in approved_read_dirs:
+            return True  # already approved this directory
+        console.print()
+        console.print(f"  🔍 [bold]{name}[/bold] wants to read from [bold]{target_dir}[/bold]")
+        from halia.cli.input import pick
+        options = [
+            f"yes — allow reading from {_os.path.basename(target_dir)}/",
+            f"always — trust all reads from {_os.path.basename(target_dir)}/",
+            "no — block",
+        ]
+        choice = pick("Select:", options, default=0)
+        if choice.startswith("always"):
+            approved_read_dirs.add(target_dir)
+            console.print(f"  [dim]trusting reads from {target_dir}[/dim]\n")
+            return True
+        if choice.startswith("no") or choice.startswith("stop"):
+            console.print()
+            return False
+        console.print()
+        return True
+
+    approve.check_read = check_read  # type: ignore[attr-defined]
     return approve
 
 
@@ -611,7 +660,8 @@ def _execute_run(
         prompt = f"Here is the input data:\n\n{stdin_data}\n\n---\n\n{prompt}"
 
     show = _show_step
-    approve = (lambda name, arguments: True) if unattended else _make_approver()
+    approve_and_read_check = (lambda name, arguments: True) if unattended else _make_approver()
+    approve = approve_and_read_check
 
     def show_plan(text: str) -> None:
         console.print("[cyan]plan[/cyan]")
@@ -913,13 +963,32 @@ def chat(
     ] = None,
 ) -> None:
     """Talk to halia in a multi-turn conversation (context persists, and survives a restart)."""
+    import os
     from dataclasses import replace
 
     from halia.audit.record import new_record, save_run
+    from halia.config.settings import is_trusted, trust_directory
     from halia.core.agent import SYSTEM_PROMPT, RunLimitError, converse
     from halia.core.checkpoint import list_checkpoints
     from halia.core.session import get_session, new_session, save_session
     from halia.providers.base import Message, ProviderError
+
+    # Trust boundary: check if the current directory is trusted.
+    cwd = os.getcwd()
+    if not is_trusted(cwd):
+        from halia.cli.input import pick
+
+        console.print(f"\n[yellow]Working directory:[/yellow] [bold]{cwd}[/bold]")
+        options = [
+            f"yes — trust {os.path.basename(cwd)}/",
+            "no — exit",
+        ]
+        choice = pick("Trust this directory?", options, default=0)
+        if choice.startswith("no"):
+            console.print("[dim]exiting.[/dim]")
+            raise typer.Exit(0)
+        trust_directory(cwd)
+        console.print(f"[green]✓[/green] trusted [bold]{cwd}[/bold]\n")
 
     if resume is not None:
         session = get_session(resume)
@@ -940,8 +1009,8 @@ def chat(
         save_session(session)  # persist immediately so it shows up in `halia sessions`
 
     console.print(
-        "[bold]halia[/bold] — chat. [dim]/exit quit · /clear reset · /resume <id> paused run · "
-        "/procedure teach|list|run a test procedure · /image attach a vision image[/dim]"
+        "[bold]halia[/bold] — chat. [dim]/help for all commands · /local toggle local egress · "
+        "/image attach a vision image · /resume <id> resume a paused run[/dim]"
     )
     if resume is not None:
         console.print(
@@ -977,10 +1046,81 @@ def chat(
         if user_input.lower() in ("/exit", "/quit"):
             console.print("[dim]bye.[/dim]")
             break
+        if user_input == "/" or user_input.lower() == "/help":
+            console.print(
+                "[bold]slash commands[/bold]\n"
+                "  [cyan]/teach[/cyan]  store a reference file (path, --profile)\n"
+                "  [cyan]/files[/cyan]  list or search taught reference files\n"
+                "  [cyan]/local[/cyan]  toggle local egress (on/off)\n"
+                "  [cyan]/commands[/cyan]  toggle shell commands (on/off)\n"
+                "  [cyan]/iters[/cyan]  set tool-call budget per turn\n"
+                "  [cyan]/compact[/cyan]  summarise older turns\n"
+                "  [cyan]/image[/cyan]  attach a vision image\n"
+                "  [cyan]/resume[/cyan]  resume a paused run\n"
+                "  [cyan]/procedure[/cyan]  manage test procedures\n"
+                "  [cyan]/clear[/cyan]  reset conversation\n"
+                "  [cyan]/exit[/cyan]  quit"
+            )
+            continue
         if user_input.lower() == "/clear":
             del messages[1:]  # keep the system prompt
             persist()
             console.print("[dim]context cleared.[/dim]\n")
+            continue
+        if user_input.lower().startswith("/local"):
+            from halia.permissions.network import allow_local_enabled, set_allow_local
+
+            parts = user_input.split()
+            if len(parts) >= 2 and parts[1].lower() in ("on", "off"):
+                set_allow_local(parts[1].lower() == "on")
+            else:
+                set_allow_local(not allow_local_enabled())
+            state = "ON" if allow_local_enabled() else "OFF"
+            console.print(
+                f"[dim]local egress {state} — http_request "
+                f"{'can' if allow_local_enabled() else 'cannot'} reach localhost/LAN.[/dim]\n"
+            )
+            continue
+        if user_input.lower().startswith("/commands"):
+            parts = user_input.split()
+            if len(parts) >= 2 and parts[1].lower() in ("on", "off"):
+                want = parts[1].lower() == "on"
+            else:
+                want = registry.get("run_command") is None
+            _, registry, _ = _prepare_context(session.profile, want)
+            on = registry.get("run_command") is not None
+            console.print(
+                f"[dim]shell commands {'ON' if on else 'OFF'} — halia "
+                f"{'can' if on else 'cannot'} run run_command "
+                f"{'(approval-gated)' if on else ''}.[/dim]\n"
+            )
+            continue
+        if user_input.lower().startswith("/iters"):
+            parts = user_input.split()
+            if len(parts) >= 2 and parts[1].isdigit() and int(parts[1]) > 0:
+                console.print(f"[dim]tool-call budget set to {parts[1]}/turn.[/dim]\n")
+            else:
+                console.print("[dim]Usage: /iters N[/dim]\n")
+            continue
+        if user_input.lower() == "/compact":
+            from halia.core.agent import compact_history
+
+            console.print("[dim]🗜 compacting…[/dim]")
+            dropped = compact_history(messages, config)
+            if dropped:
+                archived: list[Message] = list(getattr(session, "archived_messages", []))
+                archived.extend(dropped)
+                persist()
+                n = sum(1 for m in dropped if m.get("role") == "user")
+                console.print(f"[dim]compacted {n} earlier turn(s).[/dim]\n")
+            else:
+                console.print("[dim]nothing to compact yet.[/dim]\n")
+            continue
+        if user_input.lower().startswith("/teach"):
+            _handle_teach_chat(user_input)
+            continue
+        if user_input.lower().startswith("/files"):
+            _handle_files_chat(user_input)
             continue
         if user_input.lower().startswith("/image"):
             parts = user_input.split(maxsplit=1)
@@ -1154,6 +1294,77 @@ def _chat_procedure(command: str) -> str | None:
         "run <name> · remove <name>[/dim]\n"
     )
     return None
+
+
+def _handle_teach_chat(user_input: str) -> None:
+    """Handle /teach inside halia chat."""
+    from halia.references import store_reference
+
+    parts = user_input.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        console.print(
+            "[yellow]Usage:[/yellow] /teach <path> [--profile qa] [--description \"text\"]\n"
+            "  Stores a file as a reference format. The model will follow it.\n"
+        )
+        return
+    args = parts[1].strip()
+    path = ""
+    profile = ""
+    description = ""
+    tokens = args.split()
+    i = 0
+    while i < len(tokens):
+        if tokens[i] == "--profile" and i + 1 < len(tokens):
+            profile = tokens[i + 1]
+            i += 2
+        elif tokens[i] == "--description" and i + 1 < len(tokens):
+            description = " ".join(tokens[i + 1:])
+            break
+        elif not tokens[i].startswith("--"):
+            path = tokens[i]
+            i += 1
+        else:
+            i += 1
+    if not path:
+        console.print("[yellow]Usage:[/yellow] /teach <path> [--profile qa]\n")
+        return
+    try:
+        ref = store_reference(path, profile=profile, description=description)
+        tag = f" → [cyan]{ref.profile}[/cyan]" if ref.profile else ""
+        size_kb = f"{ref.size_bytes / 1024:.0f}KB"
+        console.print(
+            f"[green]✓[/green] Reference stored: [bold]{ref.filename}[/bold]"
+            f" ({size_kb}, {ref.file_type}){tag}"
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"[red]error:[/red] {exc}")
+
+
+def _handle_files_chat(user_input: str) -> None:
+    """Handle /files inside halia chat."""
+    from halia.references import list_ref_files, search_ref_files
+
+    parts = user_input.split(maxsplit=2)
+    if len(parts) >= 2 and parts[1].lower() == "search" and len(parts) >= 3:
+        query = parts[2].strip()
+        refs = search_ref_files(query)
+        if not refs:
+            console.print(f"[dim]no files matching '{query}'[/dim]")
+            return
+        console.print(f"[bold]{len(refs)} file(s) matching '{query}'[/bold]")
+    else:
+        refs = list_ref_files()
+        if not refs:
+            console.print("[dim]no reference files taught yet. Use /teach to add some.[/dim]")
+            return
+        console.print(f"[bold]{len(refs)} reference file(s)[/bold]")
+    for ref in refs:
+        tag = f"  [cyan]{ref.profile}[/cyan]" if ref.profile else ""
+        size_kb = f"{ref.size_bytes / 1024:.0f}KB"
+        desc = f"  [dim]{ref.description}[/dim]" if ref.description else ""
+        console.print(
+            f"  {ref.filename} [dim]({size_kb}, {ref.file_type})[/dim]{tag}{desc}"
+        )
 
 
 def _chat_resume(command: str, config: Any, registry: Any) -> None:

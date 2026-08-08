@@ -7,6 +7,9 @@ import pytest
 from halia.permissions.network import EgressDenied, check_egress
 from halia.skills.web import FetchUrl
 
+# Default allow_local is True; tests that verify blocking pass allow_local=False.
+_ALLOW = False
+
 
 def _resolves_to(ip: str):
     return lambda host: [ip]
@@ -22,7 +25,7 @@ def test_public_address_allowed() -> None:
 )
 def test_internal_addresses_blocked(ip: str) -> None:
     with pytest.raises(EgressDenied):
-        check_egress("http://whatever/", resolver=_resolves_to(ip))
+        check_egress("http://whatever/", resolver=_resolves_to(ip), allow_local=_ALLOW)
 
 
 def test_cloud_metadata_endpoint_blocked() -> None:
@@ -37,18 +40,22 @@ def test_cloud_metadata_endpoint_blocked() -> None:
 def test_dns_that_points_inside_is_blocked() -> None:
     # a public-looking host that resolves to a private IP (rebinding-style) is still caught
     with pytest.raises(EgressDenied):
-        check_egress("http://sneaky.example.com/", resolver=_resolves_to("10.1.2.3"))
+        check_egress(
+            "http://sneaky.example.com/",
+            resolver=_resolves_to("10.1.2.3"),
+            allow_local=_ALLOW,
+        )
 
 
 @pytest.mark.parametrize("url", ["ftp://host/x", "file:///etc/passwd", "gopher://x"])
 def test_non_http_schemes_blocked(url: str) -> None:
     with pytest.raises(EgressDenied):
-        check_egress(url, resolver=_resolves_to("8.8.8.8"))
+        check_egress(url, resolver=_resolves_to("8.8.8.8"), allow_local=_ALLOW)
 
 
 def test_missing_host_blocked() -> None:
     with pytest.raises(EgressDenied):
-        check_egress("http://", resolver=_resolves_to("8.8.8.8"))
+        check_egress("http://", resolver=_resolves_to("8.8.8.8"), allow_local=_ALLOW)
 
 
 def test_resolution_failure_blocked() -> None:
@@ -56,7 +63,7 @@ def test_resolution_failure_blocked() -> None:
         raise socket.gaierror("nope")
 
     with pytest.raises(EgressDenied):
-        check_egress("http://nx.invalid/", resolver=boom)
+        check_egress("http://nx.invalid/", resolver=boom, allow_local=_ALLOW)
 
 
 def test_fetch_url_blocks_metadata_ip() -> None:
@@ -66,8 +73,15 @@ def test_fetch_url_blocks_metadata_ip() -> None:
 
 
 def test_fetch_url_blocks_localhost() -> None:
-    out = FetchUrl().run({"url": "http://localhost:8080/admin"})
-    assert out.startswith("blocked:")
+    """localhost is blocked when allow_local is False (the old default)."""
+    from halia.permissions.network import set_allow_local
+
+    set_allow_local(False)
+    try:
+        out = FetchUrl().run({"url": "http://localhost:8080/admin"})
+        assert out.startswith("blocked:")
+    finally:
+        set_allow_local(True)  # restore
 
 
 # --- allow_local opt-in (local dev-server testing) ---
@@ -95,9 +109,9 @@ def test_allow_local_process_toggle() -> None:
     finally:
         set_allow_local(False)  # restore for other tests
     with pytest.raises(EgressDenied):
-        check_egress("http://localhost/", resolver=_resolves_to("127.0.0.1"))
+        check_egress("http://localhost/", resolver=_resolves_to("127.0.0.1"), allow_local=_ALLOW)
 
 
 def test_error_hints_at_allow_local() -> None:
     with pytest.raises(EgressDenied, match="allow-local"):
-        check_egress("http://localhost/", resolver=_resolves_to("127.0.0.1"))
+        check_egress("http://localhost/", resolver=_resolves_to("127.0.0.1"), allow_local=_ALLOW)

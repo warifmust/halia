@@ -100,6 +100,19 @@ CREATE TABLE IF NOT EXISTS images (
     content_hash    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_images_content_hash ON images (content_hash);
+
+CREATE TABLE IF NOT EXISTS ref_files (
+    id              TEXT PRIMARY KEY,
+    stored_at       TEXT NOT NULL,
+    original_path   TEXT NOT NULL,
+    filename        TEXT NOT NULL,
+    stored_filename TEXT NOT NULL DEFAULT '',
+    file_type       TEXT NOT NULL DEFAULT '',
+    profile         TEXT NOT NULL DEFAULT '',
+    size_bytes      INTEGER NOT NULL DEFAULT 0,
+    description     TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_ref_files_profile ON ref_files (profile);
 """
 
 

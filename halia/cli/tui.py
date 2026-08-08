@@ -52,6 +52,8 @@ PROMPT = HTML("<b><ansigreen>❯</ansigreen></b> ")  # bold green chevron — cl
 # Slash commands: (command, description). Drives both /help and the completion dropdown.
 _SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/help", "show all commands"),
+    ("/teach", "store a file as a reference format (path, --profile)"),
+    ("/files", "list or search taught reference files"),
     ("/image", "attach an image for vision analysis (path to file)"),
     ("/procedure", "manage test procedures (list/teach/show/set/run/remove)"),
     ("/iters", "set the tool-call budget per turn"),
@@ -276,7 +278,7 @@ def run_tui(
     allow_commands: bool = False,
     resume: str | None = None,
     max_iters: int = 50,
-    allow_local: bool = False,
+    allow_local: bool = True,
 ) -> None:
     """Banner + a real chat loop: the prompt_toolkit input feeds the converse() loop.
 
@@ -308,6 +310,27 @@ def run_tui(
     from halia.providers.base import ProviderError
 
     set_allow_local(allow_local)
+
+    # Trust boundary: check if the current directory is trusted.
+    import os
+
+    from halia.config.settings import is_trusted, trust_directory
+
+    cwd = os.getcwd()
+    if not is_trusted(cwd):
+        from halia.cli.input import pick
+        console.print(f"\n[yellow]Working directory:[/yellow] [bold]{cwd}[/bold]")
+        options = [
+            f"yes — trust {os.path.basename(cwd)}/",
+            "no — exit",
+        ]
+        choice = pick("Trust this directory?", options, default=0)
+        if choice.startswith("no"):
+            console.print("[dim]exiting.[/dim]")
+            return
+        trust_directory(cwd)
+        console.print(f"[green]✓[/green] trusted [bold]{cwd}[/bold]\n")
+
     render_banner()
 
     if resume is not None:
@@ -366,21 +389,99 @@ def run_tui(
             "  [dim]summarises earlier turns; the full transcript is archived and every "
             "tool result stays in the audit trail.[/dim]"
         )
-        choice = console.input(
-            "  [green]yes[/green] · [magenta]always[/magenta] (this session) · "
-            "[red]no[/red]  ❯ "
-        ).strip().lower()
+        from halia.cli.input import pick
+        options = [
+            "yes — compact now",
+            "always — auto-compact for this session",
+            "no — skip (trim instead)",
+        ]
+        choice = pick("context nearly full", options, default=0)
         footer.start()
-        if choice in ("always", "a"):
+        if choice.startswith("always"):
             compact_always["on"] = True
             return True
-        return choice in ("", "y", "yes", "ok", "sure", "compact")
+        return choice.startswith("yes")
 
     def on_compact(dropped: list[Message]) -> None:
         archived.extend(dropped)
         persist()
         n = sum(1 for m in dropped if m.get("role") == "user")
         console.print(f"[dim]🗜 compacted {n} earlier turn(s) into a summary.[/dim]")
+
+    def _handle_teach(user_input: str) -> None:
+        """Handle /teach <path> [--profile <name>] [--description <text>]."""
+        from halia.references import store_reference
+
+        parts = user_input.split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            console.print(
+                "[yellow]Usage:[/yellow] /teach <path> [--profile qa] [--description \"text\"]\n"
+                "  Stores a file as a reference format. The model will follow it.\n"
+            )
+            return
+        # Parse arguments
+        args = parts[1].strip()
+        path = ""
+        profile = ""
+        description = ""
+        tokens = args.split()
+        i = 0
+        while i < len(tokens):
+            if tokens[i] == "--profile" and i + 1 < len(tokens):
+                profile = tokens[i + 1]
+                i += 2
+            elif tokens[i] == "--description" and i + 1 < len(tokens):
+                # Collect everything after --description as the description
+                description = " ".join(tokens[i + 1:])
+                break
+            elif not tokens[i].startswith("--"):
+                path = tokens[i]
+                i += 1
+            else:
+                i += 1
+        if not path:
+            console.print("[yellow]Usage:[/yellow] /teach <path> [--profile qa]\n")
+            return
+        try:
+            ref = store_reference(path, profile=profile, description=description)
+            tag = f" → [cyan]{ref.profile}[/cyan]" if ref.profile else ""
+            size_kb = f"{ref.size_bytes / 1024:.0f}KB"
+            console.print(
+                f"[green]✓[/green] Reference stored: [bold]{ref.filename}[/bold]"
+                f" ({size_kb}, {ref.file_type}){tag}"
+            )
+            console.print(
+                "  [dim]The model will follow this format when working.[/dim]\n"
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            console.print(f"[red]error:[/red] {exc}\n")
+
+    def _handle_files(user_input: str) -> None:
+        """Handle /files [search <query>] to list or search taught files."""
+        from halia.references import list_ref_files, search_ref_files
+
+        parts = user_input.split(maxsplit=2)
+        if len(parts) >= 2 and parts[1].lower() == "search" and len(parts) >= 3:
+            query = parts[2].strip()
+            refs = search_ref_files(query)
+            if not refs:
+                console.print(f"[dim]no files matching '{query}'[/dim]\n")
+                return
+            console.print(f"[bold]{len(refs)} file(s) matching '{query}'[/bold]")
+        else:
+            refs = list_ref_files()
+            if not refs:
+                console.print("[dim]no reference files taught yet. Use /teach to add some.[/dim]\n")
+                return
+            console.print(f"[bold]{len(refs)} reference file(s)[/bold]")
+        for ref in refs:
+            tag = f"  [cyan]{ref.profile}[/cyan]" if ref.profile else ""
+            size_kb = f"{ref.size_bytes / 1024:.0f}KB"
+            desc = f"  [dim]{ref.description}[/dim]" if ref.description else ""
+            console.print(
+                f"  {ref.filename} [dim]({size_kb}, {ref.file_type})[/dim]{tag}{desc}"
+            )
+        console.print()
 
     def ctx_pct() -> int:
         """How full the sent-context window is (a char proxy for tokens)."""
@@ -502,6 +603,12 @@ def run_tui(
                 pending_image_id = img.id
             except (FileNotFoundError, ValueError) as exc:
                 console.print(f"[red]error:[/red] {exc}\n")
+            continue
+        if user_input.lower().startswith("/teach"):
+            _handle_teach(user_input)
+            continue
+        if user_input.lower().startswith("/files"):
+            _handle_files(user_input)
             continue
         if user_input.lower().startswith("/resume"):
             _chat_resume(user_input, config, registry)

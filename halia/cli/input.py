@@ -72,10 +72,26 @@ def _pick_pt(title: str, options: list[str], initial: int) -> str:
     result: list[str] = []  # mutable container so the handler can set it
 
     def _text() -> list[tuple[str, str]]:
-        lines: list[tuple[str, str]] = [("", title), ("", "\n")]
+        lines: list[tuple[str, str]] = [("", "\n"), ("bold", title), ("", "\n")]
         for i, opt in enumerate(options):
-            style = "ansigreen" if i == idx else ""
-            lines.append((style, f"  {_SELECTED if i == idx else _UNSELECTED} {opt}"))
+            parts = opt.split(" ", 1)
+            bullet = f"  {_SELECTED if i == idx else _UNSELECTED} "
+            if i == idx:
+                # Selected: green bullet + bold keyword + green rest
+                lines.append(("ansigreen", bullet))
+                if len(parts) == 2:
+                    lines.append(("bold ansigreen", parts[0] + " "))
+                    lines.append(("ansigreen", parts[1]))
+                else:
+                    lines.append(("ansigreen", opt))
+            else:
+                # Unselected: normal bullet + bold keyword + normal rest
+                lines.append(("", bullet))
+                if len(parts) == 2:
+                    lines.append(("bold", parts[0] + " "))
+                    lines.append(("", parts[1]))
+                else:
+                    lines.append(("", opt))
             lines.append(("", "\n"))
         lines.append(("", "\n"))
         lines.append(("class:hint", "  ↑/↓ navigate  ↵ select  esc cancel"))

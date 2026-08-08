@@ -173,3 +173,35 @@ def load_config() -> Config:
         provider=provider, model=model, base_url=base_url, api_key=api_key,
         auth_header=spec.auth_header, provider_kind=spec.provider_kind,
     )
+
+
+# ── trusted directories ───────────────────────────────────────────────────────
+def get_trusted_dirs() -> list[str]:
+    """List of directories the user has trusted (read + write allowed)."""
+    data = _read_json(CONFIG_FILE)
+    dirs = data.get("trusted_dirs")
+    return dirs if isinstance(dirs, list) else []
+
+
+def trust_directory(path: str) -> None:
+    """Add a directory to the trusted list (persists to config)."""
+    import os
+
+    resolved = os.path.abspath(os.path.expanduser(path))
+    dirs = get_trusted_dirs()
+    if resolved not in dirs:
+        dirs.append(resolved)
+        data = _read_json(CONFIG_FILE)
+        data["trusted_dirs"] = dirs
+        write_config(data)
+
+
+def is_trusted(path: str) -> bool:
+    """Check if a path is under any trusted directory."""
+    import os
+
+    resolved = os.path.abspath(os.path.expanduser(path))
+    for trusted in get_trusted_dirs():
+        if resolved == trusted or resolved.startswith(trusted + "/"):
+            return True
+    return False
