@@ -106,6 +106,21 @@ def test_jq_keys_pipe(tmp_path: Path) -> None:
     assert sorted(parsed) == ["a", "b", "c"]
 
 
+def test_jq_keys_sorted_like_jq(tmp_path: Path) -> None:
+    # jq's `keys` returns SORTED keys, regardless of insertion order.
+    f = tmp_path / "obj.json"
+    f.write_text(json.dumps({"currency": 1, "fiscal_start_month": 2, "compliance": 3}))
+    result = JqQuery().run({"path": str(f), "query": ". | keys"})
+    assert json.loads(result) == ["compliance", "currency", "fiscal_start_month"]
+
+
+def test_jq_keys_unsorted_preserves_insertion_order(tmp_path: Path) -> None:
+    f = tmp_path / "obj.json"
+    f.write_text(json.dumps({"currency": 1, "fiscal_start_month": 2, "compliance": 3}))
+    result = JqQuery().run({"path": str(f), "query": ". | keys_unsorted"})
+    assert json.loads(result) == ["currency", "fiscal_start_month", "compliance"]
+
+
 def test_jq_filter(tmp_path: Path) -> None:
     f = tmp_path / "users.json"
     f.write_text(json.dumps([
@@ -117,6 +132,34 @@ def test_jq_filter(tmp_path: Path) -> None:
     parsed = json.loads(result)
     assert len(parsed) == 1
     assert parsed[0]["name"] == "carol"
+
+
+def test_jq_filter_skips_items_missing_field(tmp_path: Path) -> None:
+    # Regression: a filter over a list where some items lack the field must SKIP
+    # those items (jq semantics), not error the whole query.
+    f = tmp_path / "users.json"
+    f.write_text(json.dumps([
+        {"name": "alice", "age": 30},
+        {"name": "bob"},               # no 'age'
+        {"name": "carol", "age": 40},
+    ]))
+    result = JqQuery().run({"path": str(f), "query": ".[?age > 30]"})
+    assert "error" not in result
+    parsed = json.loads(result)
+    assert [u["name"] for u in parsed] == ["carol"]
+
+
+def test_jq_filter_incomparable_types_skip(tmp_path: Path) -> None:
+    # Regression: a str-vs-int comparison on one row must skip it, not crash the query.
+    f = tmp_path / "mixed.json"
+    f.write_text(json.dumps([
+        {"name": "a", "age": 30},
+        {"name": "b", "age": "unknown"},
+    ]))
+    result = JqQuery().run({"path": str(f), "query": ".[?age > 20]"})
+    assert "error" not in result
+    parsed = json.loads(result)
+    assert [u["name"] for u in parsed] == ["a"]
 
 
 def test_jq_invalid_json(tmp_path: Path) -> None:

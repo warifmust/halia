@@ -4,9 +4,9 @@ Instead of reading entire JSON files and having the model parse them, use
 jq_query to extract specific fields, filter arrays, or compute aggregates.
 Deterministic, cheap, and safe — no shell access needed.
 
-Uses Python's json + jmespath-like syntax (simple dot-notation and pipe).
-For complex queries, falls back to Python eval on a restricted set of
-operations. No shell, no subprocess, no external dependencies.
+Uses Python's json + a small jmespath/jq-like parser (dot-notation, array
+index/iteration, pipes, and simple filters) built with plain string parsing —
+no eval, no shell, no subprocess, no external dependencies.
 """
 
 from __future__ import annotations
@@ -32,8 +32,9 @@ class JqQuery:
         "  '.users[?age > 30].name' — filter + extract field\n"
         "  '.users | length' — count items\n"
         "  '.users | map(select(.active == true))' — filter array\n"
-        "  '.users | keys' — list object keys\n"
-        "  '.users | values' — list object values"
+        "  '.config | keys' — object keys, sorted (like jq)\n"
+        "  '.config | keys_unsorted' — object keys in insertion order\n"
+        "  '.config | values' — object values (insertion order)"
     )
     dangerous = False
     untrusted = True  # reads user-supplied file content
@@ -103,8 +104,9 @@ def _jq_query(data: Any, query: str) -> Any:
         []              — flatten/iterate
         .field[]        — iterate array field
         | length        — pipe to length
-        | keys          — pipe to keys
-        | values        — pipe to values
+        | keys          — object keys, SORTED (matches jq)
+        | keys_unsorted — object keys in insertion order
+        | values        — object values (insertion order)
         | type          — pipe to type name
         [?expr]         — filter (simple comparisons only)
         .field == val   — equality check in filter
@@ -219,6 +221,11 @@ def _jq_pipe(value: Any, op: str) -> Any:
             return len(value)
         raise ValueError(f"cannot get length of {type(value).__name__}")
     if op == "keys":
+        # jq's `keys` returns keys SORTED (use keys_unsorted for insertion order).
+        if isinstance(value, dict):
+            return sorted(value.keys())
+        raise ValueError(f"cannot get keys of {type(value).__name__}")
+    if op == "keys_unsorted":
         if isinstance(value, dict):
             return list(value.keys())
         raise ValueError(f"cannot get keys of {type(value).__name__}")
@@ -284,19 +291,39 @@ def _jq_pipe(value: Any, op: str) -> Any:
     raise ValueError(f"unknown pipe operation: '{op}'")
 
 
+# Sentinel for a filter field an item doesn't have. jq treats a missing field as
+# null and simply skips the item rather than erroring the whole query.
+_MISSING = object()
+
+
+def _resolve_filter_field(item: Any, field_path: str) -> Any:
+    """Resolve a filter's field path, returning _MISSING instead of raising when absent."""
+    if not isinstance(item, dict):
+        return item
+    try:
+        return _resolve_path(item, field_path)
+    except (KeyError, IndexError, TypeError):
+        return _MISSING
+
+
 def _eval_filter(item: Any, expr: str) -> bool:
-    """Evaluate a simple filter expression like 'age > 30' or 'active == true'."""
-    # Parse: .field OP value
+    """Evaluate a simple filter like 'age > 30' or 'active == true'.
+
+    A missing field is jq's `null`: the item is skipped (it matches only '!='),
+    and a comparison that would raise on mismatched types (e.g. str vs int) skips
+    the item too — so one odd row never fails the whole query.
+    """
     match = re.match(r"^(\S+)\s*(==|!=|>=|<=|>|<)\s*(.+)$", expr.strip())
     if not match:
-        # Try simple truthiness
-        return bool(_resolve_path(item, expr.lstrip(".")) if isinstance(item, dict) else item)
+        # Simple truthiness, e.g. [?active]
+        resolved = _resolve_filter_field(item, expr.lstrip("."))
+        return resolved is not _MISSING and bool(resolved)
 
     field_path = match.group(1).lstrip(".")
     op = match.group(2)
     raw_val = match.group(3).strip()
 
-    value = _resolve_path(item, field_path) if isinstance(item, dict) else item
+    value = _resolve_filter_field(item, field_path)
 
     # Parse the comparison value
     comp_val: Any
@@ -315,16 +342,24 @@ def _eval_filter(item: Any, expr: str) -> bool:
             except ValueError:
                 comp_val = raw_val
 
-    if op == "==":
-        return bool(value == comp_val)
-    if op == "!=":
-        return bool(value != comp_val)
-    if op == ">":
-        return bool(value > comp_val)
-    if op == "<":
-        return bool(value < comp_val)
-    if op == ">=":
-        return bool(value >= comp_val)
-    if op == "<=":
-        return bool(value <= comp_val)
+    if value is _MISSING:
+        # Missing field == jq null: only "!=" matches a concrete value.
+        return op == "!="
+
+    try:
+        if op == "==":
+            return bool(value == comp_val)
+        if op == "!=":
+            return bool(value != comp_val)
+        if op == ">":
+            return bool(value > comp_val)
+        if op == "<":
+            return bool(value < comp_val)
+        if op == ">=":
+            return bool(value >= comp_val)
+        if op == "<=":
+            return bool(value <= comp_val)
+    except TypeError:
+        # Incomparable types → item doesn't match; skip rather than crash the query.
+        return False
     return False

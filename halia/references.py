@@ -193,7 +193,7 @@ def delete_reference(ref_id: str, db_path: Path = DB_PATH) -> bool:
     conn = connect(db_path)
     try:
         row = conn.execute(
-            "SELECT filename FROM ref_files WHERE id = ?", (ref_id,)
+            "SELECT stored_filename FROM ref_files WHERE id = ?", (ref_id,)
         ).fetchone()
         if not row:
             return False

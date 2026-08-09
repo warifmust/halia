@@ -15,6 +15,29 @@ from halia.permissions.guard import check_readable
 _MAX_CHARS = 10_000
 
 
+def extract_docx_text(path: Path, max_chars: int = _MAX_CHARS) -> str:
+    """Extract text (paragraphs + tables) from a .docx (no permission-floor check).
+
+    Raises PackageNotFoundError/OSError/ValueError on a malformed file.
+    """
+    from docx import Document
+
+    doc = Document(str(path))
+    parts: list[str] = [p.text for p in doc.paragraphs if p.text.strip()]
+    for table in doc.tables:
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells]
+            if any(cells):
+                parts.append(" | ".join(cells))
+
+    combined = "\n".join(parts)
+    if not combined.strip():
+        return "no text found in the document."
+    if len(combined) > max_chars:
+        combined = combined[:max_chars] + "\n… [truncated]"
+    return f"extracted text (paragraphs + tables):\n\n{combined}"
+
+
 class ReadDocx:
     name = "read_docx"
     description = (
@@ -48,24 +71,9 @@ class ReadDocx:
         if not isinstance(max_chars, int) or max_chars <= 0:
             max_chars = _MAX_CHARS
 
-        from docx import Document
         from docx.opc.exceptions import PackageNotFoundError
 
         try:
-            doc = Document(str(path))
+            return extract_docx_text(path, max_chars)
         except (PackageNotFoundError, OSError, ValueError) as exc:
             return f"error reading .docx: {exc}"
-
-        parts: list[str] = [p.text for p in doc.paragraphs if p.text.strip()]
-        for table in doc.tables:
-            for row in table.rows:
-                cells = [cell.text.strip() for cell in row.cells]
-                if any(cells):
-                    parts.append(" | ".join(cells))
-
-        combined = "\n".join(parts)
-        if not combined.strip():
-            return "no text found in the document."
-        if len(combined) > max_chars:
-            combined = combined[:max_chars] + "\n… [truncated]"
-        return f"extracted text (paragraphs + tables):\n\n{combined}"

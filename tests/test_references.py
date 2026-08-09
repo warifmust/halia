@@ -151,6 +151,18 @@ def test_delete_reference_not_found(tmp_path: Path) -> None:
     assert delete_reference("nonexistent", db_path=_db(tmp_path)) is False
 
 
+def test_delete_reference_removes_stored_file(tmp_path: Path) -> None:
+    # Regression: delete must unlink the physical file under ~/.halia/files/, not just
+    # the DB row. (It used to look up the original basename, never the stored name.)
+    f = _make_file(tmp_path, "phys.txt", "unique-content-for-delete-regression")
+    db = _db(tmp_path)
+    ref = store_reference(str(f), db_path=db)
+    stored = get_reference_path(ref.id, db_path=db)
+    assert stored is not None and stored.exists()
+    assert delete_reference(ref.id, db_path=db) is True
+    assert not stored.exists()  # physical file gone
+
+
 # ── learn_from_reference skill ────────────────────────────────────────────────
 
 
@@ -206,6 +218,43 @@ def test_learn_from_reference_specific_file(tmp_path: Path) -> None:
         result = skill.run({"filename": "a.md"})
     assert "Content A" in result
     assert "Content B" not in result
+
+
+def test_learn_from_reference_extracts_docx(tmp_path: Path) -> None:
+    # Regression: a taught .docx must return real extracted text, not binary mojibake.
+    from docx import Document
+
+    doc = Document()
+    doc.add_paragraph("UNIQUE_DOCX_MARKER heading")
+    doc.add_paragraph("second line body")
+    docx_path = tmp_path / "template.docx"
+    doc.save(str(docx_path))
+
+    ref = store_reference(str(docx_path), profile="qa", db_path=_db(tmp_path))
+    with patch("halia.references.list_ref_files", return_value=[ref]), \
+         patch("halia.references.get_reference_path", return_value=docx_path):
+        result = LearnFromReference().run({})
+    assert "UNIQUE_DOCX_MARKER" in result
+    assert "second line body" in result
+
+
+def test_learn_from_reference_extracts_xlsx(tmp_path: Path) -> None:
+    # Regression: a taught .xlsx must surface real cell values, not binary mojibake.
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Name", "Score"])
+    ws.append(["Alice", 95])
+    xlsx_path = tmp_path / "data.xlsx"
+    wb.save(str(xlsx_path))
+
+    ref = store_reference(str(xlsx_path), db_path=_db(tmp_path))
+    with patch("halia.references.list_ref_files", return_value=[ref]), \
+         patch("halia.references.get_reference_path", return_value=xlsx_path):
+        result = LearnFromReference().run({})
+    assert "Name" in result and "Score" in result
+    assert "Alice" in result
 
 
 def test_skill_registered() -> None:

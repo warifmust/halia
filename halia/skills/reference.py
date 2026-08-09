@@ -11,12 +11,42 @@ qa-tagged files are loaded.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from halia.config.settings import CONFIG_DIR
 
 _FILES_DIR = CONFIG_DIR / "files"
 _MAX_CONTENT = 8000  # chars per file to avoid blowing context
+
+
+def _read_reference_content(path: Path, file_type: str) -> str:
+    """Extract a taught file's text by type.
+
+    Binary office formats (.pdf/.docx/.xlsx) are routed through the proper extractors —
+    reading them as raw text would return mojibake. Text formats are read directly.
+    The stored file lives under ~/.halia/files/ (halia owns it), so no floor check.
+    """
+    ext = file_type.lower()
+    try:
+        if ext == ".pdf":
+            from halia.skills.pdf import extract_pdf_text
+
+            return extract_pdf_text(path, _MAX_CONTENT)
+        if ext == ".docx":
+            from halia.skills.word import extract_docx_text
+
+            return extract_docx_text(path, _MAX_CONTENT)
+        if ext == ".xlsx":
+            from halia.skills.excel import extract_excel_text
+
+            return extract_excel_text(path, max_chars=_MAX_CONTENT)
+        content = path.read_text(encoding="utf-8", errors="replace")
+        if len(content) > _MAX_CONTENT:
+            content = content[:_MAX_CONTENT] + "\n… (truncated)"
+        return content
+    except Exception as exc:  # noqa: BLE001 — a bad taught file is a note, not a crash
+        return f"(could not extract content: {exc})"
 
 
 class LearnFromReference:
@@ -67,14 +97,8 @@ class LearnFromReference:
             if path is None:
                 results.append(f"[{ref.filename}] — file missing from storage")
                 continue
-            try:
-                content = path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                results.append(f"[{ref.filename}] — could not read file")
-                continue
 
-            if len(content) > _MAX_CONTENT:
-                content = content[:_MAX_CONTENT] + "\n… (truncated)"
+            content = _read_reference_content(path, ref.file_type)
 
             tag = f" [{ref.profile}]" if ref.profile else ""
             header = f"=== {ref.filename}{tag} ({ref.file_type}) ==="

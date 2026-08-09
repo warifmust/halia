@@ -21,6 +21,50 @@ _MAX_ROWS = 100_000
 _DEFAULT_SAMPLE = 10
 
 
+def extract_excel_text(
+    path: Path, sample_rows: int = _DEFAULT_SAMPLE, max_chars: int = 10_000
+) -> str:
+    """Render a workbook as text (each sheet's columns + a sample) — for teach/reference.
+
+    No permission-floor check (caller owns the file). Raises InvalidFileException/OSError/
+    BadZipFile on a malformed file.
+    """
+    workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        blocks: list[str] = []
+        for sheet in workbook.sheetnames:
+            worksheet = workbook[sheet]
+            header: list[str] | None = None
+            sample: list[list[str]] = []
+            count = 0
+            for i, row in enumerate(worksheet.iter_rows(values_only=True)):
+                cells = ["" if value is None else str(value) for value in row]
+                if i == 0:
+                    header = cells
+                    continue
+                count += 1
+                if len(sample) < sample_rows:
+                    sample.append(cells)
+                if count >= _MAX_ROWS:
+                    break
+            lines = [f"=== sheet: {sheet} ==="]
+            if header is None:
+                lines.append("(empty)")
+            else:
+                lines.append(f"columns ({len(header)}): {', '.join(header)}")
+                lines.append(f"data rows: {count}")
+                lines.append(" | ".join(header))
+                lines.extend(" | ".join(cells) for cells in sample)
+            blocks.append("\n".join(lines))
+    finally:
+        workbook.close()
+
+    text = "\n\n".join(blocks) or "(empty workbook)"
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n… [truncated]"
+    return text
+
+
 class ReadExcel:
     name = "read_excel"
     description = (

@@ -1,0 +1,67 @@
+name: version-guard
+
+# Enforces the tracked half of .claude/VERSIONING.md: any change under halia/
+# must bump halia/__init__.py __version__, and the new version must increase.
+#
+# NOTE: the CHANGELOG lives in .claude/ which is gitignored (local working docs,
+# never pushed), so CI cannot verify a CHANGELOG entry — that stays a local
+# discipline. To have CI enforce it too, move CHANGELOG.md into the tracked repo.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # need history to diff against the base
+
+      - name: Read current __version__
+        id: ver
+        run: |
+          CUR=$(grep -oE '[0-9]+\.[0-9]+\.[0-9]+' halia/__init__.py | head -1)
+          if [ -z "$CUR" ]; then
+            echo "::error file=halia/__init__.py::could not parse __version__"; exit 1
+          fi
+          echo "current=$CUR" >> "$GITHUB_OUTPUT"
+          echo "current halia version: $CUR"
+
+      - name: Version was bumped and increased when halia/ changed
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="origin/${{ github.base_ref }}"
+          else
+            BASE="HEAD~1"
+          fi
+          CUR="${{ steps.ver.outputs.current }}"
+
+          # Previous version at the base ref (empty if the file is new there).
+          PREV=$(git show "${BASE}:halia/__init__.py" 2>/dev/null \
+                 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+          echo "base=${BASE} prev=${PREV:-<none>} cur=${CUR}"
+
+          if [ -z "$PREV" ]; then
+            echo "no previous version at base — nothing to compare, ok."; exit 0
+          fi
+
+          # Did any source under halia/ change vs the base?
+          if git diff --quiet "$BASE" -- halia/; then
+            echo "no changes under halia/ — version bump not required."; exit 0
+          fi
+
+          if [ "$PREV" = "$CUR" ]; then
+            echo "::error file=halia/__init__.py::halia/ changed but __version__ is still ${CUR} — bump it (MAJOR.SPRINT.HOTFIX, see .claude/VERSIONING.md)"
+            exit 1
+          fi
+
+          # New version must be strictly greater than the previous.
+          TOP=$(printf '%s\n%s\n' "$PREV" "$CUR" | sort -V | tail -1)
+          if [ "$TOP" != "$CUR" ]; then
+            echo "::error file=halia/__init__.py::__version__ ${CUR} does not increase over ${PREV}"
+            exit 1
+          fi
+          echo "version bump ok: ${PREV} -> ${CUR}"

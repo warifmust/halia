@@ -84,6 +84,13 @@ def test_fallback_forwards_tools_and_delta() -> None:
     tools = [{"type": "function", "function": {"name": "calc"}}]
     delta = MagicMock()
     fallback.chat([{"role": "user", "content": "hi"}], tools=tools, on_delta=delta)
-    ok.chat.assert_called_once_with(
-        [{"role": "user", "content": "hi"}], tools=tools, on_delta=delta,
-    )
+    # tools pass through verbatim; on_delta is WRAPPED (so fallback can tell whether the
+    # provider streamed anything), but the wrapper forwards to the original callback.
+    ok.chat.assert_called_once()
+    call = ok.chat.call_args
+    assert call.args[0] == [{"role": "user", "content": "hi"}]
+    assert call.kwargs["tools"] == tools
+    forwarded = call.kwargs["on_delta"]
+    assert forwarded is not None and forwarded is not delta
+    forwarded("tok")
+    delta.assert_called_once_with("tok")

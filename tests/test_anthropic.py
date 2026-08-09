@@ -26,6 +26,32 @@ def _provider(handler: object) -> AnthropicProvider:
     )
 
 
+def test_max_tokens_configurable() -> None:
+    """max_tokens is sent on the request and honors the constructor override."""
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))  # type: ignore[arg-type]
+    provider = AnthropicProvider(
+        base_url="https://api.anthropic.com/v1",
+        api_key="k",
+        model="claude-sonnet-5",
+        client=client,
+        max_tokens=1234,
+    )
+    provider.chat([{"role": "user", "content": "hi"}])
+    assert captured["max_tokens"] == 1234
+
+
 def test_convert_messages_splits_system() -> None:
     """System messages are extracted to the top-level system string."""
     messages = [

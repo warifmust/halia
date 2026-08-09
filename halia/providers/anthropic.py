@@ -30,6 +30,13 @@ try:
 except ValueError:
     _DEFAULT_TIMEOUT = 180.0
 
+# Anthropic requires an explicit max_tokens on every request (unlike OpenAI). Default is
+# generous for report/QA-doc generation; override with HALIA_MAX_TOKENS.
+try:
+    _DEFAULT_MAX_TOKENS = int(os.environ.get("HALIA_MAX_TOKENS", "8192"))
+except ValueError:
+    _DEFAULT_MAX_TOKENS = 8192
+
 
 class AnthropicProvider:
     """Calls the Anthropic Messages API and returns a `ChatResult`."""
@@ -41,10 +48,12 @@ class AnthropicProvider:
         model: str,
         timeout: float = _DEFAULT_TIMEOUT,
         client: httpx.Client | None = None,
+        max_tokens: int = _DEFAULT_MAX_TOKENS,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._model = model
+        self._max_tokens = max_tokens
         self._client = client if client is not None else httpx.Client(timeout=timeout)
 
     def _headers(self) -> dict[str, str]:
@@ -76,7 +85,7 @@ class AnthropicProvider:
         url = f"{self._base_url}/messages"
         payload: dict[str, Any] = {
             "model": self._model,
-            "max_tokens": 4096,
+            "max_tokens": self._max_tokens,
             "messages": messages,
         }
         if system:
@@ -104,7 +113,7 @@ class AnthropicProvider:
         url = f"{self._base_url}/messages"
         payload: dict[str, Any] = {
             "model": self._model,
-            "max_tokens": 4096,
+            "max_tokens": self._max_tokens,
             "messages": messages,
             "stream": True,
         }

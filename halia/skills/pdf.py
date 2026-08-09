@@ -18,6 +18,34 @@ from halia.permissions.guard import check_readable
 _MAX_CHARS = 10_000
 
 
+def extract_pdf_text(path: Path, max_chars: int = _MAX_CHARS) -> str:
+    """Extract text from a text-based PDF (no permission-floor check — caller owns it).
+
+    Raises PdfReadError/OSError/ValueError on a malformed file; returns a plain-text
+    notice when the PDF has no extractable text (scanned/image-based).
+    """
+    reader = PdfReader(str(path))
+    num_pages = len(reader.pages)
+    parts: list[str] = []
+    total = 0
+    for i, page in enumerate(reader.pages):
+        text = page.extract_text() or ""
+        if text.strip():
+            parts.append(f"[page {i + 1}]\n{text}")
+            total += len(text)
+        if total >= max_chars:
+            break
+    combined = "\n\n".join(parts)
+    if not combined.strip():
+        return (
+            "no extractable text found — this PDF may be scanned/image-based, "
+            "which needs OCR (not yet supported)."
+        )
+    if len(combined) > max_chars:
+        combined = combined[:max_chars] + "\n… [truncated]"
+    return f"{num_pages} page(s). extracted text:\n\n{combined}"
+
+
 class ReadPdf:
     name = "read_pdf"
     description = (
@@ -52,28 +80,7 @@ class ReadPdf:
         if not isinstance(max_chars, int) or max_chars <= 0:
             max_chars = _MAX_CHARS
 
-        num_pages = 0
-        parts: list[str] = []
-        total = 0
         try:
-            reader = PdfReader(str(path))
-            num_pages = len(reader.pages)
-            for i, page in enumerate(reader.pages):
-                text = page.extract_text() or ""
-                if text.strip():
-                    parts.append(f"[page {i + 1}]\n{text}")
-                    total += len(text)
-                if total >= max_chars:
-                    break
+            return extract_pdf_text(path, max_chars)
         except (PdfReadError, OSError, ValueError) as exc:
             return f"error reading PDF: {exc}"
-
-        combined = "\n\n".join(parts)
-        if not combined.strip():
-            return (
-                "no extractable text found — this PDF may be scanned/image-based, "
-                "which needs OCR (not yet supported)."
-            )
-        if len(combined) > max_chars:
-            combined = combined[:max_chars] + "\n… [truncated]"
-        return f"{num_pages} page(s). extracted text:\n\n{combined}"

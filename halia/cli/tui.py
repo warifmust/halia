@@ -52,6 +52,12 @@ PROMPT = HTML("<b><ansigreen>❯</ansigreen></b> ")  # bold green chevron — cl
 # Slash commands: (command, description). Drives both /help and the completion dropdown.
 _SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/help", "show all commands"),
+    ("/history", "show the last n turns (default 10)"),
+    ("/cost", "session token usage (+ rough $ estimate)"),
+    ("/export", "save the conversation as markdown (optional path)"),
+    ("/model", "show or switch the model (name)"),
+    ("/profile", "show or switch the profile (name)"),
+    ("/undo", "drop the last exchange (conversation only)"),
     ("/teach", "store a file as a reference format (path, --profile)"),
     ("/files", "list or search taught reference files"),
     ("/image", "attach an image for vision analysis (path to file)"),
@@ -62,8 +68,8 @@ _SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/resume", "resume a paused run"),
     ("/compact", "summarise older turns to free up context"),
     ("/clear", "reset the conversation (keeps the persona)"),
-    ("/exit", "quit"),
-    ("/quit", "quit"),
+    ("/exit", "quit halia"),
+    ("/quit", "quit halia (alias of /exit)"),
 ]
 _SLASH_HELP = "[bold]slash commands[/bold]\n" + "\n".join(
     f"  [cyan]{cmd}[/cyan]  [dim]{desc}[/dim]" for cmd, desc in _SLASH_COMMANDS
@@ -291,8 +297,14 @@ def run_tui(
     # Imported lazily — cli.main imports this module for the `tui` command (avoid a cycle).
     from halia.audit.record import new_record, save_run
     from halia.cli.main import (
+        _chat_cost,
+        _chat_export,
+        _chat_history,
+        _chat_model,
         _chat_procedure,
+        _chat_profile,
         _chat_resume,
+        _chat_undo,
         _make_approver,
         _prepare_context,
         _resumed_age_note,
@@ -334,10 +346,11 @@ def run_tui(
     render_banner()
 
     if resume is not None:
-        sess = get_session(resume)
-        if sess is None:
+        loaded = get_session(resume)
+        if loaded is None:
             console.print(f"[yellow]no session '{resume}'[/yellow] — see `halia sessions`.")
             return
+        sess = loaded  # narrowed to Session, so /model+/profile can replace() it cleanly
         config, registry, _ = _prepare_context(sess.profile, sess.allow_commands)
         config = replace(config, model=sess.model)
         messages: list[Message] = list(sess.messages)
@@ -609,6 +622,34 @@ def run_tui(
             continue
         if user_input.lower().startswith("/files"):
             _handle_files(user_input)
+            continue
+        if user_input.lower().startswith("/history"):
+            _chat_history(user_input, messages)
+            continue
+        if user_input.lower() == "/cost":
+            _chat_cost(total_usage, config.model)
+            continue
+        if user_input.lower().startswith("/export"):
+            _chat_export(user_input, messages, sess)
+            continue
+        if user_input.lower().startswith("/model"):
+            new_cfg = _chat_model(user_input, config)
+            if new_cfg is not None:
+                config = new_cfg
+                sess = replace(sess, model=config.model)
+                persist()
+            continue
+        if user_input.lower().startswith("/profile"):
+            res = _chat_profile(user_input, run_profile, allow_commands, messages)
+            if res is not None:
+                registry, prof_name = res
+                run_profile = active_profile = prof_name
+                sess = replace(sess, profile=prof_name)
+                persist()
+            continue
+        if user_input.lower() == "/undo":
+            if _chat_undo(messages):
+                persist()
             continue
         if user_input.lower().startswith("/resume"):
             _chat_resume(user_input, config, registry)

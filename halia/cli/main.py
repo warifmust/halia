@@ -8,7 +8,7 @@ this module just wires the commands. Commands are added as the layers land —
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 from rich.console import Console
@@ -16,6 +16,9 @@ from rich.highlighter import RegexHighlighter
 from rich.theme import Theme
 
 from halia import __version__
+
+if TYPE_CHECKING:  # annotation-only; the runtime imports stay local to keep CLI startup light
+    from halia.providers.base import Message
 
 
 class _ToolHighlighter(RegexHighlighter):
@@ -971,7 +974,7 @@ def chat(
     from halia.core.agent import SYSTEM_PROMPT, RunLimitError, converse
     from halia.core.checkpoint import list_checkpoints
     from halia.core.session import get_session, new_session, save_session
-    from halia.providers.base import Message, ProviderError
+    from halia.providers.base import ProviderError
 
     # Trust boundary: check if the current directory is trusted.
     cwd = os.getcwd()
@@ -991,13 +994,14 @@ def chat(
         console.print(f"[green]✓[/green] trusted [bold]{cwd}[/bold]\n")
 
     if resume is not None:
-        session = get_session(resume)
-        if session is None:
+        loaded = get_session(resume)
+        if loaded is None:
             console.print(
                 f"[yellow]no session matching '{resume}'[/yellow] (ambiguous or not found). "
                 "See `halia sessions`."
             )
             raise typer.Exit(1)
+        session = loaded  # narrowed to Session, so /model+/profile can replace() it cleanly
         # Rebuild the tools from the session's own profile/allow_commands; keep its model.
         config, registry, _ = _prepare_context(session.profile, session.allow_commands)
         config = replace(config, model=session.model)
@@ -1033,6 +1037,9 @@ def chat(
 
     approve = _make_approver()  # one trust scope for the whole chat session
     pending_image_id: str | None = None  # set by /image, consumed by next user message
+    from halia.providers.base import Usage
+
+    total_usage = Usage()  # accumulated token usage across the session (for /cost)
 
     while True:
         try:
@@ -1049,6 +1056,12 @@ def chat(
         if user_input == "/" or user_input.lower() == "/help":
             console.print(
                 "[bold]slash commands[/bold]\n"
+                "  [cyan]/history[/cyan] [n]  show the last n turns (default 10)\n"
+                "  [cyan]/cost[/cyan]  session token usage (+ rough $ estimate)\n"
+                "  [cyan]/export[/cyan] [path]  save the conversation as markdown\n"
+                "  [cyan]/model[/cyan] [name]  show or switch the model\n"
+                "  [cyan]/profile[/cyan] [name]  show or switch the profile\n"
+                "  [cyan]/undo[/cyan]  drop the last exchange (conversation only)\n"
                 "  [cyan]/teach[/cyan]  store a reference file (path, --profile)\n"
                 "  [cyan]/files[/cyan]  list or search taught reference files\n"
                 "  [cyan]/local[/cyan]  toggle local egress (on/off)\n"
@@ -1146,6 +1159,33 @@ def chat(
             except (FileNotFoundError, ValueError) as exc:
                 console.print(f"[red]error:[/red] {exc}")
             continue
+        if user_input.lower().startswith("/history"):
+            _chat_history(user_input, messages)
+            continue
+        if user_input.lower() == "/cost":
+            _chat_cost(total_usage, config.model)
+            continue
+        if user_input.lower().startswith("/export"):
+            _chat_export(user_input, messages, session)
+            continue
+        if user_input.lower().startswith("/model"):
+            new_cfg = _chat_model(user_input, config)
+            if new_cfg is not None:
+                config = new_cfg
+                session = replace(session, model=config.model)
+                persist()
+            continue
+        if user_input.lower().startswith("/profile"):
+            res = _chat_profile(user_input, session.profile, session.allow_commands, messages)
+            if res is not None:
+                registry, prof_name = res
+                session = replace(session, profile=prof_name)
+                persist()
+            continue
+        if user_input.lower() == "/undo":
+            if _chat_undo(messages):
+                persist()
+            continue
         if user_input.lower().startswith("/resume"):
             _chat_resume(user_input, config, registry)
             continue
@@ -1185,6 +1225,7 @@ def chat(
             messages.pop()  # drop the failed user turn so history stays clean
             continue
         messages.append({"role": "assistant", "content": result.answer})
+        total_usage = total_usage + result.usage
         persist()  # conversation survives a restart from here
         console.print(f"[bold]halia ›[/bold] {result.answer}")
         _chat_footer(result)
@@ -1365,6 +1406,150 @@ def _handle_files_chat(user_input: str) -> None:
         console.print(
             f"  {ref.filename} [dim]({size_kb}, {ref.file_type})[/dim]{tag}{desc}"
         )
+
+
+def _chat_history(command: str, messages: list[Message]) -> None:
+    """Handle `/history [n]` — print the last n user/assistant turns (default 10)."""
+    from halia.cli.slash import format_history
+
+    parts = command.split()
+    n = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() and int(parts[1]) > 0 else 10
+    console.print(format_history(messages, n))
+    console.print()
+
+
+def _chat_export(command: str, messages: list[Message], session: Any) -> None:
+    """Handle `/export [path]` — write the conversation to a markdown file."""
+    from pathlib import Path
+
+    from halia.cli.slash import conversation_markdown
+
+    parts = command.split(maxsplit=1)
+    if len(parts) >= 2 and parts[1].strip():
+        path = Path(parts[1].strip()).expanduser()
+    else:
+        path = Path.cwd() / f"halia-{session.id}.md"
+    meta = {
+        "session": session.id,
+        "provider": session.provider,
+        "model": session.model,
+        "profile": session.profile or "(default)",
+        "turns": session.turn_count(),
+    }
+    md = conversation_markdown(messages, title=f"halia conversation {session.id}", meta=meta)
+    try:
+        path.write_text(md, encoding="utf-8")
+    except OSError as exc:
+        console.print(f"[red]error:[/red] could not write {path}: {exc}\n")
+        return
+    console.print(
+        f"[green]✓[/green] exported {session.turn_count()} turn(s) → [bold]{path}[/bold]\n"
+    )
+
+
+def _chat_cost(total_usage: Any, model: str) -> None:
+    """Handle `/cost` — exact token totals + an optional (rough) dollar estimate."""
+    from halia.config.settings import read_config
+    from halia.pricing import estimate_cost
+
+    u = total_usage
+    console.print(
+        f"[bold]tokens this session[/bold]: {u.total_tokens:,} "
+        f"[dim]({u.prompt_tokens:,} in + {u.completion_tokens:,} out)[/dim]"
+    )
+    est = estimate_cost(model, u.prompt_tokens, u.completion_tokens, read_config().get("prices"))
+    if est is not None:
+        console.print(
+            f"[dim]~est ${est:.4f} USD for {model} — rough; "
+            "edit prices under 'prices' in ~/.halia/config.json.[/dim]\n"
+        )
+    else:
+        console.print(
+            f"[dim]no price on file for '{model}' — tokens only. Add one under 'prices' in "
+            "~/.halia/config.json for an estimate.[/dim]\n"
+        )
+
+
+def _chat_model(command: str, config: Any) -> Any | None:
+    """Handle `/model [name]`. Returns a new Config if switched, else None (display/no-op)."""
+    from dataclasses import replace
+
+    from halia.cli.slash import available_models
+
+    parts = command.split(maxsplit=1)
+    models = available_models(config.provider)
+    if len(parts) < 2 or not parts[1].strip():
+        listing = ", ".join(models) or "(none listed)"
+        console.print(
+            f"[bold]model[/bold]: {config.model}  [dim](provider: {config.provider})[/dim]"
+        )
+        console.print(f"[dim]available: {listing}[/dim]")
+        console.print("[dim]switch with: /model <name>[/dim]\n")
+        return None
+    name = parts[1].strip()
+    if name == config.model:
+        console.print(f"[dim]already using {name}.[/dim]\n")
+        return None
+    if models and name not in models:
+        console.print(
+            f"[yellow]note:[/yellow] '{name}' isn't in {config.provider}'s curated list — "
+            "using it anyway."
+        )
+    console.print(f"[green]✓[/green] model → [bold]{name}[/bold] [dim](from the next turn)[/dim]\n")
+    return replace(config, model=name)
+
+
+def _chat_profile(
+    command: str, current_profile: str | None, allow_commands: bool, messages: list[Message]
+) -> Any | None:
+    """Handle `/profile [name]`. Returns (registry, profile_name) if switched, else None.
+
+    Rebuilds the skill registry and re-personas the live conversation (messages[0]),
+    keeping the current provider/model. Validates the name first so an unknown profile
+    can't trip `_prepare_context`'s hard exit.
+    """
+    from halia.core.agent import SYSTEM_PROMPT
+    from halia.presets import BUILTIN_PRESETS, resolve_profile
+    from halia.profiles import list_profiles
+
+    parts = command.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        builtin = ", ".join(sorted(BUILTIN_PRESETS))
+        user = ", ".join(p.name for p in list_profiles())
+        console.print(f"[bold]profile[/bold]: {current_profile or '(default/general)'}")
+        console.print(f"[dim]built-in: {builtin}[/dim]")
+        if user:
+            console.print(f"[dim]yours: {user}[/dim]")
+        console.print("[dim]switch with: /profile <name>[/dim]\n")
+        return None
+    name = parts[1].strip()
+    if resolve_profile(name) is None:
+        console.print(
+            f"[red]error:[/red] no profile or preset '{name}' (see `halia profile list`).\n"
+        )
+        return None
+    _, registry, extra_system = _prepare_context(name, allow_commands)
+    if messages and messages[0].get("role") == "system":
+        messages[0] = {"role": "system", "content": SYSTEM_PROMPT + extra_system}
+    console.print(
+        f"[green]✓[/green] profile → [bold]{name}[/bold] [dim](skills + persona updated)[/dim]\n"
+    )
+    return registry, name
+
+
+def _chat_undo(messages: list[Message]) -> bool:
+    """Handle `/undo` — drop the last user+assistant exchange (conversation only)."""
+    from halia.cli.slash import drop_last_exchange
+
+    removed = drop_last_exchange(messages)
+    if removed == 0:
+        console.print("[dim]nothing to undo.[/dim]\n")
+        return False
+    console.print(
+        f"[dim]undid the last exchange ({removed} message(s) dropped). Note: this only edits the "
+        "conversation — it does NOT undo file writes or other actions halia already took.[/dim]\n"
+    )
+    return True
 
 
 def _chat_resume(command: str, config: Any, registry: Any) -> None:
