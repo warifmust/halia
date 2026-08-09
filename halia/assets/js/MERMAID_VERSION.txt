@@ -1,0 +1,7 @@
+mermaid.min.js
+  version: 11.16.1
+  source:  https://cdn.jsdelivr.net/npm/mermaid@11.16.1/dist/mermaid.min.js
+  license: MIT
+  sha256:  18327bef70d96fb505fe7287d9f6a7362ebf07ff6576ddfaffb1a06f3e1a2954
+  note:    self-contained UMD build (no dynamic import(), sets globalThis.mermaid);
+           used to render make_diagram format=html fully offline.

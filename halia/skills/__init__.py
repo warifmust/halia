@@ -10,6 +10,7 @@ from halia.skills.clean import CleanCsv
 from halia.skills.compliance import CheckRequirements
 from halia.skills.data import AggregateCsv, GroupByCsv, ReadCsv
 from halia.skills.db import QueryData, QueryDb
+from halia.skills.diagram import MakeDiagram, MakeErDiagram
 from halia.skills.excel import ReadExcel
 from halia.skills.exec import RunCommand
 from halia.skills.expectation import CheckExpectation
@@ -61,6 +62,8 @@ _SKILL_FACTORIES: dict[str, type] = {
     "readability": Readability,
     "count_text": CountText,
     "make_chart": MakeChart,
+    "make_diagram": MakeDiagram,
+    "make_er_diagram": MakeErDiagram,
     "make_pdf": MakePdf,
     "make_pptx": MakePptx,
     "make_docx": MakeDocx,

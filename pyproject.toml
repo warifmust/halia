@@ -37,7 +37,10 @@ path = "halia/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["halia"]
-artifacts = ["halia/assets/fonts/*.ttf"]  # bundle the Unicode PDF font
+artifacts = [
+    "halia/assets/fonts/*.ttf",  # bundle the Unicode PDF font
+    "halia/assets/js/mermaid.min.js",  # bundle mermaid.js for offline diagram HTML render
+]
 
 [tool.ruff]
 line-length = 100

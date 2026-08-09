@@ -211,6 +211,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "aggregate_csv",  # analyse it in code, not in the model's head
             "query_db",
             "make_chart",  # turn data into a chart (the "build graph" ask)
+            "make_diagram",  # process/concept diagrams (Mermaid)
             "read_file",
             "read_pdf",
             "list_files",
@@ -240,6 +241,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "make_docx",  # editable briefs
             "make_pptx",  # pitch decks
             "make_chart",
+            "make_diagram",  # funnels / journey / workflow diagrams (Mermaid)
         ],
         model=None,
         extra_prompt=_MARKETING_PROMPT,
@@ -256,6 +258,8 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "query_db",  # analyse databases
             "calculate",
             "make_chart",  # visualise
+            "make_diagram",  # ER / data-flow / pipeline diagrams (Mermaid)
+            "make_er_diagram",  # ER diagram GENERATED from the real schema/files (grounded)
             "read_file",
             "list_files",
             "write_file",
@@ -304,6 +308,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "make_docx",  # test plans / cases
             "make_pdf",
             "make_excel",  # test-case tables / traceability matrices
+            "make_diagram",  # test-flow / state / sequence diagrams (Mermaid)
         ],
         model=None,
         extra_prompt=_QA_PROMPT,
