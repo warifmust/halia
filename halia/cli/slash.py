@@ -78,6 +78,17 @@ def drop_last_exchange(messages: list[Message]) -> int:
     return removed
 
 
+def human_count(n: int) -> str:
+    """Abbreviate a token count for compact display: 842, 9.6k, 19.2k, 100k, 1.2M."""
+    if n < 0:
+        return str(n)
+    for div, suffix in ((1_000_000, "M"), (1_000, "k")):
+        if n >= div:
+            s = f"{n / div:.1f}".rstrip("0").rstrip(".")
+            return f"{s}{suffix}"
+    return str(n)
+
+
 def available_models(provider: str) -> list[str]:
     """The curated model list for a provider (minus the 'Custom model…' picker sentinel)."""
     from halia.config.settings import PROVIDERS

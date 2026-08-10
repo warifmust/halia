@@ -40,17 +40,22 @@ else
   echo "→ installing the halia command from ${REPO_URL}@${REF} …"
 fi
 
-# 3. Install halia as an isolated uv tool — its own venv, `halia` put on PATH.
+# 3. Install (or update) halia as an isolated uv tool — its own venv, `halia` on PATH.
+#    --force re-pulls the latest, so re-running this script updates an existing install.
 uv tool install --force "$TARGET"
 
 # 4. Make sure uv's tool-bin dir is on PATH for future shells.
 uv tool update-shell >/dev/null 2>&1 || true
 
+# 5. Confirm the version that landed (best-effort — PATH may only apply to new shells).
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+VERSION="$(halia --version 2>/dev/null || true)"
+
 echo
-echo "✓ halia installed. Next:"
+echo "✓ ${VERSION:-halia} installed. Next:"
 echo "    halia setup         # choose a provider + paste your API key"
-echo "    halia               # start the chat shell (or 'halia qa' for the QA vertical)"
+echo "    halia               # start the chat shell (/help lists commands)"
+echo "    halia qa            # a vertical (finance / data / research / qa / …)"
 echo "    halia --resume <id> # pick up a past session"
-echo "    halia gateway setup # (optional) Telegram notifications"
 echo
 echo "If 'halia' isn't found, open a new terminal (uv adds ~/.local/bin to PATH)."

@@ -102,6 +102,8 @@ class LearnFromReference:
 
             tag = f" [{ref.profile}]" if ref.profile else ""
             header = f"=== {ref.filename}{tag} ({ref.file_type}) ==="
+            if ref.url:
+                header += f"\nsource: {ref.url}  (cite this URL when you use it)"
             if ref.description:
                 header += f"\n{ref.description}"
             results.append(f"{header}\n{content}")

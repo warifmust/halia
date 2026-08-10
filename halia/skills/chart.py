@@ -369,12 +369,10 @@ def parse_chart_block(text: str) -> ChartSpec | None:
 class MakeChart:
     name = "make_chart"
     description = (
-        "Create a chart, saved as an SVG file. kind = bar (default) / line (trends) / area "
-        "(cumulative trend) / pie (shares) / scatter (correlation) / histogram (distribution "
-        "of raw numbers). For bar/line/area/pie: `labels` = categories, and either `values` "
-        "(one series) or `series` = [{name, values}] (multiple). For scatter: `points` = "
-        "[[x, y], …] (+ `xlabel`/`ylabel`). For histogram: `values` = the raw numbers (+ "
-        "optional `bins`)."
+        "Create a chart, saved as an SVG file. kind = bar (default) / line / area / pie / "
+        "scatter / histogram. bar/line/area/pie: `labels` + `values` (one series) or "
+        "`series`=[{name, values}]. scatter: `points`=[[x, y], …] (+ xlabel/ylabel). "
+        "histogram: `values` (raw numbers) + optional `bins`."
     )
     dangerous = True
     untrusted = False  # writes a file

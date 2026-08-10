@@ -9,6 +9,7 @@ from halia.cli.slash import (
     conversation_markdown,
     drop_last_exchange,
     format_history,
+    human_count,
 )
 from halia.pricing import estimate_cost, price_for
 from halia.providers.base import Message
@@ -117,3 +118,23 @@ def test_price_override_from_config() -> None:
     overrides = {"my-model": {"in": 1.0, "out": 2.0}}
     cost = estimate_cost("my-model", 1_000_000, 1_000_000, overrides)
     assert cost == Decimal("3.0")
+
+
+def test_estimate_cost_cached_is_cheaper() -> None:
+    full = estimate_cost("gpt-4o-mini", 1000, 0)
+    cached = estimate_cost("gpt-4o-mini", 1000, 0, cached_tokens=1000)
+    assert full is not None and cached is not None
+    assert cached < full  # cached tokens billed at the cheaper cache rate
+
+
+# ── human_count (abbreviated token display) ─────────────────────────────────────
+
+
+def test_human_count() -> None:
+    assert human_count(0) == "0"
+    assert human_count(842) == "842"
+    assert human_count(9594) == "9.6k"
+    assert human_count(19000) == "19k"       # trailing .0 dropped
+    assert human_count(19196) == "19.2k"
+    assert human_count(100000) == "100k"
+    assert human_count(1_200_000) == "1.2M"

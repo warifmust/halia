@@ -124,12 +124,10 @@ def _apply(op: dict[str, Any], header: list[str], rows: list[list[str]]) -> str:
 class CleanCsv:
     name = "clean_csv"
     description = (
-        "Clean a CSV by applying an ordered list of operations and saving a cleaned file. "
-        "Every step reports what it changed. Operations (each an object with 'op'): "
-        "trim, lowercase/uppercase/titlecase (column), fill_blank (column, value), "
-        "drop_missing (column), drop_duplicates (optional columns), drop_empty_rows, "
-        "replace (column, map), rename (column, to), standardize_date (column, optional "
-        "'from' strptime format). Use SQL (query_data) for filtering/joining/aggregating."
+        "Clean a CSV via an ordered list of operations, saving a cleaned file; each step reports "
+        "its change. Ops (object with 'op'): trim, lowercase/uppercase/titlecase, fill_blank, "
+        "drop_missing, drop_duplicates, drop_empty_rows, replace, rename, standardize_date. Use "
+        "query_data (SQL) for filtering/joining/aggregating."
     )
     dangerous = True
     untrusted = False  # writes a file

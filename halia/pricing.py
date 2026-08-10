@@ -67,14 +67,24 @@ def estimate_cost(
     prompt_tokens: int,
     completion_tokens: int,
     overrides: dict[str, Any] | None = None,
+    cached_tokens: int = 0,
 ) -> Decimal | None:
-    """Estimated USD cost for the given token usage, or None if the model has no price."""
+    """Estimated USD cost for the given token usage, or None if the model has no price.
+
+    Cached prompt tokens are billed at the cheaper cache rate — `price["cached"]` if set,
+    else a rough 10% of the input rate. Pass `cached_tokens` (from usage) to reflect it.
+    """
     price = price_for(model, overrides)
     if price is None:
         return None
-    per_million = Decimal(1_000_000)
+    in_rate = Decimal(str(price["in"]))
+    out_rate = Decimal(str(price["out"]))
+    cached_rate = Decimal(str(price["cached"])) if "cached" in price else in_rate / 10
+    cached = max(0, min(cached_tokens, prompt_tokens))
+    full_in = prompt_tokens - cached
     cost = (
-        Decimal(prompt_tokens) * Decimal(str(price["in"]))
-        + Decimal(completion_tokens) * Decimal(str(price["out"]))
-    ) / per_million
+        Decimal(full_in) * in_rate
+        + Decimal(cached) * cached_rate
+        + Decimal(completion_tokens) * out_rate
+    ) / Decimal(1_000_000)
     return cost

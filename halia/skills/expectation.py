@@ -66,10 +66,9 @@ def _evaluate(actual: str, operator: str, expected: str) -> tuple[bool, str]:
 class CheckExpectation:
     name = "check_expectation"
     description = (
-        "Deterministically check one actual value against an expected value and return "
-        "PASS or FAIL. Use this to decide a test's verdict (e.g. actual HTTP status equals "
-        "expected) instead of judging by eye — the comparison is exact and lands in the "
-        "audit trail. Operators: equals, not_equals, contains, not_contains, greater_than, "
+        "Deterministically check one actual value against an expected value → PASS or FAIL "
+        "(exact, and it lands in the audit trail). Use it for a test's verdict instead of "
+        "judging by eye. Operators: equals, not_equals, contains, not_contains, greater_than, "
         "less_than, at_least, at_most, matches (regex). Numeric operators use exact decimals."
     )
     dangerous = False

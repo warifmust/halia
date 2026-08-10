@@ -88,20 +88,12 @@ def _declared_type(code: str) -> str | None:
 class MakeDiagram:
     name = "make_diagram"
     description = (
-        "Create a diagram from Mermaid source, saved as a markdown file (renders on GitHub, "
-        "VS Code, Obsidian, Claude artifacts, and most markdown viewers). For anyone, not just "
-        "engineers. Common types: flowchart (processes/decisions), sequenceDiagram (step-by-step "
-        "interactions between people or systems), stateDiagram-v2 (lifecycles/statuses), "
-        "erDiagram (how data tables relate), journey (user journeys), mindmap (brainstorming), "
-        "timeline (chronology of events), quadrantChart (2x2 prioritisation/positioning). Pass "
-        "`code` = the Mermaid source (e.g. 'flowchart TD\\n A[Start] --> B[End]'); if it already "
-        "starts with the type you can omit `kind`, otherwise pass `kind` and it's prepended. "
-        "`format`: 'md' (default, a ```mermaid block that renders on GitHub/VS Code/Obsidian), "
-        "'mmd' (raw Mermaid source only — for rendering it yourself), or 'html' (a self-contained "
-        "page that renders in any browser, fully offline). "
-        "For a chart of NUMERIC data (bar/line/pie of values) use make_chart instead — it renders "
-        "exact, tool-computed numbers. To draw an ER diagram from ACTUAL data (a database or "
-        "spreadsheets) use make_er_diagram."
+        "Create a diagram from Mermaid source, saved to a file. Types: flowchart, "
+        "sequenceDiagram, stateDiagram-v2, erDiagram, journey, mindmap, timeline, quadrantChart, "
+        "etc. `code` = the Mermaid source (e.g. 'flowchart TD\\n A-->B'); pass `kind` if the code "
+        "doesn't start with the type. `format`: md (default, ```mermaid fence), mmd (raw source), "
+        "or html (self-contained, renders offline in a browser). For numeric charts use "
+        "make_chart; for an ER diagram from real data use make_er_diagram."
     )
     dangerous = True  # writes a file
     untrusted = False
@@ -302,11 +294,10 @@ def _files_er(files: list[Path]) -> tuple[list[str], list[str]]:
 class MakeErDiagram:
     name = "make_er_diagram"
     description = (
-        "Generate an entity-relationship (ER) diagram of how your data tables relate, from ACTUAL "
-        "data — a SQLite database (uses its real foreign keys) OR a set of CSV/Excel files "
-        "(columns are read from the files; relationships are INFERRED from shared `*_id` column "
-        "names and clearly flagged as inferred). Great for seeing the shape of a dataset. Provide "
-        "exactly one of `db` or `files`. Saved as a Mermaid ER diagram in a markdown file."
+        "Generate an entity-relationship (ER) diagram from ACTUAL data — a SQLite database (real "
+        "foreign keys) OR CSV/Excel files (columns read from the files; relationships inferred "
+        "from shared `*_id` names and flagged). Provide exactly one of `db` or `files`. Saved as "
+        "a Mermaid ER diagram."
     )
     dangerous = True  # writes a file
     untrusted = False

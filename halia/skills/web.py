@@ -45,6 +45,36 @@ class _TextExtractor(HTMLParser):
         return " ".join(" ".join(self._chunks).split())
 
 
+def fetch_url_text(
+    url: str, client: httpx.Client | None = None, max_chars: int = _DEFAULT_MAX_CHARS
+) -> str:
+    """Fetch a URL and return its readable text (HTML/scripts stripped).
+
+    The single source of truth for outbound page fetches, so the SSRF egress floor is
+    enforced on every path that reads the web (fetch_url, teaching a URL). Raises
+    EgressDenied, ValueError (bad scheme or non-200 status), or httpx.HTTPError.
+    """
+    url = url.strip()
+    if not url.startswith(("http://", "https://")):
+        raise ValueError("url must start with http:// or https://")
+    check_egress(url)
+    owns = client is None
+    http = client or httpx.Client(timeout=_TIMEOUT, follow_redirects=True)
+    try:
+        resp = http.get(url, headers={"User-Agent": "halia/0.1"})
+    finally:
+        if owns:
+            http.close()
+    if resp.status_code != 200:
+        raise ValueError(f"HTTP {resp.status_code} from {url}")
+    parser = _TextExtractor()
+    parser.feed(resp.text)
+    text = parser.text()
+    if max_chars and len(text) > max_chars:
+        text = text[:max_chars] + "… [truncated]"
+    return text
+
+
 class FetchUrl:
     name = "fetch_url"
     description = (
@@ -78,27 +108,19 @@ class FetchUrl:
         url = raw.strip()
         if not url.startswith(("http://", "https://")):
             return "error: url must start with http:// or https://"
-        try:
-            check_egress(url)
-        except EgressDenied as exc:
-            return f"blocked: {exc}"
 
         max_chars = args.get("max_chars", _DEFAULT_MAX_CHARS)
         if not isinstance(max_chars, int) or max_chars <= 0:
             max_chars = _DEFAULT_MAX_CHARS
 
         try:
-            resp = self._client.get(url, headers={"User-Agent": "halia/0.1"})
+            text = fetch_url_text(url, client=self._client, max_chars=max_chars)
+        except EgressDenied as exc:
+            return f"blocked: {exc}"
         except httpx.HTTPError as exc:
             return f"error fetching {url}: {exc}"
-        if resp.status_code != 200:
-            return f"error: HTTP {resp.status_code} from {url}"
-
-        parser = _TextExtractor()
-        parser.feed(resp.text)
-        text = parser.text()
-        if len(text) > max_chars:
-            text = text[:max_chars] + "… [truncated]"
+        except ValueError as exc:
+            return f"error: {exc}"
         return text or "(no text content)"
 
 

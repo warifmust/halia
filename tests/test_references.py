@@ -13,6 +13,7 @@ from halia.references import (
     list_ref_files,
     search_ref_files,
     store_reference,
+    store_url_reference,
 )
 from halia.skills.reference import LearnFromReference
 
@@ -255,6 +256,53 @@ def test_learn_from_reference_extracts_xlsx(tmp_path: Path) -> None:
         result = LearnFromReference().run({})
     assert "Name" in result and "Score" in result
     assert "Alice" in result
+
+
+# ── store_url_reference (teaching a URL) ────────────────────────────────────────
+
+
+def test_store_url_reference(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    ref = store_url_reference(
+        "https://example.com/reporting-standard",
+        profile="finance",
+        description="reporting standard",
+        db_path=db,
+        fetcher=lambda _u: "Rule 1: disclose everything",
+    )
+    assert ref.url == "https://example.com/reporting-standard"
+    assert ref.profile == "finance"
+    assert ref.file_type == ".md"
+    assert ref.filename.startswith("example.com")
+    stored = get_reference_path(ref.id, db_path=db)
+    assert stored is not None and "Rule 1: disclose everything" in stored.read_text()
+
+
+def test_store_url_reference_empty_raises(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="no readable text"):
+        store_url_reference("https://example.com", db_path=_db(tmp_path), fetcher=lambda _u: "   ")
+
+
+def test_url_reference_listed_with_url(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    store_url_reference("https://example.com/a", db_path=db, fetcher=lambda _u: "content")
+    refs = list_ref_files(db_path=db)
+    assert len(refs) == 1
+    assert refs[0].url == "https://example.com/a"
+
+
+def test_learn_from_reference_shows_url_source(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    ref = store_url_reference(
+        "https://example.com/guide", profile="qa", db_path=db,
+        fetcher=lambda _u: "Best practice: write clear steps",
+    )
+    stored = get_reference_path(ref.id, db_path=db)
+    with patch("halia.references.list_ref_files", return_value=[ref]), \
+         patch("halia.references.get_reference_path", return_value=stored):
+        result = LearnFromReference().run({})
+    assert "source: https://example.com/guide" in result
+    assert "Best practice" in result
 
 
 def test_skill_registered() -> None:

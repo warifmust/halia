@@ -53,12 +53,13 @@ PROMPT = HTML("<b><ansigreen>❯</ansigreen></b> ")  # bold green chevron — cl
 _SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/help", "show all commands"),
     ("/history", "show the last n turns (default 10)"),
-    ("/cost", "session token usage (+ rough $ estimate)"),
+    ("/cost", "session token usage (+ % cached, rough $ estimate)"),
+    ("/token", "show/hide token usage in the status bar (on/off)"),
     ("/export", "save the conversation as markdown (optional path)"),
     ("/model", "show or switch the model (name)"),
     ("/profile", "show or switch the profile (name)"),
     ("/undo", "drop the last exchange (conversation only)"),
-    ("/teach", "store a file as a reference format (path, --profile)"),
+    ("/teach", "store a file or URL as a reference (path/URL, --profile)"),
     ("/files", "list or search taught reference files"),
     ("/image", "attach an image for vision analysis (path to file)"),
     ("/procedure", "manage test procedures (list/teach/show/set/run/remove)"),
@@ -304,6 +305,7 @@ def run_tui(
         _chat_procedure,
         _chat_profile,
         _chat_resume,
+        _chat_token,
         _chat_undo,
         _make_approver,
         _prepare_context,
@@ -311,6 +313,8 @@ def run_tui(
         _show_step,
         console,
     )
+    from halia.cli.slash import human_count
+    from halia.config.settings import read_config
     from halia.core.agent import (
         DEFAULT_HISTORY_BUDGET_CHARS,
         SYSTEM_PROMPT,
@@ -382,6 +386,7 @@ def run_tui(
     active_profile = run_profile or "general"
     turn_secs = [0.0]  # last turn's wall time (list so the toolbar closure sees updates)
     total_usage = Usage()  # accumulated token usage across the session
+    show_tokens = bool(read_config().get("show_tokens", False))  # /token toggles this (persisted)
     footer = _Footer(console)  # live 'working' line during a turn
     streaming = {"on": False}  # is an answer currently streaming to the screen this turn?
     compact_always = {"on": False}  # remembers an "always compact" choice for the session
@@ -510,10 +515,16 @@ def run_tui(
         filled = round(pct / 10)
         bar = "▓" * filled + "░" * (10 - filled)
         local = "on" if allow_local_enabled() else "off"
-        tok = f"{total_usage.total_tokens:,}" if total_usage.total_tokens else "0"
+        if not show_tokens:
+            tok_seg = "tok --"  # hidden by default (the raw count misleads — see /token, /cost)
+        else:
+            tok_seg = f"tok {human_count(total_usage.total_tokens)}"
+            if total_usage.cached_tokens and total_usage.prompt_tokens:
+                cpct = 100 * total_usage.cached_tokens // total_usage.prompt_tokens
+                tok_seg += f" · {cpct}% cached"
         return (
             f" {active_profile} · {config.model} · {sess.id[:6]} · "
-            f"ctx {bar} {pct}% · budget {budget} · tok {tok} "
+            f"ctx {bar} {pct}% · budget {budget} · {tok_seg} "
             f"· local {local} · {turn_secs[0]:.1f}s "
         )
 
@@ -628,6 +639,9 @@ def run_tui(
             continue
         if user_input.lower() == "/cost":
             _chat_cost(total_usage, config.model)
+            continue
+        if user_input.lower().startswith("/token"):
+            show_tokens = _chat_token(user_input, show_tokens)
             continue
         if user_input.lower().startswith("/export"):
             _chat_export(user_input, messages, sess)

@@ -175,13 +175,23 @@ class OpenAICompatProvider:
 
 
 def _parse_usage(raw: Any) -> Usage:
-    """Parse OpenAI-style usage: {prompt_tokens, completion_tokens, total_tokens}."""
+    """Parse OpenAI-style usage, including cached prompt tokens where the provider reports them.
+
+    Cached tokens live in `prompt_tokens_details.cached_tokens` (OpenAI, mimo) or, on DeepSeek,
+    the top-level `prompt_cache_hit_tokens`. They're still counted in prompt_tokens — just billed
+    at the cheaper cache rate.
+    """
     if not raw or not isinstance(raw, dict):
         return Usage()
+    details = raw.get("prompt_tokens_details")
+    cached = int(details.get("cached_tokens", 0) or 0) if isinstance(details, dict) else 0
+    if not cached:
+        cached = int(raw.get("prompt_cache_hit_tokens", 0) or 0)
     return Usage(
         prompt_tokens=int(raw.get("prompt_tokens", 0) or 0),
         completion_tokens=int(raw.get("completion_tokens", 0) or 0),
         total_tokens=int(raw.get("total_tokens", 0) or 0),
+        cached_tokens=cached,
     )
 
 

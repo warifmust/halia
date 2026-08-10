@@ -1,8 +1,9 @@
 """Tests for the fetch_url skill (mocked HTTP — no network)."""
 
 import httpx
+import pytest
 
-from halia.skills.web import FetchUrl
+from halia.skills.web import FetchUrl, fetch_url_text
 
 
 def _fetch(handler: object) -> FetchUrl:
@@ -40,3 +41,27 @@ def test_fetch_url_requires_url() -> None:
 
 def test_fetch_url_is_safe() -> None:
     assert FetchUrl().dangerous is False
+
+
+def test_fetch_url_text_extracts_and_raises_on_non_200() -> None:
+    def ok(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<h1>Title</h1><p>Body text</p>")
+
+    client = httpx.Client(transport=httpx.MockTransport(ok))  # type: ignore[arg-type]
+    text = fetch_url_text("https://example.com", client=client)
+    assert "Title" in text and "Body text" in text
+
+    def bad(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500)
+
+    client2 = httpx.Client(transport=httpx.MockTransport(bad))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="HTTP 500"):
+        fetch_url_text("https://example.com", client=client2)
+
+
+def test_fetch_url_text_egress_floor_blocks_metadata_ip() -> None:
+    from halia.permissions.network import EgressDenied
+
+    # literal link-local IP (cloud metadata) — resolves to itself, blocked pre-network
+    with pytest.raises(EgressDenied):
+        fetch_url_text("http://169.254.169.254/latest/meta-data/")

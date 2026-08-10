@@ -1057,12 +1057,13 @@ def chat(
             console.print(
                 "[bold]slash commands[/bold]\n"
                 "  [cyan]/history[/cyan] [n]  show the last n turns (default 10)\n"
-                "  [cyan]/cost[/cyan]  session token usage (+ rough $ estimate)\n"
+                "  [cyan]/cost[/cyan]  session token usage (+ % cached, rough $ estimate)\n"
+                "  [cyan]/token[/cyan]  show/hide token usage in the status bar (on/off)\n"
                 "  [cyan]/export[/cyan] [path]  save the conversation as markdown\n"
                 "  [cyan]/model[/cyan] [name]  show or switch the model\n"
                 "  [cyan]/profile[/cyan] [name]  show or switch the profile\n"
                 "  [cyan]/undo[/cyan]  drop the last exchange (conversation only)\n"
-                "  [cyan]/teach[/cyan]  store a reference file (path, --profile)\n"
+                "  [cyan]/teach[/cyan]  store a file or URL as a reference (path/URL, --profile)\n"
                 "  [cyan]/files[/cyan]  list or search taught reference files\n"
                 "  [cyan]/local[/cyan]  toggle local egress (on/off)\n"
                 "  [cyan]/commands[/cyan]  toggle shell commands (on/off)\n"
@@ -1164,6 +1165,11 @@ def chat(
             continue
         if user_input.lower() == "/cost":
             _chat_cost(total_usage, config.model)
+            continue
+        if user_input.lower().startswith("/token"):
+            from halia.config.settings import read_config as _rc
+
+            _chat_token(user_input, bool(_rc().get("show_tokens", False)))
             continue
         if user_input.lower().startswith("/export"):
             _chat_export(user_input, messages, session)
@@ -1344,8 +1350,8 @@ def _handle_teach_chat(user_input: str) -> None:
     parts = user_input.split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
         console.print(
-            "[yellow]Usage:[/yellow] /teach <path> [--profile qa] [--description \"text\"]\n"
-            "  Stores a file as a reference format. The model will follow it.\n"
+            "[yellow]Usage:[/yellow] /teach <path-or-URL> [--profile qa] [--description \"text\"]\n"
+            "  Stores a file OR a web page as a reference; the model follows it and cites URLs.\n"
         )
         return
     args = parts[1].strip()
@@ -1367,17 +1373,28 @@ def _handle_teach_chat(user_input: str) -> None:
         else:
             i += 1
     if not path:
-        console.print("[yellow]Usage:[/yellow] /teach <path> [--profile qa]\n")
+        console.print("[yellow]Usage:[/yellow] /teach <path-or-URL> [--profile qa]\n")
         return
+    import httpx
+
+    from halia.permissions.network import EgressDenied
+
     try:
-        ref = store_reference(path, profile=profile, description=description)
+        if path.startswith(("http://", "https://")):
+            from halia.references import store_url_reference
+
+            ref = store_url_reference(path, profile=profile, description=description)
+            source = f"  [dim]{ref.url}[/dim]"
+        else:
+            ref = store_reference(path, profile=profile, description=description)
+            source = ""
         tag = f" → [cyan]{ref.profile}[/cyan]" if ref.profile else ""
         size_kb = f"{ref.size_bytes / 1024:.0f}KB"
         console.print(
             f"[green]✓[/green] Reference stored: [bold]{ref.filename}[/bold]"
-            f" ({size_kb}, {ref.file_type}){tag}"
+            f" ({size_kb}, {ref.file_type}){tag}{source}"
         )
-    except (FileNotFoundError, ValueError) as exc:
+    except (FileNotFoundError, ValueError, OSError, EgressDenied, httpx.HTTPError) as exc:
         console.print(f"[red]error:[/red] {exc}")
 
 
@@ -1403,8 +1420,9 @@ def _handle_files_chat(user_input: str) -> None:
         tag = f"  [cyan]{ref.profile}[/cyan]" if ref.profile else ""
         size_kb = f"{ref.size_bytes / 1024:.0f}KB"
         desc = f"  [dim]{ref.description}[/dim]" if ref.description else ""
+        src = f"  [dim]↗ {ref.url}[/dim]" if ref.url else ""
         console.print(
-            f"  {ref.filename} [dim]({size_kb}, {ref.file_type})[/dim]{tag}{desc}"
+            f"  {ref.filename} [dim]({size_kb}, {ref.file_type})[/dim]{tag}{src}{desc}"
         )
 
 
@@ -1448,19 +1466,29 @@ def _chat_export(command: str, messages: list[Message], session: Any) -> None:
 
 
 def _chat_cost(total_usage: Any, model: str) -> None:
-    """Handle `/cost` — exact token totals + an optional (rough) dollar estimate."""
+    """Handle `/cost` — token totals (+ % cached) and an optional (rough) dollar estimate."""
+    from halia.cli.slash import human_count
     from halia.config.settings import read_config
     from halia.pricing import estimate_cost
 
     u = total_usage
     console.print(
-        f"[bold]tokens this session[/bold]: {u.total_tokens:,} "
-        f"[dim]({u.prompt_tokens:,} in + {u.completion_tokens:,} out)[/dim]"
+        f"[bold]tokens this session[/bold]: {human_count(u.total_tokens)} "
+        f"[dim]({human_count(u.prompt_tokens)} in + {human_count(u.completion_tokens)} out)[/dim]"
     )
-    est = estimate_cost(model, u.prompt_tokens, u.completion_tokens, read_config().get("prices"))
+    if u.cached_tokens and u.prompt_tokens:
+        pct = 100 * u.cached_tokens // u.prompt_tokens
+        console.print(
+            f"[dim]{pct}% of input ({human_count(u.cached_tokens)}) served from cache — "
+            "billed at the cheaper cache rate.[/dim]"
+        )
+    est = estimate_cost(
+        model, u.prompt_tokens, u.completion_tokens,
+        read_config().get("prices"), cached_tokens=u.cached_tokens,
+    )
     if est is not None:
         console.print(
-            f"[dim]~est ${est:.4f} USD for {model} — rough; "
+            f"[dim]~est ${est:.4f} USD for {model} (cache-adjusted) — rough; "
             "edit prices under 'prices' in ~/.halia/config.json.[/dim]\n"
         )
     else:
@@ -1468,6 +1496,25 @@ def _chat_cost(total_usage: Any, model: str) -> None:
             f"[dim]no price on file for '{model}' — tokens only. Add one under 'prices' in "
             "~/.halia/config.json for an estimate.[/dim]\n"
         )
+
+
+def _chat_token(command: str, current: bool) -> bool:
+    """Handle `/token [on|off]` — toggle the status-bar token display (persisted); returns it."""
+    from halia.config.settings import read_config, write_config
+
+    parts = command.split()
+    if len(parts) >= 2 and parts[1].lower() in ("on", "true", "off", "false"):
+        new = parts[1].lower() in ("on", "true")
+    else:
+        new = not current
+    data = read_config()
+    data["show_tokens"] = new
+    write_config(data)
+    console.print(
+        f"[dim]token display {'ON' if new else 'OFF'} — the status bar "
+        f"{'shows' if new else 'hides'} token usage.[/dim]\n"
+    )
+    return new
 
 
 def _chat_model(command: str, config: Any) -> Any | None:

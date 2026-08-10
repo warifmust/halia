@@ -739,14 +739,10 @@ class MakeDocx:
 class MakePptx:
     name = "make_pptx"
     description = (
-        "Render markdown content to a PowerPoint (.pptx) deck of structured content slides "
-        "(title + bullets + simple tables + native editable charts). Use '---' on its own "
-        "line to separate slides. Embed a chart with a fenced block:\n"
-        "```chart\ntype: line\ntitle: My Chart\nLabel A: 12\nLabel B: 8\n```\n"
-        "(type is bar or line). Produces clean CONTENT and arrangement; the user styles the "
-        "design in PowerPoint. "
-        "By default only the .pptx is written; pass keep_source=true to also save the "
-        "editable .md source alongside."
+        "Render markdown to a PowerPoint (.pptx) deck (title + bullets + tables + native "
+        "charts). '---' on its own line separates slides. Embed a chart with a fenced ```chart "
+        "block (lines 'Label: value', optional 'type: bar|line'). Style the design in "
+        "PowerPoint. keep_source=true also saves the editable .md."
     )
     dangerous = True
     untrusted = False  # writes files

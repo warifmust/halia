@@ -24,17 +24,10 @@ _MAX_OUTPUT = 5000  # chars
 class JqQuery:
     name = "jq_query"
     description = (
-        "Extract, filter, or transform data from a JSON file. Examples:\n"
-        "  '.name' — simple field\n"
-        "  '.config.host' — nested field\n"
-        "  '.users[].name' — iterate array, extract field\n"
-        "  '.users[0].name' — array index\n"
-        "  '.users[?age > 30].name' — filter + extract field\n"
-        "  '.users | length' — count items\n"
-        "  '.users | map(select(.active == true))' — filter array\n"
-        "  '.config | keys' — object keys, sorted (like jq)\n"
-        "  '.config | keys_unsorted' — object keys in insertion order\n"
-        "  '.config | values' — object values (insertion order)"
+        "Extract, filter, or transform data from a JSON file with a jq-like path. Examples: "
+        "'.name', '.config.host', '.users[].name', '.users[0]', '.users[?age > 30].name', "
+        "'.users | length', '.config | keys' (sorted; 'keys_unsorted' for insertion order), "
+        "'.config | values'."
     )
     dangerous = False
     untrusted = True  # reads user-supplied file content

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,6 +30,7 @@ _SUPPORTED_TYPES = {
 }
 
 _MAX_SIZE_BYTES = 5 * 1024 * 1024  # 5MB per file
+_URL_MAX_CHARS = 50_000  # how much page text to capture when teaching a URL
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,7 @@ class Reference:
     profile: str
     size_bytes: int
     description: str
+    url: str = ""  # set for references taught from a web URL (empty for file-based)
 
 
 def _ensure_dir() -> None:
@@ -95,11 +98,11 @@ def store_reference(
     try:
         conn.execute(
             "INSERT INTO ref_files (id, stored_at, original_path, filename, "
-            "stored_filename, file_type, profile, size_bytes, description) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "stored_filename, file_type, profile, size_bytes, description, url) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 ref_id, now, str(src), src.name, stored_filename,
-                ext, profile, len(data), description,
+                ext, profile, len(data), description, "",
             ),
         )
         conn.commit()
@@ -113,6 +116,64 @@ def store_reference(
     )
 
 
+def store_url_reference(
+    url: str,
+    profile: str = "",
+    description: str = "",
+    db_path: Path = DB_PATH,
+    fetcher: Callable[[str], str] | None = None,
+) -> Reference:
+    """Fetch a web URL's readable text and store it as a (profile-scoped) reference.
+
+    `fetcher(url) -> text` is injectable for tests; by default it uses the shared
+    `fetch_url_text` (which enforces the SSRF egress floor). Raises on fetch failure
+    (EgressDenied / ValueError / httpx.HTTPError) so the caller can surface it.
+    """
+    from urllib.parse import urlparse
+
+    if fetcher is None:
+        from functools import partial
+
+        from halia.skills.web import fetch_url_text
+
+        fetcher = partial(fetch_url_text, max_chars=_URL_MAX_CHARS)
+
+    text = fetcher(url)
+    if not text.strip():
+        raise ValueError(f"no readable text fetched from {url}")
+    data = text.encode("utf-8")[:_MAX_SIZE_BYTES]
+
+    content_hash = _content_hash(data)
+    _ensure_dir()
+    stored_filename = f"{content_hash}.md"
+    (FILES_DIR / stored_filename).write_bytes(data)
+
+    parsed = urlparse(url)
+    label = (parsed.netloc + parsed.path).rstrip("/") or url
+    if len(label) > 80:
+        label = label[:79] + "…"
+
+    ref_id = uuid.uuid4().hex[:8]
+    now = datetime.now(UTC).isoformat()
+    conn = connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO ref_files (id, stored_at, original_path, filename, "
+            "stored_filename, file_type, profile, size_bytes, description, url) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (ref_id, now, url, label, stored_filename, ".md", profile, len(data), description, url),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return Reference(
+        id=ref_id, stored_at=now, original_path=url, filename=label,
+        file_type=".md", profile=profile, size_bytes=len(data),
+        description=description, url=url,
+    )
+
+
 def list_ref_files(
     profile: str | None = None,
     db_path: Path = DB_PATH,
@@ -120,7 +181,7 @@ def list_ref_files(
     """List stored ref_files, optionally filtered by profile."""
     _cols = (
         "id, stored_at, original_path, filename, file_type, "
-        "profile, size_bytes, description"
+        "profile, size_bytes, description, url"
     )
     conn = connect(db_path)
     try:
@@ -138,7 +199,7 @@ def list_ref_files(
             Reference(
                 id=r[0], stored_at=r[1], original_path=r[2],
                 filename=r[3], file_type=r[4], profile=r[5],
-                size_bytes=r[6], description=r[7],
+                size_bytes=r[6], description=r[7], url=r[8],
             )
             for r in rows
         ]
@@ -150,7 +211,7 @@ def search_ref_files(query: str, db_path: Path = DB_PATH) -> list[Reference]:
     """Search ref_files by filename or description."""
     _cols = (
         "id, stored_at, original_path, filename, file_type, "
-        "profile, size_bytes, description"
+        "profile, size_bytes, description, url"
     )
     conn = connect(db_path)
     try:
@@ -165,7 +226,7 @@ def search_ref_files(query: str, db_path: Path = DB_PATH) -> list[Reference]:
             Reference(
                 id=r[0], stored_at=r[1], original_path=r[2],
                 filename=r[3], file_type=r[4], profile=r[5],
-                size_bytes=r[6], description=r[7],
+                size_bytes=r[6], description=r[7], url=r[8],
             )
             for r in rows
         ]

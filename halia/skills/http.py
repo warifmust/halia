@@ -43,12 +43,10 @@ def _is_textual(content_type: str) -> bool:
 class HttpRequest:
     name = "http_request"
     description = (
-        "Make an HTTP request to an API endpoint and return the response status, "
-        "timing, content-type and body. Supports GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS "
-        "with custom headers and a body (raw string, or a JSON object/array). Use this "
-        "to test or call an API endpoint. The HTTP status code is the exact, grounded "
-        "result to assert on. Mutating requests change remote state, so calls are "
-        "approval-gated."
+        "Make an HTTP request to an API endpoint; returns the response status, timing, "
+        "content-type and body. Methods GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS, with custom "
+        "headers and a body (raw string or JSON). The status code is the grounded result to "
+        "assert on. Mutating requests are approval-gated."
     )
     dangerous = True
     untrusted = True

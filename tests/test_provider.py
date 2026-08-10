@@ -14,6 +14,22 @@ def _provider(handler: object) -> OpenAICompatProvider:
     return OpenAICompatProvider(base_url="https://x/v1", api_key="k", model="m", client=client)
 
 
+def test_parse_usage_captures_cached_tokens() -> None:
+    from halia.providers.openai_compat import _parse_usage
+
+    # OpenAI / mimo style: prompt_tokens_details.cached_tokens
+    u = _parse_usage({
+        "prompt_tokens": 100, "completion_tokens": 5, "total_tokens": 105,
+        "prompt_tokens_details": {"cached_tokens": 80},
+    })
+    assert u.prompt_tokens == 100 and u.cached_tokens == 80
+    # DeepSeek style: top-level prompt_cache_hit_tokens
+    u2 = _parse_usage({"prompt_tokens": 100, "prompt_cache_hit_tokens": 60})
+    assert u2.cached_tokens == 60
+    # none reported
+    assert _parse_usage({"prompt_tokens": 10}).cached_tokens == 0
+
+
 def test_chat_returns_content() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/chat/completions"

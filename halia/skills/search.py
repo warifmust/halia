@@ -41,12 +41,9 @@ class SearchCode:
     name = "search_code"
     description = (
         "Find every occurrence of a symbol or pattern across a codebase (like `grep -rn`). "
-        "Given a `query` and a root `path` (a directory or a single file), returns each hit as "
-        "file:line plus the matching line. Use it to confirm where a symbol is actually "
-        "READ / WRITTEN / DEFINED before claiming it drives behaviour — e.g. whether a "
-        "required, validated field is ever consumed by a branch, or to enumerate every place a "
-        "route/outcome is produced. Deterministic (reads the files directly). Skips "
-        "node_modules/.git/build output and binary files."
+        "Given `query` and a root `path` (a directory or file), returns each hit as file:line. "
+        "Use it to confirm where a symbol is READ/WRITTEN/DEFINED before claiming behaviour. "
+        "Skips node_modules/.git/build output and binary files."
     )
     dangerous = False
     untrusted = False

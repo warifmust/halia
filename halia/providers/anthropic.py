@@ -127,6 +127,8 @@ class AnthropicProvider:
         tool_acc: dict[int, dict[str, Any]] = {}
         input_tokens = 0
         output_tokens = 0
+        cache_read = 0
+        cache_write = 0
 
         try:
             with self._client.stream("POST", url, json=payload, headers=self._headers()) as resp:
@@ -144,9 +146,11 @@ class AnthropicProvider:
 
                     ev_type = event.get("type", "")
                     if ev_type == "message_start":
-                        # input_tokens arrives in the first event.
+                        # input_tokens (+ cache reads/writes) arrive in the first event.
                         msg_usage = event.get("message", {}).get("usage", {})
                         input_tokens = int(msg_usage.get("input_tokens", 0) or 0)
+                        cache_read = int(msg_usage.get("cache_read_input_tokens", 0) or 0)
+                        cache_write = int(msg_usage.get("cache_creation_input_tokens", 0) or 0)
                     elif ev_type == "message_delta":
                         # output_tokens arrives in the final delta event.
                         delta_usage = event.get("usage", {})
@@ -183,10 +187,12 @@ class AnthropicProvider:
         ]
         if content is None and not tool_calls:
             raise ProviderError("stream returned no content and no tool calls")
+        prompt = input_tokens + cache_read + cache_write
         usage = Usage(
-            prompt_tokens=input_tokens,
+            prompt_tokens=prompt,
             completion_tokens=output_tokens,
-            total_tokens=input_tokens + output_tokens,
+            total_tokens=prompt + output_tokens,
+            cached_tokens=cache_read,
         )
         return ChatResult(content=content, tool_calls=tool_calls, usage=usage)
 
@@ -286,13 +292,17 @@ def _parse_response(data: dict[str, Any]) -> ChatResult:
     if content is None and not tool_calls:
         raise ProviderError(f"model returned no content and no tool calls: {data!r}")
 
-    # Anthropic returns {input_tokens, output_tokens} (no total — compute it).
+    # Anthropic reports input/output separately, with cache reads/writes as their own fields.
     raw_usage = data.get("usage") or {}
     input_tokens = int(raw_usage.get("input_tokens", 0) or 0)
     output_tokens = int(raw_usage.get("output_tokens", 0) or 0)
+    cache_read = int(raw_usage.get("cache_read_input_tokens", 0) or 0)
+    cache_write = int(raw_usage.get("cache_creation_input_tokens", 0) or 0)
+    prompt = input_tokens + cache_read + cache_write
     usage = Usage(
-        prompt_tokens=input_tokens,
+        prompt_tokens=prompt,
         completion_tokens=output_tokens,
-        total_tokens=input_tokens + output_tokens,
+        total_tokens=prompt + output_tokens,
+        cached_tokens=cache_read,
     )
     return ChatResult(content=content, tool_calls=tool_calls, usage=usage)

@@ -110,7 +110,8 @@ CREATE TABLE IF NOT EXISTS ref_files (
     file_type       TEXT NOT NULL DEFAULT '',
     profile         TEXT NOT NULL DEFAULT '',
     size_bytes      INTEGER NOT NULL DEFAULT 0,
-    description     TEXT NOT NULL DEFAULT ''
+    description     TEXT NOT NULL DEFAULT '',
+    url             TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_ref_files_profile ON ref_files (profile);
 """
@@ -136,6 +137,12 @@ _SESSIONS_MIGRATIONS = {
     "archived_messages_json": "TEXT NOT NULL DEFAULT '[]'",
 }
 
+# Columns added to `ref_files` after its first release. `url` is set for references taught
+# from a web URL (empty for file-based ones).
+_REF_FILES_MIGRATIONS = {
+    "url": "TEXT NOT NULL DEFAULT ''",
+}
+
 
 def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
     """Add any missing columns to `table` (idempotent, additive-only migration)."""
@@ -153,5 +160,6 @@ def connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
     _ensure_columns(conn, "runs", _RUNS_MIGRATIONS)
     _ensure_columns(conn, "procedures", _PROCEDURES_MIGRATIONS)
     _ensure_columns(conn, "sessions", _SESSIONS_MIGRATIONS)
+    _ensure_columns(conn, "ref_files", _REF_FILES_MIGRATIONS)
     conn.commit()
     return conn

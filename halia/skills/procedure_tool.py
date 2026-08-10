@@ -23,12 +23,10 @@ _METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS")
 class SaveProcedure:
     name = "save_procedure"
     description = (
-        "Save (create or update) a reusable test procedure so halia REMEMBERS it for later "
-        "runs. Use this when the user describes a test/task they'll want to repeat. Fields you "
-        "omit are left unchanged, so you can build a procedure up over several turns. A "
-        "procedure needs: target (what's tested), data_spec (+ data_source), an action (a url "
-        "OR ordered steps), result_columns (output), and pass_rule (deterministic verdict). "
-        "State plainly what you'll save and confirm with the user before calling this."
+        "Save (create or update) a reusable test procedure so halia remembers it for later runs. "
+        "Use when the user describes a repeatable test/task. Omitted fields are left unchanged "
+        "(build it up over turns). Needs: target, data_spec (+ data_source), an action (a url OR "
+        "steps), result_columns, and pass_rule. Confirm with the user before saving."
     )
     dangerous = True
     untrusted = False
