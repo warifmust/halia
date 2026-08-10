@@ -256,3 +256,20 @@ def test_no_correction_when_grounded(tmp_path: Any) -> None:
     assert result.unverified == []
     assert result.corrections == 0
     assert provider.calls == 2  # no extra bounce
+
+
+def test_run_does_not_double_apply_persona_overlay(monkeypatch: Any) -> None:
+    # Regression: the CLI injects PERSONA.md into extra_system; run() must NOT re-add it
+    # (doing both duplicated the overlay in the system prompt).
+    import halia.core.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "persona_overlay", lambda: "[PERSONA_MARKER]")
+    captured: dict[str, str] = {}
+
+    class Recorder:
+        def chat(self, messages: list[Message], tools: Any = None) -> ChatResult:
+            captured["system"] = str(messages[0]["content"])
+            return ChatResult(content="done", tool_calls=[])
+
+    run("hi", _CFG, default_registry(), provider=Recorder(), extra_system="[PERSONA_MARKER]")
+    assert captured["system"].count("[PERSONA_MARKER]") == 1  # once (from extra_system), not twice

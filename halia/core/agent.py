@@ -417,8 +417,10 @@ def ask(
 ) -> str:
     """Answer a single prompt (one-shot, no tools). `provider` is injectable for tests."""
     provider = provider if provider is not None else build_provider(config)
+    # PERSONA.md overlay comes from the caller via extra_system (the `ask` command passes it) —
+    # not re-added here, to avoid double-applying it.
     messages: list[Message] = [
-        {"role": "system", "content": SYSTEM_PROMPT + persona_overlay() + extra_system},
+        {"role": "system", "content": SYSTEM_PROMPT + extra_system},
         {"role": "user", "content": prompt},
     ]
     return (provider.chat(messages).content or "").strip()
@@ -685,7 +687,10 @@ def run(
     provider = provider if provider is not None else build_provider(config)
 
     plan_text = ""
-    system_content = SYSTEM_PROMPT + persona_overlay() + extra_system
+    # NOTE: the PERSONA.md overlay is injected by the caller (CLI _prepare_context) into
+    # extra_system, so it is NOT re-added here — doing both double-applied it (see chat/tui,
+    # which already rely on extra_system carrying it).
+    system_content = SYSTEM_PROMPT + extra_system
     if plan:
         plan_text = make_plan(prompt, config, provider, extra_system=extra_system)
         if plan_text:
