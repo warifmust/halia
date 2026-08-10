@@ -134,8 +134,13 @@ def store_url_reference(
     if fetcher is None:
         from functools import partial
 
+        from halia.openapi import resolve_openapi_spec
         from halia.skills.web import fetch_url_text
 
+        # A Swagger/OpenAPI docs page → store its underlying spec JSON, not the rendered HTML.
+        spec_url = resolve_openapi_spec(url)
+        if spec_url:
+            url = spec_url
         fetcher = partial(fetch_url_text, max_chars=_URL_MAX_CHARS)
 
     text = fetcher(url)

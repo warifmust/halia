@@ -45,14 +45,12 @@ class _TextExtractor(HTMLParser):
         return " ".join(" ".join(self._chunks).split())
 
 
-def fetch_url_text(
-    url: str, client: httpx.Client | None = None, max_chars: int = _DEFAULT_MAX_CHARS
-) -> str:
-    """Fetch a URL and return its readable text (HTML/scripts stripped).
+def fetch_url_raw(url: str, client: httpx.Client | None = None) -> tuple[str, str]:
+    """Fetch a URL and return (content_type, raw body) — no HTML stripping. Egress-floored.
 
-    The single source of truth for outbound page fetches, so the SSRF egress floor is
-    enforced on every path that reads the web (fetch_url, teaching a URL). Raises
-    EgressDenied, ValueError (bad scheme or non-200 status), or httpx.HTTPError.
+    The single low-level fetch: fetch_url_text strips this for readable text, and the
+    OpenAPI resolver inspects the raw body to find a spec URL. Raises EgressDenied,
+    ValueError (bad scheme or non-200 status), or httpx.HTTPError.
     """
     url = url.strip()
     if not url.startswith(("http://", "https://")):
@@ -67,8 +65,16 @@ def fetch_url_text(
             http.close()
     if resp.status_code != 200:
         raise ValueError(f"HTTP {resp.status_code} from {url}")
+    return resp.headers.get("content-type", ""), resp.text
+
+
+def fetch_url_text(
+    url: str, client: httpx.Client | None = None, max_chars: int = _DEFAULT_MAX_CHARS
+) -> str:
+    """Fetch a URL and return its readable text (HTML/scripts stripped). Egress-floored."""
+    _ct, body = fetch_url_raw(url, client=client)
     parser = _TextExtractor()
-    parser.feed(resp.text)
+    parser.feed(body)
     text = parser.text()
     if max_chars and len(text) > max_chars:
         text = text[:max_chars] + "… [truncated]"
