@@ -1,7 +1,7 @@
 """ask_user — pause the run and ask the human operator for something only they have.
 
 The agent runs a whole turn to completion, so without this it can't stop to request a
-token, a gated test-data value (a blacklisted user id, a non-eKYC user), a file path, or
+token, a gated test-data value (an id that must be in a particular state), a file path, or
 a decision — it ends up guessing or silently skipping. `ask_user` blocks, prompts the
 person at the terminal, and returns their typed reply so the loop can continue with real
 data. Safe (read-only) — it asks, it doesn't act.
@@ -53,7 +53,7 @@ class AskUser:
     name = "ask_user"
     description = (
         "Ask the human operator for information only they can provide — a token or "
-        "credential, a gated test-data value (e.g. a blacklisted user id, a non-eKYC user), "
+        "credential, a gated test-data value (e.g. an id that must be in a particular state), "
         "a file path, or a decision — and get their reply. Use this instead of inventing "
         "gated/secret values or silently skipping a step for lack of data. Set secret=true to "
         "hide the typed input (tokens/passwords). Pass `choices` (a list) to offer a "
