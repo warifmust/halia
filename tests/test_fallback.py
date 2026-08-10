@@ -87,3 +87,12 @@ def test_all_fail_raises_last_error() -> None:
 def test_empty_providers_rejected() -> None:
     with pytest.raises(ValueError, match="at least one"):
         FallbackProvider([])
+
+
+def test_mutated_empty_providers_raises_providererror_not_none() -> None:
+    # Defensive: __init__ forbids empty, but if _providers is mutated to empty the loop
+    # never runs and last_error stays None — we must raise ProviderError, not `raise None`.
+    fp = FallbackProvider([_Ok()])
+    fp._providers = []
+    with pytest.raises(ProviderError, match="all providers failed"):
+        fp.chat(_msgs())

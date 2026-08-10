@@ -71,4 +71,6 @@ class FallbackProvider:
                         str(exc)[:200],
                     )
                 continue
-        raise last_error  # type: ignore[misc]
+        # last_error is set whenever the loop ran (providers is non-empty, enforced in
+        # __init__), but fall back defensively in case _providers was mutated to empty.
+        raise last_error or ProviderError("all providers failed")

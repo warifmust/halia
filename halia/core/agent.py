@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -585,7 +586,9 @@ def _loop(
     from halia.audit.logger import log_run_end, log_run_start
 
     run_start = _time.perf_counter()
-    log_run_start(ctx.prompt[:80], ctx.prompt[:200], ctx.config.provider, ctx.config.model)
+    # A unique id per run so two runs with the same prompt prefix don't collide in logs.
+    run_id = uuid.uuid4().hex[:12]
+    log_run_start(run_id, ctx.prompt[:200], ctx.config.provider, ctx.config.model)
 
     tools = ctx.registry.tool_schemas() or None
     while iters_used < ctx.max_iters:
@@ -630,7 +633,7 @@ def _loop(
                 continue
             elapsed = (_time.perf_counter() - run_start) * 1000
             log_run_end(
-                ctx.prompt[:80], answer[:200], len(steps),
+                run_id, answer[:200], len(steps),
                 ctx.total_usage.total_tokens, corrections, elapsed,
             )
             return RunResult(
