@@ -78,6 +78,19 @@ def drop_last_exchange(messages: list[Message]) -> int:
     return removed
 
 
+def should_show_profile_hint(config: dict[str, Any], *, max_shows: int = 3) -> bool:
+    """Whether to show the general-profile discoverability hint, given current config state.
+
+    Suppressed once the user has used any profile, after it's been shown `max_shows` times, or
+    when `hints` is explicitly false. Pure (no I/O) so the policy is testable.
+    """
+    if config.get("hints") is False:
+        return False
+    if config.get("profile_used"):
+        return False
+    return int(config.get("general_hint_shows", 0) or 0) < max_shows
+
+
 def human_count(n: int) -> str:
     """Abbreviate a token count for compact display: 842, 9.6k, 19.2k, 100k, 1.2M."""
     if n < 0:

@@ -601,6 +601,7 @@ def _prepare_context(profile: str | None, allow_commands: bool) -> tuple[Any, An
                 f"(see `halia profile list`)."
             )
             raise typer.Exit(1)
+        _mark_profile_used()  # they know profiles exist now — stop nudging in general sessions
         skills = [*prof.skills, "run_command"] if allow_commands else list(prof.skills)
         registry = build_registry(skills)
         if prof.model:
@@ -1024,6 +1025,9 @@ def chat(
     else:
         console.print(f"[dim]session [bold]{session.id}[/bold] — resume later with "
                       f"`halia chat --resume {session.id}`[/dim]\n")
+
+    if profile is None:
+        _profile_hint()
 
     pending = list_checkpoints(limit=3)
     if pending:
@@ -1496,6 +1500,39 @@ def _chat_cost(total_usage: Any, model: str) -> None:
             f"[dim]no price on file for '{model}' — tokens only. Add one under 'prices' in "
             "~/.halia/config.json for an estimate.[/dim]\n"
         )
+
+
+def _profile_hint() -> None:
+    """Print the general-profile discoverability hint if not suppressed (bumps the counter).
+
+    Shown only in the general profile; auto-hides once you've used any profile or it's been
+    shown a few times; `hints: false` in config turns it off entirely.
+    """
+    from halia.cli.slash import should_show_profile_hint
+    from halia.config.settings import read_config, write_config
+    from halia.presets import BUILTIN_PRESETS
+
+    data = read_config()
+    if not should_show_profile_hint(data):
+        return
+    data["general_hint_shows"] = int(data.get("general_hint_shows", 0) or 0) + 1
+    write_config(data)
+    verticals = " · ".join(sorted(BUILTIN_PRESETS))
+    console.print(
+        "[dim]You're in the general profile (all tools). For focused work, try a vertical:\n"
+        f"  {verticals}\n"
+        "  — a tighter, better-selected toolset. Switch anytime with /profile <name>.[/dim]\n"
+    )
+
+
+def _mark_profile_used() -> None:
+    """Record that a profile has been activated — suppresses the general-profile hint."""
+    from halia.config.settings import read_config, write_config
+
+    data = read_config()
+    if not data.get("profile_used"):
+        data["profile_used"] = True
+        write_config(data)
 
 
 def _chat_token(command: str, current: bool) -> bool:

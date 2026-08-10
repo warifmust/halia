@@ -10,6 +10,7 @@ from halia.cli.slash import (
     drop_last_exchange,
     format_history,
     human_count,
+    should_show_profile_hint,
 )
 from halia.pricing import estimate_cost, price_for
 from halia.providers.base import Message
@@ -128,6 +129,14 @@ def test_estimate_cost_cached_is_cheaper() -> None:
 
 
 # ── human_count (abbreviated token display) ─────────────────────────────────────
+
+
+def test_should_show_profile_hint() -> None:
+    assert should_show_profile_hint({}) is True                        # fresh general session
+    assert should_show_profile_hint({"hints": False}) is False         # explicitly disabled
+    assert should_show_profile_hint({"profile_used": True}) is False   # has used a profile
+    assert should_show_profile_hint({"general_hint_shows": 3}) is False  # shown-cap reached
+    assert should_show_profile_hint({"general_hint_shows": 2}) is True   # still under the cap
 
 
 def test_human_count() -> None:

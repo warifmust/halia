@@ -309,6 +309,7 @@ def run_tui(
         _chat_undo,
         _make_approver,
         _prepare_context,
+        _profile_hint,
         _resumed_age_note,
         _show_step,
         console,
@@ -387,6 +388,8 @@ def run_tui(
     turn_secs = [0.0]  # last turn's wall time (list so the toolbar closure sees updates)
     total_usage = Usage()  # accumulated token usage across the session
     show_tokens = bool(read_config().get("show_tokens", False))  # /token toggles this (persisted)
+    if run_profile is None:  # nudge toward a vertical when in the general profile (suppressible)
+        _profile_hint()
     footer = _Footer(console)  # live 'working' line during a turn
     streaming = {"on": False}  # is an answer currently streaming to the screen this turn?
     compact_always = {"on": False}  # remembers an "always compact" choice for the session
