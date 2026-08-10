@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from halia.permissions.guard import check_readable, check_writable
+from halia.store.snapshots import snapshot_file
 
 _MAX_CHARS = 10_000
 
@@ -65,9 +66,14 @@ class WriteFile:
             return "error: 'content' is required and must be a string"
         path = Path(raw).expanduser()
         check_writable(path)  # raises PermissionDenied for sensitive paths
+        # Snapshot the current version before overwriting, so `halia undo` can restore it.
+        snapped = snapshot_file(path) if path.is_file() else None
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
-        return f"wrote {len(content)} chars to {path}"
+        msg = f"wrote {len(content)} chars to {path}"
+        if snapped is not None:
+            msg += " (previous version saved — run `halia undo` to restore)"
+        return msg
 
 
 class ListFiles:

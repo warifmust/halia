@@ -114,6 +114,15 @@ CREATE TABLE IF NOT EXISTS ref_files (
     url             TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_ref_files_profile ON ref_files (profile);
+
+CREATE TABLE IF NOT EXISTS snapshots (
+    id            TEXT PRIMARY KEY,
+    created_at    TEXT NOT NULL,
+    original_path TEXT NOT NULL,
+    stored_name   TEXT NOT NULL,
+    size_bytes    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_snapshots_path ON snapshots (original_path, created_at DESC);
 """
 
 

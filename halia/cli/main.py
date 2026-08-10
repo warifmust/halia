@@ -198,6 +198,13 @@ def uninstall(
                 removed.append("halia.db")
                 console.print("  [dim]Removed database.[/dim]")
 
+        # 3b. Remove file-write snapshots
+        from halia.store.snapshots import SNAPSHOTS_DIR
+
+        if SNAPSHOTS_DIR.exists() and confirm("Remove file-write snapshots (~/.halia/snapshots)?"):
+            shutil.rmtree(SNAPSHOTS_DIR, ignore_errors=True)
+            removed.append("snapshots/")
+
         # 4. Remove PERSONA.md
         persona = CONFIG_DIR / "PERSONA.md"
         if persona.exists():
@@ -235,6 +242,43 @@ def uninstall(
         console.print("\n[dim]halia has been uninstalled.[/dim]")
     else:
         console.print("[dim]Nothing to remove.[/dim]")
+
+
+@app.command()
+def undo(
+    path: Annotated[
+        str | None,
+        typer.Argument(help="File to restore. Omit to undo the most recent write."),
+    ] = None,
+    show_list: Annotated[
+        bool,
+        typer.Option("--list", "-l", help="List available snapshots instead of restoring."),
+    ] = False,
+) -> None:
+    """Restore the previous version of a file that write_file overwrote.
+
+    Pop semantics: restoring removes that snapshot, so running undo again peels
+    back to the version before it.
+    """
+    from halia.store.snapshots import list_snapshots, restore_latest
+
+    if show_list:
+        rows = list_snapshots(path)
+        if not rows:
+            console.print("[dim]No snapshots.[/dim]")
+            return
+        console.print(f"[cyan]Snapshots ({len(rows)}):[/cyan]")
+        for orig, created, size in rows:
+            console.print(f"  [dim]{created[:19]}[/dim]  {size:>8} B  {orig}")
+        return
+
+    restored = restore_latest(path)
+    if restored is None:
+        where = f" for {path}" if path else ""
+        console.print(f"[dim]Nothing to undo{where}.[/dim]")
+        raise typer.Exit(1)
+    restored_path, nbytes = restored
+    console.print(f"[green]✓[/green] Restored {restored_path} ({nbytes} B).")
 
 
 @app.command()
