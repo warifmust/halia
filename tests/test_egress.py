@@ -7,7 +7,8 @@ import pytest
 from halia.permissions.network import EgressDenied, check_egress
 from halia.skills.web import FetchUrl
 
-# Default allow_local is True; tests that verify blocking pass allow_local=False.
+# allow_local defaults to False (SSRF-safe); this is passed explicitly where a test
+# needs to force the blocking path regardless of process state.
 _ALLOW = False
 
 
@@ -81,7 +82,7 @@ def test_fetch_url_blocks_localhost() -> None:
         out = FetchUrl().run({"url": "http://localhost:8080/admin"})
         assert out.startswith("blocked:")
     finally:
-        set_allow_local(True)  # restore
+        set_allow_local(False)  # restore to the SSRF-safe default
 
 
 # --- allow_local opt-in (local dev-server testing) ---
@@ -110,6 +111,21 @@ def test_allow_local_process_toggle() -> None:
         set_allow_local(False)  # restore for other tests
     with pytest.raises(EgressDenied):
         check_egress("http://localhost/", resolver=_resolves_to("127.0.0.1"), allow_local=_ALLOW)
+
+
+def test_default_allow_local_is_ssrf_safe() -> None:
+    # Regression: the import-time default MUST be False (loopback/private blocked). Checked in a
+    # FRESH subprocess so other tests' set_allow_local() calls can't mask it. A True default
+    # silently disabled the SSRF floor for every run without --allow-local, despite the docstring
+    # promising off-by-default. `halia doctor` surfaced this.
+    import subprocess
+    import sys
+
+    code = (
+        "import halia.permissions.network as n; "
+        "raise SystemExit(0 if n.allow_local_enabled() is False else 1)"
+    )
+    assert subprocess.run([sys.executable, "-c", code]).returncode == 0
 
 
 def test_error_hints_at_allow_local() -> None:

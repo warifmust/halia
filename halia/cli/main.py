@@ -112,6 +112,32 @@ def version() -> None:
 
 
 @app.command()
+def doctor() -> None:
+    """Diagnose the local install (config, DB, permission floor, cron, snapshots).
+
+    Read-only: touches no network and creates nothing. Exits non-zero if any check fails.
+    """
+    from halia.doctor import FAIL, OK, WARN, run_checks
+
+    icon = {OK: "[green]✓[/green]", WARN: "[yellow]![/yellow]", FAIL: "[red]✗[/red]"}
+    results = run_checks()
+    console.print("[bold]halia doctor[/bold]\n")
+    for c in results:
+        console.print(f"  {icon.get(c.status, '?')} [bold]{c.name}[/bold] — {c.detail}")
+
+    fails = sum(c.status == FAIL for c in results)
+    warns = sum(c.status == WARN for c in results)
+    console.print()
+    if fails:
+        console.print(f"[red]{fails} failed[/red], {warns} warning(s).")
+        raise typer.Exit(1)
+    if warns:
+        console.print(f"[yellow]All checks passed with {warns} warning(s).[/yellow]")
+    else:
+        console.print("[green]All checks passed.[/green]")
+
+
+@app.command()
 def setup() -> None:
     """Run the first-time setup wizard (provider, model, API key)."""
     from halia.config.wizard import run_setup
