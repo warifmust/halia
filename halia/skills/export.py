@@ -288,6 +288,22 @@ def _draw_bar_line_pdf(pdf: FPDF, spec: Any) -> None:
     pdf.ln(2)
 
 
+def _with_title(title: str, content: str) -> str:
+    """Prepend `# title` — unless `content` already opens with that same heading.
+
+    The model usually writes a report whose first line is already `# <title>`; combined with
+    a `title` arg that also prepended it, the title rendered twice. This dedupes it.
+    """
+    title = (title or "").strip()
+    if not title:
+        return content
+    stripped = content.lstrip()
+    first = stripped.splitlines()[0].strip() if stripped else ""
+    if first.startswith("#") and first.lstrip("#").strip().casefold() == title.casefold():
+        return content
+    return f"# {title}\n\n{content}"
+
+
 def render_markdown_pdf(content: str) -> FPDF:
     """Render a markdown subset to a clean FPDF document (pure — caller does the I/O)."""
     pdf = FPDF()
@@ -397,8 +413,8 @@ class MakePdf:
             return "error: 'path' is required"
         if not isinstance(content, str) or not content.strip():
             return "error: 'content' is required and must be non-empty"
-        if isinstance(title, str) and title.strip():
-            content = f"# {title.strip()}\n\n{content}"
+        if isinstance(title, str):
+            content = _with_title(title, content)
 
         pdf_path = Path(path).expanduser()
         md_path = pdf_path.with_suffix(".md")  # the editable master, kept only on request
@@ -713,8 +729,8 @@ class MakeDocx:
             return "error: 'path' is required"
         if not isinstance(content, str) or not content.strip():
             return "error: 'content' is required and must be non-empty"
-        if isinstance(title, str) and title.strip():
-            content = f"# {title.strip()}\n\n{content}"
+        if isinstance(title, str):
+            content = _with_title(title, content)
 
         docx_path = Path(path).expanduser()
         md_path = docx_path.with_suffix(".md")

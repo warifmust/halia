@@ -2,8 +2,8 @@
 
 from typing import Any
 
-from halia.skills.export import MakePdf, render_markdown_pdf
-from halia.skills.pdf import ReadPdf
+from halia.skills.export import MakePdf, _with_title, render_markdown_pdf
+from halia.skills.pdf import ReadPdf, extract_pdf_text
 
 _MD = """# Class Report
 
@@ -108,3 +108,27 @@ def test_make_pdf_wired_into_catalogue_and_presets() -> None:
     assert build_registry(["make_pdf"]).get("make_pdf") is not None
     for vertical in ("finance", "research", "education"):
         assert "make_pdf" in get_preset(vertical).skills
+
+
+def test_with_title_dedupes_leading_heading() -> None:
+    # content already opens with the title heading → don't prepend a second one
+    assert _with_title("Report", "# Report\n\nbody") == "# Report\n\nbody"
+    # case/space-insensitive match still de-dupes
+    assert _with_title("Report", "#  report \n\nbody") == "#  report \n\nbody"
+    # no matching leading heading → prepend as before
+    assert _with_title("Report", "body") == "# Report\n\nbody"
+    assert _with_title("Report", "# Other\n\nbody") == "# Report\n\n# Other\n\nbody"
+    assert _with_title("", "body") == "body"
+
+
+def test_make_pdf_renders_title_once(tmp_path: Any) -> None:
+    # Regression: title arg + content that already leads with that title used to double it.
+    out = tmp_path / "r.pdf"
+    res = MakePdf().run({
+        "path": str(out),
+        "title": "API Test Report",
+        "content": "# API Test Report\n\nAll good.",
+    })
+    assert "wrote" in res.lower() or "pdf" in res.lower()
+    text = extract_pdf_text(out)
+    assert text.count("API Test Report") == 1  # not twice
