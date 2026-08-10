@@ -1,0 +1,61 @@
+name: release-checks
+
+# Guards the RELEASE path (what users actually get), which the code CI doesn't cover:
+#  • build the wheel, assert the bundled assets ship in it, install it, and smoke the CLI
+#  • audit dependencies for known vulnerabilities (informational — trust-first posture)
+#  • shellcheck install.sh (the curl|bash installer users run first)
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Build the wheel
+        run: uv build --wheel
+      - name: Assert bundled assets ship in the wheel
+        run: |
+          for a in \
+            halia/assets/fonts/DejaVuSans.ttf \
+            halia/assets/fonts/DejaVuSans-Bold.ttf \
+            halia/assets/js/mermaid.min.js; do
+            if ! unzip -l dist/*.whl | grep -q "$a"; then
+              echo "::error::wheel is missing bundled asset: $a"; exit 1
+            fi
+          done
+          echo "bundled assets present"
+      - name: Install the built wheel + smoke the CLI
+        run: |
+          uv tool install --force ./dist/*.whl
+          "$HOME/.local/bin/halia" --version
+          "$HOME/.local/bin/halia" --help >/dev/null
+          echo "halia installs and runs from the built wheel"
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Audit dependencies for known CVEs (informational)
+        # Non-blocking: surfaces vulnerable deps without failing the push on an
+        # unfixable transitive CVE. Tighten to blocking once the baseline is clean.
+        continue-on-error: true
+        run: uv run --with pip-audit pip-audit
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck the installer (errors only)
+        run: shellcheck -S error install.sh
