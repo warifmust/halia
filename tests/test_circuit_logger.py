@@ -108,6 +108,55 @@ def test_log_event_writes_jsonl(tmp_path: Any) -> None:
     assert "ts" in entry
 
 
+def test_execute_batch_emits_tool_call_events(tmp_path: Any) -> None:
+    """_execute_batch logs a tool_call JSONL event per call: ok, error, then skipped."""
+    from halia.audit import logger
+    from halia.audit.trace import Step
+    from halia.core.agent import _Ctx, _execute_batch
+
+    log_file = tmp_path / "tools.jsonl"
+    logger._initialized = False
+    logger._log_file = None
+    os.environ["HALIA_LOG"] = str(log_file)
+    os.environ.pop("HALIA_LOG_LEVEL", None)
+
+    registry = MagicMock()
+    skill = MagicMock()
+    skill.name = "svc"
+    skill.dangerous = False
+    # ok resets; then two failures reach max_tool_failures=2, so the 4th call is skipped.
+    # (The failure counter increments AFTER a run, so a skip needs max+1 calls.)
+    skill.run.side_effect = ["ok result", "error: boom", "error: boom"]
+    registry.get.return_value = skill
+    registry.tool_schemas.return_value = []
+
+    ctx = _Ctx(
+        provider=MagicMock(), config=MagicMock(), registry=registry,
+        prompt="t", extra_system="", plan="", max_iters=8,
+        max_corrections=1, observer=None, approver=None,
+        pause_on_approval=False, max_tool_failures=2,
+    )
+    messages: list[dict[str, Any]] = []
+    steps: list[Step] = []
+    calls = [
+        {"id": "c1", "name": "svc", "arguments": "{}"},
+        {"id": "c2", "name": "svc", "arguments": "{}"},
+        {"id": "c3", "name": "svc", "arguments": "{}"},
+        {"id": "c4", "name": "svc", "arguments": "{}"},  # circuit-broken → skipped
+    ]
+
+    _execute_batch(ctx, calls, messages, steps)  # type: ignore[arg-type]
+
+    logger._initialized = False
+    os.environ.pop("HALIA_LOG", None)
+
+    events = [json.loads(ln) for ln in log_file.read_text().strip().split("\n")]
+    tool_calls = [e for e in events if e["event"] == "tool_call"]
+    assert [e["status"] for e in tool_calls] == ["ok", "error", "error", "skipped"]
+    assert skill.run.call_count == 3  # 4th never ran
+    assert all(e["tool"] == "svc" for e in tool_calls)
+
+
 def test_log_event_respects_level(tmp_path: Any) -> None:
     """Events below the configured level are not written."""
     from halia.audit import logger

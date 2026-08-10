@@ -489,6 +489,10 @@ def _execute_batch(
     ctx: _Ctx, calls: list[ToolCall], messages: list[Message], steps: list[Step]
 ) -> None:
     """Run a tool-call batch, appending each step + its `tool` message (in place)."""
+    from time import perf_counter as _perf
+
+    from halia.audit.logger import log_tool_call
+
     circuit_notes: list[str] = []
     for tc in calls:
         name = tc["name"]
@@ -498,6 +502,7 @@ def _execute_batch(
                 f"circuit breaker: '{name}' has failed {ctx.max_tool_failures} times "
                 f"consecutively — skipping. Find an alternative approach."
             )
+            log_tool_call(name, tc["arguments"], 0.0, "skipped")
             step = Step(tool=name, arguments=tc["arguments"], observation=observation)
             steps.append(step)
             if ctx.observer is not None:
@@ -511,13 +516,16 @@ def _execute_batch(
         check_read = getattr(ctx.approver, "check_read", None)
         if name in _READ_TOOLS and check_read is not None and not check_read(name, tc["arguments"]):
             observation = "denied by user: reading from this directory was not approved"
+            log_tool_call(name, tc["arguments"], 0.0, "denied")
             step = Step(tool=name, arguments=tc["arguments"], observation=observation)
             steps.append(step)
             if ctx.observer is not None:
                 ctx.observer(step)
             messages.append({"role": "tool", "tool_call_id": tc["id"], "content": observation})
             continue
+        _t0 = _perf()
         observation = _run_tool(ctx.registry, name, tc["arguments"], ctx.approver)
+        _duration_ms = (_perf() - _t0) * 1000
         # Track success/failure for the circuit breaker.
         # Read-only tools (jq, grep, read_file) get errors from bad queries,
         # not broken tools — don't count them as failures.
@@ -533,6 +541,7 @@ def _execute_batch(
             ctx._tool_failures[name] = ctx._tool_failures.get(name, 0) + 1
         else:
             ctx._tool_failures.pop(name, None)  # success resets the counter
+        log_tool_call(name, tc["arguments"], _duration_ms, "error" if is_tool_error else "ok")
         step = Step(tool=name, arguments=tc["arguments"], observation=observation)
         steps.append(step)
         if ctx.observer is not None:
