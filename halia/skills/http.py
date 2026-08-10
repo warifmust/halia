@@ -23,6 +23,13 @@ from halia.permissions.network import EgressDenied, check_egress
 _METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS")
 _DEFAULT_MAX_CHARS = 5000
 _TIMEOUT = 20.0
+# Automatic retry for TRANSIENT failures — only for idempotent methods. A connection error
+# on a POST/PUT/PATCH/DELETE may mean the request WAS delivered and only the response was
+# lost, so retrying could double-submit; those methods are never auto-retried.
+_IDEMPOTENT = frozenset({"GET", "HEAD", "OPTIONS"})
+_RETRY_STATUSES = frozenset({429, 502, 503, 504})
+_MAX_RETRIES = 1  # one extra attempt (2 total)
+_RETRY_BACKOFF = 0.5  # seconds; a Retry-After header (429/503) takes precedence
 # Content-types we render as text; everything else is reported as a byte count.
 _TEXTUAL = (
     "text/",
@@ -38,6 +45,17 @@ _TEXTUAL = (
 def _is_textual(content_type: str) -> bool:
     ct = content_type.lower()
     return any(marker in ct for marker in _TEXTUAL)
+
+
+def _retry_after(resp: httpx.Response) -> float | None:
+    """Honour a numeric `Retry-After` header (seconds), capped so we never stall a run."""
+    raw = resp.headers.get("retry-after", "").strip()
+    if not raw:
+        return None
+    try:
+        return min(max(float(raw), 0.0), 10.0)  # ignore HTTP-date form; cap at 10s
+    except ValueError:
+        return None
 
 
 class HttpRequest:
@@ -144,11 +162,26 @@ class HttpRequest:
             request_kwargs["content"] = raw_body.encode("utf-8")
 
         client = self._client or httpx.Client()
+        retryable = method in _IDEMPOTENT
         started = time.perf_counter()
         try:
-            resp = client.request(method, url, **request_kwargs)
-        except httpx.HTTPError as exc:
-            return f"error: {method} {url} failed: {exc}"
+            attempt = 0
+            while True:
+                try:
+                    resp = client.request(method, url, **request_kwargs)
+                except httpx.HTTPError as exc:
+                    # Transport-level blip (timeout, connection reset). Retry idempotent only.
+                    if retryable and attempt < _MAX_RETRIES:
+                        attempt += 1
+                        time.sleep(_RETRY_BACKOFF)
+                        continue
+                    return f"error: {method} {url} failed: {exc}"
+                # Transient server-side status (429/503/…): one more try for idempotent methods.
+                if resp.status_code in _RETRY_STATUSES and retryable and attempt < _MAX_RETRIES:
+                    attempt += 1
+                    time.sleep(_retry_after(resp) or _RETRY_BACKOFF)
+                    continue
+                break
         finally:
             if self._client is None:
                 client.close()

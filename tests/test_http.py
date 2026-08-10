@@ -1,6 +1,9 @@
 """Tests for the http_request skill (mocked transport — no real network)."""
 
+from typing import Any
+
 import httpx
+import pytest
 
 from halia.skills.http import HttpRequest
 
@@ -8,6 +11,14 @@ from halia.skills.http import HttpRequest
 def _skill(handler: object) -> HttpRequest:
     client = httpx.Client(transport=httpx.MockTransport(handler))  # type: ignore[arg-type]
     return HttpRequest(client=client)
+
+
+@pytest.fixture(autouse=True)
+def _no_sleep(monkeypatch: Any) -> None:
+    # Retry backoff must not actually stall the test suite.
+    import halia.skills.http as http_mod
+
+    monkeypatch.setattr(http_mod.time, "sleep", lambda _s: None)
 
 
 def test_get_reports_status_and_body() -> None:
@@ -129,6 +140,58 @@ def test_egress_floor_blocks_internal() -> None:
     # No client needed — the egress floor rejects before any request is built.
     out = HttpRequest().run({"url": "http://169.254.169.254/latest/meta-data/"})
     assert "blocked" in out
+
+
+def test_get_retries_transient_transport_error_then_succeeds() -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ConnectError("connection reset", request=request)
+        return httpx.Response(200, text="recovered")
+
+    out = _skill(handler).run({"url": "https://example.com/api"})
+    assert calls["n"] == 2  # retried once
+    assert "→ 200" in out and "recovered" in out
+
+
+def test_get_retries_on_transient_5xx_status() -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(503 if calls["n"] == 1 else 200, text="body")
+
+    out = _skill(handler).run({"url": "https://example.com/api"})
+    assert calls["n"] == 2
+    assert "→ 200" in out
+
+
+def test_post_is_never_auto_retried() -> None:
+    # A connection error on a mutating method must NOT retry (double-submit risk).
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        raise httpx.ConnectError("boom", request=request)
+
+    out = _skill(handler).run({"url": "https://example.com/orders", "method": "POST"})
+    assert calls["n"] == 1  # no retry
+    assert out.startswith("error:")
+
+
+def test_retry_gives_up_after_one_and_returns_last_status() -> None:
+    # Persistent 503 → one retry, then the 503 is reported (not an infinite loop).
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(503, text="still down")
+
+    out = _skill(handler).run({"url": "https://example.com/api"})
+    assert calls["n"] == 2  # original + one retry, then stop
+    assert "→ 503" in out
 
 
 def test_dangerous_and_wired() -> None:
