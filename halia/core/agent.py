@@ -80,6 +80,10 @@ SYSTEM_PROMPT = (
     "to do, which tools you'll use, and in what order. Then execute step by step. "
     "Start every tool-using task by calling learn_from_reference to check if the user "
     "has taught any format/template files. If files are found, follow their format. "
+    "When the user asks you to REMEMBER a document, file, or URL to use going forward "
+    "(e.g. 'remember this OpenAPI spec', 'use this doc for tests', 'keep this for later'), "
+    "save it with save_reference — state plainly what you'll save and confirm, never save "
+    "silently — so learn_from_reference can load it in future runs. "
     "Only answer directly (no planning, no tools) for simple factual questions like "
     "'what is X' or 'how do I Y' that don't need file access or computation."
 )

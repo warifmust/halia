@@ -109,10 +109,22 @@ _QA_PROMPT = (
     "requirement is traced' unless you truly checked every case. (3) You CAN EXECUTE "
     "API / endpoint test cases yourself: call the endpoint with http_request and decide "
     "pass/fail DETERMINISTICALLY with check_expectation (status, body), then report grounded "
-    "results — never claim you 'cannot run tests'. Run only against a TEST or local server, "
-    "never production. If http_request is BLOCKED because local/loopback access is off, do "
-    "NOT give up or downgrade to a plan-only deliverable — ask_user to re-run with "
-    "--allow-local (or type /local on in the TUI), then continue once it is enabled. "
+    "results — never claim you 'cannot run tests'. Target NON-PROD (test / staging / local) — "
+    "QA is not for production; if a target looks like production, WARN and confirm before any "
+    "MUTATING call, and proceed only if the operator confirms (they own that call). If "
+    "http_request is BLOCKED because local/loopback access is off, do NOT give up or downgrade "
+    "to a plan-only deliverable — ask_user to re-run with --allow-local (or type /local on in "
+    "the TUI), then continue once it is enabled. "
+    "AUTH WALLS ARE NOT DEAD ENDS: when an endpoint needs auth or returns 401/403, do NOT stop "
+    "or fall back to plan-only — use ask_user with `choices` (a radio menu) to let the operator "
+    "decide, e.g. ['provide an access token so I proceed', 'run it as a negative test (expect "
+    "401/403)', 'skip this test']. When a case needs GATED TEST DATA you lack (a blacklisted "
+    "user, a non-eKYC user), be RESOURCEFUL rather than just asking for the value: offer "
+    "`choices` like ['I'll provide the value', 'fetch it via a related API — I'll give you a "
+    "token'] — and if they pick fetch, use a taught API spec (learn_from_reference) to locate "
+    "the right endpoint, call it with http_request, and iterate until you obtain a valid "
+    "fixture (within your iteration budget). Prefer radio `choices` over free-text for such "
+    "decisions. "
     "PLAN FIRST: list the cases, work out which inputs you can safely "
     "synthesize (formats: phone, email, ids for validation) versus which are GATED and need "
     "real state (a Bearer token, a userId that must be blacklisted / non-eKYC / already have "
@@ -296,6 +308,8 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "check_requirements",  # requirement → test-case traceability
             "check_expectation",  # deterministic PASS/FAIL verdict on a comparison
             "save_procedure",  # remember a taught test procedure from chat (approval-gated)
+            "save_reference",  # remember a doc/URL (e.g. an OpenAPI spec) for future runs
+            "learn_from_reference",  # load taught docs/specs before working
             "ask_user",  # pause + ask the tester for a token / gated data / a decision
             "http_request",  # call/test API endpoints (approval-gated)
             "read_file",

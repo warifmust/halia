@@ -112,3 +112,55 @@ class LearnFromReference:
             return "no readable reference files found."
 
         return "\n\n".join(results)
+
+
+class SaveReference:
+    name = "save_reference"
+    description = (
+        "Remember a document, file, or URL as a reusable reference to use going forward — when "
+        "the user says things like 'remember this OpenAPI spec', 'use this doc for tests', or "
+        "'keep this for later'. Saves it so learn_from_reference can load it in future runs. "
+        "`source` = a local file path OR an http(s) URL; optional `profile` to scope it "
+        "(qa/finance/…) and `description`. Confirm what you'll save with the user first — never "
+        "save silently."
+    )
+    dangerous = True  # the approval gate IS the confirmation (mirrors save_procedure)
+    untrusted = False
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "source": {"type": "string", "description": "A local file path or an http(s) URL."},
+            "profile": {"type": "string", "description": "Optional profile scope (qa, finance…)."},
+            "description": {"type": "string", "description": "Optional note on what it teaches."},
+        },
+        "required": ["source"],
+    }
+
+    def run(self, args: dict[str, Any]) -> str:
+        import httpx
+
+        from halia.permissions.network import EgressDenied
+        from halia.references import store_reference, store_url_reference
+
+        source = args.get("source")
+        if not isinstance(source, str) or not source.strip():
+            return "error: 'source' is required (a local file path or an http(s) URL)"
+        source = source.strip()
+        profile = str(args.get("profile", "")).strip()
+        description = str(args.get("description", "")).strip()
+        tag = f" [{profile}]" if profile else ""
+        try:
+            if source.startswith(("http://", "https://")):
+                ref = store_url_reference(source, profile=profile, description=description)
+                return (
+                    f"remembered URL reference '{ref.filename}'{tag} (from {ref.url}). "
+                    "Load it later with learn_from_reference."
+                )
+            ref = store_reference(source, profile=profile, description=description)
+            return (
+                f"remembered reference '{ref.filename}'{tag} ({ref.file_type}). "
+                "Load it later with learn_from_reference."
+            )
+        except (FileNotFoundError, ValueError, OSError, EgressDenied, httpx.HTTPError) as exc:
+            return f"error: {exc}"

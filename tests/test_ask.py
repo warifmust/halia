@@ -20,6 +20,27 @@ def test_non_interactive_returns_unavailable(monkeypatch: Any) -> None:
     assert "flag it for a human" in out
 
 
+def test_choices_render_radio_and_return_selection(monkeypatch: Any) -> None:
+    import sys
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    # pick() is the radio picker (from cli.input); stub it to select the 2nd option.
+    monkeypatch.setattr("halia.cli.input.pick", lambda title, opts, default=0: opts[1])
+    out = AskUser().run({
+        "question": "Auth wall — what next?",
+        "choices": ["provide a token", "run as a negative test (expect 401)", "skip this test"],
+    })
+    assert out == "user selected: run as a negative test (expect 401)"
+
+
+def test_choices_non_interactive_still_unavailable(monkeypatch: Any) -> None:
+    import sys
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    out = AskUser().run({"question": "pick one", "choices": ["a", "b"]})
+    assert "unavailable" in out  # radio needs a TTY; headless falls back to the note
+
+
 def test_reads_answer_when_interactive(monkeypatch: Any) -> None:
     import sys
 

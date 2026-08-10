@@ -137,9 +137,16 @@ _SESSIONS_MIGRATIONS = {
     "archived_messages_json": "TEXT NOT NULL DEFAULT '[]'",
 }
 
-# Columns added to `ref_files` after its first release. `url` is set for references taught
-# from a web URL (empty for file-based ones).
+# Columns added to `ref_files` after its first release (id/stored_at/original_path/filename
+# were the original set). Older DBs may lack any of these — _ensure_columns adds the missing
+# ones. (stored_filename was previously added to the schema without a migration, which broke
+# learn_from_reference on pre-existing DBs; hence the full list here.)
 _REF_FILES_MIGRATIONS = {
+    "stored_filename": "TEXT NOT NULL DEFAULT ''",
+    "file_type": "TEXT NOT NULL DEFAULT ''",
+    "profile": "TEXT NOT NULL DEFAULT ''",
+    "size_bytes": "INTEGER NOT NULL DEFAULT 0",
+    "description": "TEXT NOT NULL DEFAULT ''",
     "url": "TEXT NOT NULL DEFAULT ''",
 }
 

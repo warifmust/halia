@@ -54,9 +54,11 @@ class AskUser:
     description = (
         "Ask the human operator for information only they can provide — a token or "
         "credential, a gated test-data value (e.g. a blacklisted user id, a non-eKYC user), "
-        "a file path, or a decision — and get their typed reply. Use this instead of "
-        "inventing gated/secret values or silently skipping a step for lack of data. Set "
-        "secret=true to hide the typed input (tokens/passwords)."
+        "a file path, or a decision — and get their reply. Use this instead of inventing "
+        "gated/secret values or silently skipping a step for lack of data. Set secret=true to "
+        "hide the typed input (tokens/passwords). Pass `choices` (a list) to offer a "
+        "radio-button selection instead of free text — ideal for decisions like "
+        "['provide a token', 'run as a negative test (expect 401)', 'skip this test']."
     )
     dangerous = False
     untrusted = False
@@ -68,6 +70,11 @@ class AskUser:
             "secret": {
                 "type": "boolean",
                 "description": "Hide the typed input as it's entered (tokens/passwords).",
+            },
+            "choices": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional options shown as a radio picker; returns the chosen one.",
             },
         },
         "required": ["question"],
@@ -82,6 +89,18 @@ class AskUser:
                 "unavailable: no interactive user to ask (non-interactive run) — "
                 "skip this step or flag it for a human."
             )
+
+        # Radio-button selection when the model offers `choices` (like the setup wizard).
+        choices = args.get("choices")
+        if isinstance(choices, list) and choices:
+            opts = [str(c).strip() for c in choices if str(c).strip()]
+            if opts:
+                from halia.cli.input import pick
+
+                chosen = pick(question.strip(), opts)
+                if not chosen:
+                    return "user made no selection — treat this as 'skip this step'."
+                return f"user selected: {chosen}"
 
         print(f"\n{question.strip()}")
         try:

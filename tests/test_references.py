@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -305,6 +306,73 @@ def test_learn_from_reference_shows_url_source(tmp_path: Path) -> None:
     assert "Best practice" in result
 
 
+# ── save_reference (model-callable teach) ───────────────────────────────────────
+
+
+def test_save_reference_file(monkeypatch: Any) -> None:
+    from types import SimpleNamespace
+
+    from halia.skills.reference import SaveReference
+
+    seen: dict[str, object] = {}
+
+    def fake_store(path: str, profile: str = "", description: str = "", db_path: object = None):
+        seen.update(path=path, profile=profile)
+        return SimpleNamespace(filename="template.md", file_type=".md")
+
+    monkeypatch.setattr("halia.references.store_reference", fake_store)
+    out = SaveReference().run({"source": "/x/template.md", "profile": "qa"})
+    assert "remembered reference 'template.md'" in out and "[qa]" in out
+    assert seen["path"] == "/x/template.md"
+
+
+def test_save_reference_url(monkeypatch: Any) -> None:
+    from types import SimpleNamespace
+
+    from halia.skills.reference import SaveReference
+
+    def fake_url(source: str, profile: str = "", description: str = "",
+                 db_path: object = None, fetcher: object = None):
+        return SimpleNamespace(filename="example.com", url=source)
+
+    monkeypatch.setattr("halia.references.store_url_reference", fake_url)
+    out = SaveReference().run({"source": "https://example.com/openapi.json"})
+    assert "remembered URL reference" in out
+    assert "example.com/openapi.json" in out
+
+
+def test_save_reference_requires_source() -> None:
+    from halia.skills.reference import SaveReference
+
+    assert SaveReference().run({}).startswith("error")
+
+
+def test_ref_files_migration_backfills_columns(tmp_path: Path) -> None:
+    # Regression: a pre-existing ref_files without stored_filename must be migrated on connect
+    # (older DBs used to break learn_from_reference with "no such column: stored_filename").
+    import sqlite3
+
+    from halia.store.database import connect
+
+    db = tmp_path / "old.db"
+    c = sqlite3.connect(db)
+    # A pre-stored_filename DB: had every column EXCEPT stored_filename (the real regression).
+    c.executescript(
+        "CREATE TABLE ref_files (id TEXT PRIMARY KEY, stored_at TEXT, original_path TEXT,"
+        " filename TEXT, file_type TEXT, profile TEXT, size_bytes INTEGER, description TEXT,"
+        " url TEXT);"
+    )
+    c.commit()
+    c.close()
+    conn = connect(db)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(ref_files)")}
+    conn.close()
+    for col in ("stored_filename", "file_type", "profile", "size_bytes", "description", "url"):
+        assert col in cols
+
+
 def test_skill_registered() -> None:
-    from halia.skills import available_skills
+    from halia.skills import DEFAULT_SKILLS, available_skills
     assert "learn_from_reference" in available_skills()
+    assert "save_reference" in available_skills()
+    assert "save_reference" in DEFAULT_SKILLS

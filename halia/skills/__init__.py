@@ -24,7 +24,7 @@ from halia.skills.procedure_tool import SaveProcedure
 from halia.skills.qa import CheckQaArtifact
 from halia.skills.readability import Readability
 from halia.skills.reconcile import ReconcileCsv
-from halia.skills.reference import LearnFromReference
+from halia.skills.reference import LearnFromReference, SaveReference
 from halia.skills.registry import SkillRegistry
 from halia.skills.search import SearchCode
 from halia.skills.spreadsheet import MakeExcel
@@ -70,6 +70,7 @@ _SKILL_FACTORIES: dict[str, type] = {
     "make_excel": MakeExcel,
     "run_command": RunCommand,
     "learn_from_reference": LearnFromReference,
+    "save_reference": SaveReference,
 }
 
 # Always included, regardless of profile: deterministic compute is part of the
