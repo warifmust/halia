@@ -16,6 +16,29 @@ def test_read_file(tmp_path: Any) -> None:
     assert ReadFile().run({"path": str(target)}) == "hello"
 
 
+def test_read_file_pages_large_file_with_offset_limit(tmp_path: Any) -> None:
+    target = tmp_path / "big.txt"
+    target.write_text("".join(f"line{i}\n" for i in range(1, 101)))  # 100 lines
+
+    # limit → first N lines + a continue footer
+    out = ReadFile().run({"path": str(target), "limit": 10})
+    assert "line1\n" in out and "line10\n" in out
+    assert "line11" not in out.split("[")[0]  # line 11 not in the body
+    assert "lines 1–10 of 100" in out and "offset=11 to continue" in out
+
+    # offset → resume from a later line
+    out2 = ReadFile().run({"path": str(target), "offset": 11, "limit": 5})
+    assert "line11\n" in out2 and "line15\n" in out2
+    assert "line10\n" not in out2
+
+    # offset past EOF → clear error
+    assert "past end of file" in ReadFile().run({"path": str(target), "offset": 999})
+
+    # string-typed numbers (models pass these) are coerced
+    out3 = ReadFile().run({"path": str(target), "offset": "11", "limit": "3"})
+    assert "line11\n" in out3
+
+
 def test_read_file_missing(tmp_path: Any) -> None:
     out = ReadFile().run({"path": str(tmp_path / "nope.txt")})
     assert "not a file" in out
