@@ -93,6 +93,28 @@ _COMPLIANCE_PROMPT = (
     "reports with make_docx / make_pdf / make_excel."
 )
 
+_CX_PROMPT = (
+    "You are halia in CUSTOMER EXPERIENCE (CX) mode — an assistant for CX and insight teams: "
+    "NPS and survey analysis, customer feedback and sentiment, journey mapping, and turning "
+    "findings into improvement plans. Discipline: (1) Every METRIC is computed by a tool, never "
+    "estimated — derive NPS (%promoters[9-10] minus %detractors[0-6]), CSAT, and any percentage "
+    "or average from the ACTUAL responses with query_data / group_by / aggregate_csv, and say "
+    "which file and column each number came from. (2) SENTIMENT and 'good vs bad' are your "
+    "JUDGMENT, not a measured fact: ground every theme in real verbatims you actually read (quote "
+    "the source row), NEVER invent a quote or a percentage; if you report 'X% negative', COUNT "
+    "the coded responses with a tool rather than eyeballing. (3) You DESIGN the research "
+    "instruments — discussion guides for interviews (virtual or face-to-face), screeners and "
+    "street-intercept questions, survey items (keep wording clear; check it with readability / "
+    "count_text) — but you do NOT conduct the fieldwork or speak to customers yourself; you "
+    "analyse the transcripts and data that come back, and say which cases a human must run. "
+    "(4) Map the CUSTOMER JOURNEY with make_diagram (a Mermaid journey) and visualise "
+    "distributions with make_chart. (5) An IMPROVEMENT PLAN or strategy must trace each "
+    "recommendation to a specific finding — a metric or a verbatim — not to generic best "
+    "practice; separate what the data SHOWS from what you INFER, and flag small samples or low "
+    "response rates. Deliver as a findings deck (make_pptx), a report (make_pdf / make_docx), or "
+    "an analysis sheet (make_excel)."
+)
+
 _QA_PROMPT = (
     "You are halia in QA mode — an assistant for software QA (analysts and engineers). You "
     "carry both the clerical load AND runnable API checks: turn a feature or spec into "
@@ -363,6 +385,34 @@ BUILTIN_PRESETS: dict[str, Profile] = {
         ],
         model=None,
         extra_prompt=_COMPLIANCE_PROMPT,
+    ),
+    "cx": Profile(
+        name="cx",
+        skills=[
+            "read_csv",  # survey / feedback exports
+            "clean_csv",  # tidy messy response data before analysis
+            "aggregate_csv",  # totals / averages — never in the head
+            "group_by",  # break a metric down by segment / channel
+            "query_data",  # SQL over responses (compute NPS/CSAT deterministically)
+            "read_excel",  # survey tools export Excel
+            "readability",  # keep survey / interview wording clear
+            "count_text",  # keep survey items within a length
+            "make_chart",  # NPS / sentiment distributions (tool-computed)
+            "make_diagram",  # customer journey maps (Mermaid journey)
+            "read_file",
+            "read_pdf",
+            "read_docx",  # interview transcripts / verbatims / reports
+            "list_files",
+            "web_search",  # CX benchmarks / best practice
+            "fetch_url",
+            "write_file",  # deliverables; approval-gated
+            "make_pptx",  # findings decks
+            "make_pdf",
+            "make_docx",  # reports / improvement plans
+            "make_excel",  # coded / analysed response sheets
+        ],
+        model=None,
+        extra_prompt=_CX_PROMPT,
     ),
     "qa": Profile(
         name="qa",
