@@ -83,6 +83,59 @@ def test_circuit_breaker_resets_on_success() -> None:
 # --- Structured logging ---
 
 
+def test_execute_batch_honors_check_read_for_read_tools() -> None:
+    """A read tool is gated by the approver's `check_read` (the gate the persona TUI dropped)."""
+    from halia.audit.trace import Step
+    from halia.core.agent import _Ctx, _execute_batch
+
+    def _registry() -> Any:
+        registry = MagicMock()
+        skill = MagicMock()
+        skill.name = "read_file"
+        skill.dangerous = False
+        skill.run.return_value = "file contents"
+        registry.get.return_value = skill
+        registry.tool_schemas.return_value = []
+        return registry, skill
+
+    class Approver:
+        def __init__(self, allow: bool) -> None:
+            self.allow = allow
+
+        def __call__(self, name: str, arguments: str) -> bool:
+            return True
+
+        def check_read(self, name: str, arguments: str) -> bool:
+            return self.allow
+
+    call = [{"id": "c1", "name": "read_file", "arguments": '{"path": "/x/a.txt"}'}]
+
+    def _run(approver: Any) -> tuple[Any, list[dict[str, Any]]]:
+        registry, skill = _registry()
+        ctx = _Ctx(
+            provider=MagicMock(), config=MagicMock(), registry=registry,
+            prompt="t", extra_system="", plan="", max_iters=8, max_corrections=1,
+            observer=None, approver=approver, pause_on_approval=False, max_tool_failures=3,
+        )
+        messages: list[dict[str, Any]] = []
+        steps: list[Step] = []
+        _execute_batch(ctx, call, messages, steps)  # type: ignore[arg-type]
+        return skill, messages
+
+    # check_read denies → tool never runs, denial observation recorded
+    skill, messages = _run(Approver(False))
+    assert skill.run.call_count == 0
+    assert "not approved" in messages[0]["content"]
+
+    # check_read allows → tool runs
+    skill, _ = _run(Approver(True))
+    assert skill.run.call_count == 1
+
+    # no check_read attribute (the old TUI wrapper) → read runs ungated (documents the bug)
+    skill, _ = _run(lambda name, args: True)
+    assert skill.run.call_count == 1
+
+
 def test_log_event_writes_jsonl(tmp_path: Any) -> None:
     """log_event writes a JSON line to the configured file."""
     from halia.audit import logger

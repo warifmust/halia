@@ -717,6 +717,19 @@ def run_tui(
             footer.start()  # resume (state preserved)
             return ok
 
+        def read_check_and_clear(name: str, arguments: str) -> bool:
+            # Read-directory approval (the same gate `halia chat` uses); the live footer
+            # must pause for the interactive prompt just like a write approval.
+            close_stream()
+            footer.stop()
+            ok = bool(approve.check_read(name, arguments))
+            footer.start()
+            return ok
+
+        # `_execute_batch` looks for `approver.check_read`; without this the persona TUI
+        # silently skipped the read-directory prompt that `halia chat` enforces.
+        approve_and_clear.check_read = read_check_and_clear  # type: ignore[attr-defined]
+
         def on_activity(label: str) -> None:
             # A new phase (next model call, or a tool) begins — close any streamed answer.
             close_stream()
