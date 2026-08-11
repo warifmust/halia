@@ -19,8 +19,10 @@ def test_cx_preset_wired() -> None:
 def test_cx_prompt_bakes_in_trust_discipline() -> None:
     prompt = get_preset("cx").extra_prompt  # type: ignore[union-attr]
     low = prompt.lower()
-    assert "nps" in low  # names the core metric
+    assert "nps" in low and "csat" in low  # names the core metrics (tool-computed)
     assert "verbatim" in low and "invent" in low  # sentiment grounded in real quotes
-    assert "do not conduct" in low or "not conduct the fieldwork" in low  # honest boundary
+    # honest but light boundary: designs instruments & reads feedback; fieldwork is the user's
+    assert "intercepts themselves are the user" in low
+    assert "assistant" in low
     # generalized — no brand/domain leaks
     assert not any(t in low for t in ("setel", "ekyc", "zendesk"))
