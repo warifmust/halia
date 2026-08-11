@@ -375,6 +375,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "learn_from_reference",  # load taught docs/specs before working
             "ask_user",  # pause + ask the tester for a token / gated data / a decision
             "http_request",  # call/test API endpoints (approval-gated)
+            "openapi_lookup",  # resolve a spec/docs URL → real path/method/params (no guessing)
             "jq_query",  # parse JSON specs / API responses deterministically (not by guessing)
             "read_file",
             "read_pdf",

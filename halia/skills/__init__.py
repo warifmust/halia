@@ -19,6 +19,7 @@ from halia.skills.fs import ListFiles, ReadFile, WriteFile
 from halia.skills.grep import GrepFile
 from halia.skills.http import HttpRequest
 from halia.skills.jq import JqQuery
+from halia.skills.openapi_tool import OpenApiLookup
 from halia.skills.pdf import ReadPdf
 from halia.skills.procedure_tool import SaveProcedure
 from halia.skills.qa import CheckQaArtifact
@@ -42,6 +43,7 @@ _SKILL_FACTORIES: dict[str, type] = {
     "fetch_url": FetchUrl,
     "web_search": WebSearch,
     "http_request": HttpRequest,
+    "openapi_lookup": OpenApiLookup,
     "calculate": Calculate,
     "ask_user": AskUser,
     "read_csv": ReadCsv,
