@@ -1034,6 +1034,19 @@ def _resumed_age_note(updated_at: str) -> str:
 
 
 @app.command()
+def _require_config() -> None:
+    """Fail fast with setup guidance if there's no usable config — called BEFORE the trust
+    prompt so a fresh install doesn't ask to trust a directory only to dead-end on a missing key.
+    """
+    from halia.config.settings import ConfigError, load_config
+
+    try:
+        load_config()
+    except ConfigError as exc:
+        console.print(f"[yellow]{exc}[/yellow]")
+        raise typer.Exit(1) from exc
+
+
 def chat(
     profile: Annotated[
         str | None, typer.Option("--profile", help="Use a named profile or preset (e.g. finance).")
@@ -1056,6 +1069,9 @@ def chat(
     from halia.core.checkpoint import list_checkpoints
     from halia.core.session import get_session, new_session, save_session
     from halia.providers.base import ProviderError
+
+    # Config first: guide a fresh install to `halia setup` BEFORE the trust prompt.
+    _require_config()
 
     # Trust boundary: check if the current directory is trusted.
     cwd = os.getcwd()

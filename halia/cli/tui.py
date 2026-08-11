@@ -328,6 +328,16 @@ def run_tui(
 
     set_allow_local(allow_local)
 
+    # Config first: on a fresh install (no API key) guide to `halia setup` BEFORE the trust
+    # prompt, so the first run doesn't dead-end after trusting a directory.
+    from halia.config.settings import ConfigError, load_config
+
+    try:
+        load_config()
+    except ConfigError as exc:
+        console.print(f"[yellow]{exc}[/yellow]")
+        raise SystemExit(1) from exc
+
     # Trust boundary: check if the current directory is trusted.
     import os
 
