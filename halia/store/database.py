@@ -168,6 +168,25 @@ def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
 
+def _ensure_memory_fts(conn: sqlite3.Connection) -> None:
+    """Maintain an FTS5 index over `memory` for relevance recall. Self-healing (backfills new
+    rows, prunes orphans) and a no-op if FTS5 isn't compiled into this SQLite build — recall
+    then falls back to dumping/most-recent facts."""
+    try:
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(fact_id UNINDEXED, content)"
+        )
+        conn.execute(
+            "INSERT INTO memory_fts (fact_id, content) "
+            "SELECT id, content FROM memory WHERE id NOT IN (SELECT fact_id FROM memory_fts)"
+        )
+        conn.execute(
+            "DELETE FROM memory_fts WHERE fact_id NOT IN (SELECT id FROM memory)"
+        )
+    except sqlite3.OperationalError:
+        pass  # FTS5 unavailable in this build — recall degrades gracefully
+
+
 def connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
     """Open the database (creating the dir + schema, migrating older DBs, on first use)."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -177,5 +196,6 @@ def connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
     _ensure_columns(conn, "procedures", _PROCEDURES_MIGRATIONS)
     _ensure_columns(conn, "sessions", _SESSIONS_MIGRATIONS)
     _ensure_columns(conn, "ref_files", _REF_FILES_MIGRATIONS)
+    _ensure_memory_fts(conn)
     conn.commit()
     return conn

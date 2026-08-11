@@ -373,7 +373,9 @@ def ask(prompt: Annotated[str, typer.Argument(help="What to ask halia.")]) -> No
     from halia.memory.facts import memory_block
 
     try:
-        answer = run_ask(prompt, config, extra_system=memory_block() + persona_overlay())
+        answer = run_ask(
+            prompt, config, extra_system=memory_block(query=prompt) + persona_overlay()
+        )
     except ProviderError as exc:
         console.print(f"[red]provider error:[/red] {exc}")
         raise typer.Exit(1) from exc
@@ -643,7 +645,9 @@ def _make_approver() -> Any:
     return approve
 
 
-def _prepare_context(profile: str | None, allow_commands: bool) -> tuple[Any, Any, str]:
+def _prepare_context(
+    profile: str | None, allow_commands: bool, query: str | None = None
+) -> tuple[Any, Any, str]:
     """Resolve (config, registry, extra_system) from profile/preset + memory + persona.
 
     Exits with an error message on config/profile problems.
@@ -662,7 +666,7 @@ def _prepare_context(profile: str | None, allow_commands: bool) -> tuple[Any, An
         console.print(f"[red]config error:[/red] {exc}")
         raise typer.Exit(1) from exc
 
-    extra_system = memory_block() + persona_overlay()
+    extra_system = memory_block(query=query) + persona_overlay()
     if profile is not None:
         prof = resolve_profile(profile)  # user profile wins, else a built-in preset
         if prof is None:
@@ -741,7 +745,7 @@ def _execute_run(
         console.print("[cyan]plan[/cyan]")
         console.print(f"[dim]{text}[/dim]\n")
 
-    config, registry, extra_system = _prepare_context(profile, allow_commands)
+    config, registry, extra_system = _prepare_context(profile, allow_commands, query=prompt)
     if extra_prompt_block:
         extra_system = f"{extra_system}\n\n{extra_prompt_block}".strip()
 
