@@ -13,6 +13,7 @@ echoed back in the observation, so secrets don't leak into logs/audit.
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
@@ -157,6 +158,14 @@ class HttpRequest:
         }
         json_body = args.get("json")
         if json_body is not None:
+            # Models often pass `json` as a STRING (a JSON-encoded blob). Passing that straight
+            # to httpx would JSON-encode it AGAIN → a quoted string body, not an object. Parse
+            # a string first; only a genuine object/array/scalar is sent as-is.
+            if isinstance(json_body, str):
+                try:
+                    json_body = json.loads(json_body)
+                except json.JSONDecodeError as exc:
+                    return f"error: 'json' is a string but not valid JSON ({exc}); pass an object"
             request_kwargs["json"] = json_body
         elif isinstance(raw_body, str):
             request_kwargs["content"] = raw_body.encode("utf-8")

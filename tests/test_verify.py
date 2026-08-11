@@ -86,3 +86,13 @@ def test_money_after_capitalized_word_still_caught() -> None:
     assert ungrounded_numbers("Still 730.50 remains.", []) == ["730.50"]
     assert ungrounded_numbers("Total 42.00 outstanding.", []) == ["42.00"]
     assert "1250.00" in ungrounded_numbers("Balance 1,250.00 today.", [])
+
+
+def test_ip_and_port_and_url_not_flagged_as_figures() -> None:
+    # Regression: `127.0.0.1:3003` and URLs were flagged as ungrounded figures (the "127.0 are
+    # factual data" derail). Network identifiers must be ignored, while a real figure still flags.
+    assert ungrounded_numbers("The service runs at http://127.0.0.1:3003/api/payments.", []) == []
+    assert ungrounded_numbers("Connect to 10.0.0.1:8080 for the API.", []) == []
+    assert ungrounded_numbers("Payments is at 192.168.1.5.", []) == []
+    # A genuine figure alongside a URL is still caught.
+    assert ungrounded_numbers("At http://127.0.0.1:3003 the total was 730.50.", []) == ["730.50"]

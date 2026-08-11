@@ -194,6 +194,53 @@ def test_retry_gives_up_after_one_and_returns_last_status() -> None:
     assert "→ 503" in out
 
 
+def test_json_as_string_is_parsed_not_double_encoded() -> None:
+    # Regression: a stringified `json` arg used to be JSON-encoded again → a quoted-string body.
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.content.decode()
+        seen["ct"] = request.headers.get("content-type")
+        return httpx.Response(200, text="ok")
+
+    _skill(handler).run(
+        {
+            "url": "https://example.com/api",
+            "method": "POST",
+            "json": '{"currentNumber": "60123", "newNumber": "60456"}',  # a STRING
+        }
+    )
+    # Body must be a real JSON object, not a quoted string ("\"{...}\"").
+    import json as _json
+
+    body = str(seen["body"])
+    assert not body.startswith('"')  # not double-encoded into a quoted string
+    assert _json.loads(body) == {"currentNumber": "60123", "newNumber": "60456"}
+    assert "application/json" in str(seen["ct"])
+
+
+def test_json_object_still_works() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.content.decode()
+        return httpx.Response(200, text="ok")
+
+    import json as _json
+
+    _skill(handler).run(
+        {"url": "https://example.com/api", "method": "POST", "json": {"a": 1}}
+    )
+    assert _json.loads(str(seen["body"])) == {"a": 1}
+
+
+def test_json_invalid_string_reports_clear_error() -> None:
+    out = _skill(lambda r: httpx.Response(200)).run(
+        {"url": "https://example.com/api", "method": "POST", "json": "{not valid json"}
+    )
+    assert out.startswith("error:") and "valid JSON" in out
+
+
 def test_dangerous_and_wired() -> None:
     from halia.presets import get_preset
     from halia.skills import DEFAULT_SKILLS, available_skills, default_registry

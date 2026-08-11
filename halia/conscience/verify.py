@@ -19,6 +19,10 @@ from halia.audit.trace import Step
 
 # Strip ISO dates first so their digits aren't treated as figures.
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+# Strip URLs and IPv4 addresses too — the digits in `http://127.0.0.1:3003/...` are network
+# identifiers (host octets, ports), not computed figures, and must not be ground-checked.
+_URL = re.compile(r"https?://\S+")
+_IPV4 = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
 # A number not glued to a letter/digit/dot (so ids like T1 and versions 1.2.3 don't match).
 _NUM = re.compile(r"(?<![A-Za-z0-9.])\$?-?\d[\d,]*(?:\.\d+)?")
 # A capitalized word / acronym directly before the number (one space or hyphen, nothing
@@ -34,6 +38,8 @@ _VERSION_LIKE = re.compile(r"\d+\.\d")
 
 def _extract(text: str, figures_only: bool) -> set[Decimal]:
     cleaned = _DATE.sub(" ", text)
+    cleaned = _URL.sub(" ", cleaned)  # drop URLs (and their embedded ports/octets)
+    cleaned = _IPV4.sub(" ", cleaned)  # drop bare IPv4 addresses
     found: set[Decimal] = set()
     for match in _NUM.finditer(cleaned):
         token = match.group()
