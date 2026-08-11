@@ -1055,7 +1055,7 @@ def _ensure_config() -> None:
         choice = pick("Set up a model provider now?", options, default=0)
         if choice.startswith("no"):
             console.print("[dim]exiting.[/dim]")
-            raise typer.Exit(0)
+            raise typer.Exit(0) from None
         from halia.config.wizard import run_setup
 
         run_setup(console)
@@ -1085,6 +1085,7 @@ def chat(
     from dataclasses import replace
 
     from halia.audit.record import new_record, save_run
+    from halia.cli.input import pick
     from halia.config.settings import is_trusted, trust_directory
     from halia.core.agent import SYSTEM_PROMPT, RunLimitError, converse
     from halia.core.checkpoint import list_checkpoints
@@ -1092,8 +1093,6 @@ def chat(
     from halia.providers.base import ProviderError
 
     # Trust boundary first: check if the current directory is trusted.
-    from halia.cli.input import pick
-
     cwd = os.getcwd()
     if not is_trusted(cwd):
         console.print(f"\n[yellow]Working directory:[/yellow] [bold]{cwd}[/bold]")
