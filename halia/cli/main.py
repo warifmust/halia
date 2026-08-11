@@ -1033,18 +1033,39 @@ def _resumed_age_note(updated_at: str) -> str:
     return f"{int(hours // 24)}d ago"
 
 
-@app.command()
-def _require_config() -> None:
-    """Fail fast with setup guidance if there's no usable config — called BEFORE the trust
-    prompt so a fresh install doesn't ask to trust a directory only to dead-end on a missing key.
+def _ensure_config() -> None:
+    """On a fresh install, offer the setup wizard instead of just exiting.
+
+    Returns once a valid config exists, or raises SystemExit if the user declines
+    or setup fails.  Trust boundary is NOT checked here — callers handle that first.
     """
+    from halia.cli.input import pick
     from halia.config.settings import ConfigError, load_config
 
     try:
         load_config()
-    except ConfigError as exc:
-        console.print(f"[yellow]{exc}[/yellow]")
-        raise typer.Exit(1) from exc
+    except ConfigError:
+        console.print(
+            "\n[bold yellow]First run detected — no API key configured.[/bold yellow]"
+        )
+        options = [
+            "yes — run halia setup",
+            "no — exit",
+        ]
+        choice = pick("Set up a model provider now?", options, default=0)
+        if choice.startswith("no"):
+            console.print("[dim]exiting.[/dim]")
+            raise typer.Exit(0)
+        from halia.config.wizard import run_setup
+
+        run_setup(console)
+        # Verify setup succeeded before continuing.
+        try:
+            load_config()
+        except ConfigError as exc:
+            console.print(f"\n[red]setup incomplete:[/red] {exc}")
+            console.print("[dim]run `halia setup` when you're ready.[/dim]")
+            raise typer.Exit(1) from exc
 
 
 def chat(
@@ -1070,14 +1091,11 @@ def chat(
     from halia.core.session import get_session, new_session, save_session
     from halia.providers.base import ProviderError
 
-    # Config first: guide a fresh install to `halia setup` BEFORE the trust prompt.
-    _require_config()
+    # Trust boundary first: check if the current directory is trusted.
+    from halia.cli.input import pick
 
-    # Trust boundary: check if the current directory is trusted.
     cwd = os.getcwd()
     if not is_trusted(cwd):
-        from halia.cli.input import pick
-
         console.print(f"\n[yellow]Working directory:[/yellow] [bold]{cwd}[/bold]")
         options = [
             f"yes — trust {os.path.basename(cwd)}/",
@@ -1089,6 +1107,9 @@ def chat(
             raise typer.Exit(0)
         trust_directory(cwd)
         console.print(f"[green]✓[/green] trusted [bold]{cwd}[/bold]\n")
+
+    # Config check: guide a fresh install through setup, then continue to chat.
+    _ensure_config()
 
     if resume is not None:
         loaded = get_session(resume)

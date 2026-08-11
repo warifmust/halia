@@ -328,21 +328,11 @@ def run_tui(
 
     set_allow_local(allow_local)
 
-    # Config first: on a fresh install (no API key) guide to `halia setup` BEFORE the trust
-    # prompt, so the first run doesn't dead-end after trusting a directory.
-    from halia.config.settings import ConfigError, load_config
-
-    try:
-        load_config()
-    except ConfigError as exc:
-        console.print(f"[yellow]{exc}[/yellow]")
-        raise SystemExit(1) from exc
-
-    # Trust boundary: check if the current directory is trusted.
     import os
 
-    from halia.config.settings import is_trusted, trust_directory
+    from halia.config.settings import ConfigError, is_trusted, load_config, trust_directory
 
+    # Trust boundary first: check if the current directory is trusted.
     cwd = os.getcwd()
     if not is_trusted(cwd):
         from halia.cli.input import pick
@@ -357,6 +347,33 @@ def run_tui(
             return
         trust_directory(cwd)
         console.print(f"[green]✓[/green] trusted [bold]{cwd}[/bold]\n")
+
+    # Config check: on a fresh install (no API key), guide through setup wizard
+    # then continue into chat — no dead-end.
+    try:
+        load_config()
+    except ConfigError:
+        from halia.cli.input import pick
+        console.print(
+            "\n[bold yellow]First run detected — no API key configured.[/bold yellow]"
+        )
+        options = [
+            "yes — run halia setup",
+            "no — exit",
+        ]
+        choice = pick("Set up a model provider now?", options, default=0)
+        if choice.startswith("no"):
+            console.print("[dim]exiting.[/dim]")
+            return
+        from halia.config.wizard import run_setup
+        run_setup(console)
+        # Verify setup succeeded before continuing.
+        try:
+            load_config()
+        except ConfigError as exc:
+            console.print(f"\n[red]setup incomplete:[/red] {exc}")
+            console.print("[dim]run `halia setup` when you're ready.[/dim]")
+            return
 
     render_banner()
 
