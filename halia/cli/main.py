@@ -371,12 +371,13 @@ def ask(prompt: Annotated[str, typer.Argument(help="What to ask halia.")]) -> No
 
     from halia.core.agent import persona_overlay
     from halia.memory.facts import memory_block
+    from halia.memory.failures import failures_advisory, record_failure
 
     try:
-        answer = run_ask(
-            prompt, config, extra_system=memory_block(query=prompt) + persona_overlay()
-        )
+        extra = memory_block(query=prompt) + failures_advisory(prompt) + persona_overlay()
+        answer = run_ask(prompt, config, extra_system=extra)
     except ProviderError as exc:
+        record_failure(prompt, str(exc))
         console.print(f"[red]provider error:[/red] {exc}")
         raise typer.Exit(1) from exc
 
@@ -657,6 +658,7 @@ def _prepare_context(
     from halia.config.settings import ConfigError, load_config
     from halia.core.agent import persona_overlay
     from halia.memory.facts import memory_block
+    from halia.memory.failures import failures_advisory
     from halia.presets import resolve_profile
     from halia.skills import build_registry, default_registry
 
@@ -666,7 +668,8 @@ def _prepare_context(
         console.print(f"[red]config error:[/red] {exc}")
         raise typer.Exit(1) from exc
 
-    extra_system = memory_block(query=query) + persona_overlay()
+    advisory = failures_advisory(query) if query else ""
+    extra_system = memory_block(query=query) + advisory + persona_overlay()
     if profile is not None:
         prof = resolve_profile(profile)  # user profile wins, else a built-in preset
         if prof is None:
@@ -765,6 +768,9 @@ def _execute_run(
             budget_tokens=budget,
         )
     except (ProviderError, RunLimitError) as exc:
+        from halia.memory.failures import record_failure
+
+        record_failure(prompt, str(exc), profile or "")  # objective failure → advisory next time
         console.print(f"[red]error:[/red] {exc}")
         raise typer.Exit(1) from exc
 
@@ -1305,6 +1311,9 @@ def chat(
                 messages, config, registry, observer=_show_step, approver=approve
             )
         except (ProviderError, RunLimitError) as exc:
+            from halia.memory.failures import record_failure
+
+            record_failure(user_input, str(exc), profile or "")
             console.print(f"[red]error:[/red] {exc}\n")
             messages.pop()  # drop the failed user turn so history stays clean
             continue
@@ -1938,6 +1947,42 @@ def forget(
         console.print(f"[green]✓[/green] forgot {fact_id}")
     else:
         console.print(f"[yellow]no fact matching '{fact_id}'[/yellow]")
+
+
+@app.command()
+def failures(
+    forget: Annotated[
+        str | None, typer.Option("--forget", help="Forget one failure by id (or prefix).")
+    ] = None,
+    clear: Annotated[bool, typer.Option("--clear", help="Forget ALL recorded failures.")] = False,
+) -> None:
+    """Show (or prune) the objective run failures halia recalls to avoid repeating.
+
+    Recorded automatically on a hard failure (iteration cap / provider error) and surfaced as an
+    advisory on similar future tasks. Inspectable and forgettable — prune a stale lesson here.
+    """
+    from halia.memory.failures import forget_failure, list_failures
+
+    if forget:
+        msg = f"[green]✓[/green] forgot {forget}" if forget_failure(forget) else (
+            f"[yellow]no failure matching '{forget}'[/yellow]"
+        )
+        console.print(msg)
+        return
+    items = list_failures()
+    if clear:
+        for f in items:
+            forget_failure(f.id)
+        console.print(f"[green]✓[/green] cleared {len(items)} failure(s).")
+        return
+    if not items:
+        console.print("[dim]no failures recorded.[/dim]")
+        return
+    for f in items:
+        prof = f" [cyan]{f.profile}[/cyan]" if f.profile else ""
+        console.print(f"[bold]{f.id}[/bold] [dim]{f.created_at[:19]}[/dim]{prof}")
+        console.print(f"  task: {f.prompt[:100]}")
+        console.print(f"  [red]cause:[/red] {f.cause}")
 
 
 profile_app = typer.Typer(help="Manage profiles (per-vertical skill/model/prompt sets).")

@@ -123,6 +123,15 @@ CREATE TABLE IF NOT EXISTS snapshots (
     size_bytes    INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_snapshots_path ON snapshots (original_path, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS failures (
+    id         TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    prompt     TEXT NOT NULL,
+    cause      TEXT NOT NULL,
+    profile    TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_failures_created_at ON failures (created_at DESC);
 """
 
 
@@ -187,6 +196,24 @@ def _ensure_memory_fts(conn: sqlite3.Connection) -> None:
         pass  # FTS5 unavailable in this build — recall degrades gracefully
 
 
+def _ensure_failures_fts(conn: sqlite3.Connection) -> None:
+    """FTS5 index over failure PROMPTS (match a new task against past failed tasks). Self-healing;
+    no-op without FTS5. Content is the prompt — the cause is shown, not matched on."""
+    try:
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS failures_fts USING fts5(fail_id UNINDEXED, content)"
+        )
+        conn.execute(
+            "INSERT INTO failures_fts (fail_id, content) "
+            "SELECT id, prompt FROM failures WHERE id NOT IN (SELECT fail_id FROM failures_fts)"
+        )
+        conn.execute(
+            "DELETE FROM failures_fts WHERE fail_id NOT IN (SELECT id FROM failures)"
+        )
+    except sqlite3.OperationalError:
+        pass
+
+
 def connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
     """Open the database (creating the dir + schema, migrating older DBs, on first use)."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -197,5 +224,6 @@ def connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
     _ensure_columns(conn, "sessions", _SESSIONS_MIGRATIONS)
     _ensure_columns(conn, "ref_files", _REF_FILES_MIGRATIONS)
     _ensure_memory_fts(conn)
+    _ensure_failures_fts(conn)
     conn.commit()
     return conn

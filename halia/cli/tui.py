@@ -766,6 +766,9 @@ def run_tui(
             close_stream()
             footer.stop()
             turn_secs[0] = time.perf_counter() - started
+            from halia.memory.failures import record_failure
+
+            record_failure(user_input, str(exc), profile or "")
             console.print(f"[red]error:[/red] {exc}")
             console.print(
                 f"[dim]raise the budget with /iters {budget * 2} and say 'continue', "
@@ -780,6 +783,9 @@ def run_tui(
             close_stream()
             footer.stop()
             turn_secs[0] = time.perf_counter() - started
+            from halia.memory.failures import record_failure
+
+            record_failure(user_input, str(exc), profile or "")
             console.print(f"[red]error:[/red] {exc}\n")
             # Roll the whole failed turn back to the last valid state — never leave a
             # half-appended tool exchange (a lone tool_calls with no responses 400s next call).
