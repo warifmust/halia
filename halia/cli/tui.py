@@ -818,6 +818,15 @@ def run_tui(
             # half-appended tool exchange (a lone tool_calls with no responses 400s next call).
             del messages[turn_start:]
             continue
+        except KeyboardInterrupt:
+            # Ctrl-C mid-run: NOT a failure (don't record it). The interrupt can land mid-tool,
+            # so roll the whole turn back to a balanced state instead of crashing the TUI.
+            close_stream()
+            footer.stop()
+            turn_secs[0] = time.perf_counter() - started
+            console.print("\n[yellow]⏹ stopped.[/yellow]\n")
+            del messages[turn_start:]
+            continue
         footer.stop()  # clear the working line before printing the answer
         turn_secs[0] = time.perf_counter() - started
         total_usage = total_usage + result.usage

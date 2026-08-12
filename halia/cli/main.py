@@ -1341,6 +1341,7 @@ def chat(
             pending_image_id = None  # consumed
         else:
             user_content = user_input
+        turn_start = len(messages)  # roll-back point for a clean Ctrl-C interrupt
         messages.append({"role": "user", "content": user_content})
         try:
             result = converse(
@@ -1352,6 +1353,12 @@ def chat(
             record_failure(user_input, str(exc), profile or "")
             console.print(f"[red]error:[/red] {exc}\n")
             messages.pop()  # drop the failed user turn so history stays clean
+            continue
+        except KeyboardInterrupt:
+            # Ctrl-C mid-run: not a failure (don't record). Can land mid-tool, so roll the whole
+            # turn back to a balanced state instead of crashing.
+            console.print("\n[yellow]⏹ stopped.[/yellow]\n")
+            del messages[turn_start:]
             continue
         messages.append({"role": "assistant", "content": result.answer})
         total_usage = total_usage + result.usage

@@ -116,6 +116,41 @@ def test_runlimit_leaves_balanced_messages() -> None:
     assert messages[-1]["role"] == "tool"  # stopped on a complete batch
 
 
+def test_keyboard_interrupt_propagates_and_turn_rolls_back_balanced() -> None:
+    # Ctrl-C mid-run: converse must PROPAGATE KeyboardInterrupt (not swallow it), and the CLI's
+    # roll-back (del messages[turn_start:]) must restore a BALANCED message list. Regression for
+    # the crash-on-interrupt bug — the chat/TUI loops now catch this at the converse boundary.
+    from halia.core.agent import converse
+
+    class Interrupting:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def chat(self, messages: list[Message], tools: Any = None) -> ChatResult:
+            self.calls += 1
+            if self.calls == 1:  # first turn: call a tool (mutates messages in place)
+                return ChatResult(
+                    content=None,
+                    tool_calls=[ToolCall(id="1", name="list_files", arguments="{}")],
+                )
+            raise KeyboardInterrupt  # user hits Ctrl-C on the next model call
+
+    messages: list[Message] = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "earlier turn"},
+    ]
+    turn_start = len(messages)  # captured by the CLI before appending the user message
+    messages.append({"role": "user", "content": "do the thing"})
+    with pytest.raises(KeyboardInterrupt):  # NOT swallowed by converse
+        converse(messages, _CFG, default_registry(), provider=Interrupting())
+    del messages[turn_start:]  # the CLI's roll-back on interrupt
+    assert _balanced(messages)
+    assert messages == [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "earlier turn"},
+    ]
+
+
 def test_unknown_tool_becomes_observation() -> None:
     provider = FakeProvider(
         [
