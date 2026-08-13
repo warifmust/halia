@@ -126,6 +126,21 @@ def _msg_chars(message: Message) -> int:
     return len(str(content)) + len(json.dumps(tool_calls))
 
 
+def _with_turn_note(window: list[Message], note: str) -> list[Message]:
+    """Insert a transient per-turn system note right before the last user message in the window.
+
+    Keeps the cached prefix (system prompt + prior history) intact — only the new turn, which is
+    uncached anyway, follows the note. The note lives only in this request, never in `messages`.
+    """
+    if not note:
+        return window
+    msg: Message = {"role": "system", "content": note}
+    for i in range(len(window) - 1, -1, -1):
+        if window[i].get("role") == "user":
+            return window[:i] + [msg] + window[i:]
+    return [*window, msg]
+
+
 def _window(messages: list[Message], max_chars: int) -> list[Message]:
     """The system message + the most recent whole turns that fit within `max_chars`.
 
@@ -450,6 +465,9 @@ class _Ctx:
     on_compact: CompactArchiver | None = None
     compact_threshold: float = COMPACT_THRESHOLD
     compact_suppressed: bool = False
+    # A transient per-turn system note (e.g. a failure advisory) injected into each request
+    # window for THIS turn only — never persisted into `messages`, so it can't accumulate.
+    turn_note: str = ""
     budget_tokens: int = 0  # max total tokens per run (0 = unlimited)
     total_usage: Usage = field(default_factory=Usage)  # accumulated across iterations
     # Circuit breaker: per-tool consecutive failure count. Resets on success.
@@ -607,7 +625,7 @@ def _loop(
         if ctx.on_activity is not None:
             ctx.on_activity("")  # about to call the model (thinking)
         # Send a bounded window of history (full transcript stays in `messages`).
-        window = _window(messages, ctx.history_budget)
+        window = _with_turn_note(_window(messages, ctx.history_budget), ctx.turn_note)
         if ctx.on_delta is not None:
             result = ctx.provider.chat(window, tools=tools, on_delta=ctx.on_delta)
         else:
@@ -779,6 +797,7 @@ def converse(
     on_activity: ActivityObserver | None = None,
     compact_approver: CompactApprover | None = None,
     on_compact: CompactArchiver | None = None,
+    turn_note: str = "",
 ) -> RunResult:
     """Run one chat turn over an existing conversation (the multi-turn / chat primitive).
 
@@ -797,6 +816,7 @@ def converse(
         max_corrections=DEFAULT_MAX_CORRECTIONS, observer=observer, approver=approver,
         pause_on_approval=False, history_budget=history_budget, on_delta=on_delta,
         on_activity=on_activity, compact_approver=compact_approver, on_compact=on_compact,
+        turn_note=turn_note,
     )
     return _loop(ctx, messages, [], 0, 0)
 

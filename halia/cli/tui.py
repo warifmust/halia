@@ -103,8 +103,8 @@ _ACTIVITY: dict[str, tuple[str, str]] = {
     "read_docx": ("📖", "Reading"),
     "read_csv": ("📖", "Reading"),
     "read_excel": ("📖", "Reading"),
-    "list_files": ("🗂", "Looking around"),
-    "http_request": ("☕", "Calling the endpoint"),
+    "list_files": ("🗂️", "Looking around"),
+    "http_request": ("☕️", "Calling the endpoint"),
     "fetch_url": ("🔎", "Reading the web"),
     "web_search": ("🔎", "Searching the web"),
     "check_expectation": ("✅", "Checking the verdict"),
@@ -120,13 +120,13 @@ _ACTIVITY: dict[str, tuple[str, str]] = {
     "readability": ("📖", "Checking readability"),
     "count_text": ("🔤", "Counting"),
     "make_chart": ("📊", "Drawing a chart"),
-    "write_file": ("✍", "Writing it up"),
-    "make_pdf": ("✍", "Writing it up"),
-    "make_docx": ("✍", "Writing it up"),
-    "make_excel": ("✍", "Writing it up"),
-    "make_pptx": ("✍", "Writing it up"),
+    "write_file": ("✍️", "Writing it up"),
+    "make_pdf": ("✍️", "Writing it up"),
+    "make_docx": ("✍️", "Writing it up"),
+    "make_excel": ("✍️", "Writing it up"),
+    "make_pptx": ("✍️", "Writing it up"),
     "save_procedure": ("💾", "Remembering it"),
-    "run_command": ("⚙", "Running a command"),
+    "run_command": ("⚙️", "Running a command"),
     "compacting": ("🗜", "Compacting memory"),
 }
 _DEFAULT_ACTIVITY = ("🔧", "Working")
@@ -430,7 +430,7 @@ def run_tui(
         footer.stop()  # pause the live line for the interactive prompt
         console.print()
         console.print(
-            "[bold white on yellow] context nearly full [/bold white on yellow] "
+            "[bold white on yellow] 🗜️ context nearly full [/bold white on yellow] "
             "compact older turns to keep going?"
         )
         console.print(
@@ -777,6 +777,11 @@ def run_tui(
                 streaming["on"] = True
             console.print(token, end="", markup=False, highlight=False, soft_wrap=True)
 
+        from halia.memory.failures import failures_advisory
+
+        advisory = failures_advisory(user_input)  # Tier 2: warn on similar past failures
+        if advisory:
+            console.print("  🧠 [dim]recalling a similar past failure[/dim]")
         started = time.perf_counter()
         footer.reset()
         footer.start()
@@ -788,6 +793,7 @@ def run_tui(
                 observer=_show_step, approver=approve_and_clear,
                 on_activity=on_activity, on_delta=on_delta,
                 compact_approver=compact_consent, on_compact=on_compact,
+                turn_note=advisory,
             )
         except RunLimitError as exc:
             close_stream()
@@ -824,7 +830,7 @@ def run_tui(
             close_stream()
             footer.stop()
             turn_secs[0] = time.perf_counter() - started
-            console.print("\n[yellow]⏹ stopped.[/yellow]\n")
+            console.print("\n[yellow]⏹️ stopped.[/yellow]\n")
             del messages[turn_start:]
             continue
         footer.stop()  # clear the working line before printing the answer
@@ -840,7 +846,7 @@ def run_tui(
             console.print(f"[bold]halia ›[/bold] {escape(result.answer)}")
         if result.unverified:
             figures = ", ".join(result.unverified)
-            console.print(f"[yellow]⚠ unverified figures:[/yellow] {figures}")
+            console.print(f"[yellow]⚠️ unverified figures:[/yellow] {figures}")
         console.print()
 
         record = new_record(

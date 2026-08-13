@@ -579,10 +579,29 @@ def _make_approver() -> Any:
         if target_dir is not None and target_dir in trusted_dirs:
             return True  # already trusted this dir this session — no re-prompt
         console.print()
-        console.print(
-            f"[bold white on yellow] ⚠ approve [/bold white on yellow] [bold]{name}[/bold]"
-        )
-        if target_dir is not None:
+        if name == "run_command":
+            # Shell is the categorically higher-risk capability — a loud red header so it isn't
+            # waved through on reflex like a routine file write. (http_request etc. stay yellow:
+            # the SSRF/injection floor is the real guard there, and the operator owns the target.)
+            console.print(
+                "[bold white on red] 🚨 CAUTION [/bold white on red] "
+                "[bold]halia wants to run a shell command[/bold]"
+            )
+        else:
+            console.print(
+                f"[bold white on yellow] ✋ approve [/bold white on yellow] [bold]{name}[/bold]"
+            )
+        if name == "run_command":
+            import json as _json
+
+            try:
+                cmd = str(_json.loads(arguments).get("command", "")) or arguments
+            except (_json.JSONDecodeError, TypeError, AttributeError):
+                cmd = arguments
+            if len(cmd) > 220:
+                cmd = cmd[:220] + " …"
+            console.print(f"  → runs: {cmd}", style="bold red", markup=False, highlight=False)
+        elif target_dir is not None:
             # A file write: show the RESOLVED absolute destination and a diff if the file exists.
             console.print(f"  → writes to {_write_target_path(arguments)}", style="white")
             diff = _generate_diff(name, arguments)
@@ -828,14 +847,14 @@ def _present_result(
 
         cp = get_checkpoint(result.checkpoint_id)
         reason = cp.reason if cp else "approval required"
-        console.print(f"\n[yellow]⏸ paused[/yellow] — {reason}")
+        console.print(f"\n[yellow]⏸️ paused[/yellow] — {reason}")
         console.print(f"  checkpoint [bold]{result.checkpoint_id}[/bold]")
         console.print(
             f"  [dim]resume with[/dim] halia resume {result.checkpoint_id} --approve"
             f"  [dim]/[/dim] --deny"
         )
         if notify:
-            _notify_result(prompt, f"⏸ paused — {reason} (checkpoint {result.checkpoint_id})")
+            _notify_result(prompt, f"⏸️ paused — {reason} (checkpoint {result.checkpoint_id})")
         return
 
     console.print(result.answer)
@@ -843,7 +862,7 @@ def _present_result(
     if result.unverified:
         figures = ", ".join(result.unverified)
         console.print(
-            f"[yellow]⚠ Unverified figures[/yellow] (not produced by a tool): {figures}"
+            f"[yellow]⚠️ Unverified figures[/yellow] (not produced by a tool): {figures}"
         )
     elif result.corrections:
         console.print(
@@ -870,7 +889,7 @@ def _present_result(
     if notify:
         tail = ""
         if result.unverified:
-            tail = f"\n\n⚠ unverified figures: {', '.join(result.unverified)}"
+            tail = f"\n\n⚠️ unverified figures: {', '.join(result.unverified)}"
         _notify_result(prompt, f"✅ done\n\n{result.answer}{tail}")
 
 
@@ -1011,7 +1030,7 @@ def _chat_footer(result: Any) -> None:
     """Per-turn trust readout in chat (no run record here — the loop records the turn)."""
     if result.unverified:
         figures = ", ".join(result.unverified)
-        console.print(f"[yellow]⚠ unverified:[/yellow] {figures}")
+        console.print(f"[yellow]⚠️ unverified:[/yellow] {figures}")
     elif result.corrections:
         console.print(f"[dim]✓ regrounded ×{result.corrections}[/dim]")
 
@@ -1147,7 +1166,7 @@ def chat(
 
     pending = list_checkpoints(limit=3)
     if pending:
-        console.print(f"[yellow]⏸ {len(pending)} paused run(s) awaiting a decision:[/yellow]")
+        console.print(f"[yellow]⏸️ {len(pending)} paused run(s) awaiting a decision:[/yellow]")
         for cp in pending:
             console.print(f"  [bold]{cp.id}[/bold] [dim]{cp.reason}[/dim] — /resume {cp.id}")
         console.print()
@@ -1343,9 +1362,15 @@ def chat(
             user_content = user_input
         turn_start = len(messages)  # roll-back point for a clean Ctrl-C interrupt
         messages.append({"role": "user", "content": user_content})
+        from halia.memory.failures import failures_advisory
+
+        advisory = failures_advisory(user_input)  # Tier 2: warn on similar past failures
+        if advisory:
+            console.print("  🧠 [dim]recalling a similar past failure[/dim]")
         try:
             result = converse(
-                messages, config, registry, observer=_show_step, approver=approve
+                messages, config, registry, observer=_show_step, approver=approve,
+                turn_note=advisory,
             )
         except (ProviderError, RunLimitError) as exc:
             from halia.memory.failures import record_failure
@@ -1357,7 +1382,7 @@ def chat(
         except KeyboardInterrupt:
             # Ctrl-C mid-run: not a failure (don't record). Can land mid-tool, so roll the whole
             # turn back to a balanced state instead of crashing.
-            console.print("\n[yellow]⏹ stopped.[/yellow]\n")
+            console.print("\n[yellow]⏹️ stopped.[/yellow]\n")
             del messages[turn_start:]
             continue
         messages.append({"role": "assistant", "content": result.answer})
@@ -1831,7 +1856,7 @@ def runs(
         if r.corrections:
             tags.append(f"regrounded×{r.corrections}")
         if r.unverified:
-            tags.append(f"[yellow]⚠{len(r.unverified)} unverified[/yellow]")
+            tags.append(f"[yellow]⚠️{len(r.unverified)} unverified[/yellow]")
         tag_str = f" [dim]·[/dim] {' '.join(tags)}" if tags else ""
         console.print(
             f"[bold]{r.id}[/bold] [dim]{r.started_at}[/dim] "
@@ -1877,7 +1902,7 @@ def show(
     if record.unverified:
         figures = ", ".join(record.unverified)
         console.print(
-            f"\n[yellow]⚠ unverified figures[/yellow] (not produced by a tool): {figures}"
+            f"\n[yellow]⚠️ unverified figures[/yellow] (not produced by a tool): {figures}"
         )
     elif not record.corrections:
         console.print("\n[dim]✓ all figures grounded in tool output.[/dim]")

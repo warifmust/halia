@@ -116,6 +116,52 @@ def test_runlimit_leaves_balanced_messages() -> None:
     assert messages[-1]["role"] == "tool"  # stopped on a complete batch
 
 
+def test_converse_turn_note_injected_transiently_not_persisted() -> None:
+    # A per-turn note (e.g. a Tier-2 failure advisory) is injected into the request window,
+    # right before the last user message, but NEVER written into the caller's `messages`.
+    from halia.core.agent import converse
+
+    captured: dict[str, Any] = {}
+
+    class Recorder:
+        def chat(self, messages: list[Message], tools: Any = None) -> ChatResult:
+            captured["window"] = list(messages)
+            return ChatResult(content="ok", tool_calls=[])
+
+    messages: list[Message] = [
+        {"role": "system", "content": "S"},
+        {"role": "user", "content": "hello"},
+    ]
+    converse(messages, _CFG, default_registry(), provider=Recorder(), turn_note="ADVISORY: beware")
+
+    window = captured["window"]
+    last_user = max(i for i, m in enumerate(window) if m.get("role") == "user")
+    # injected as a system note immediately before the last user message
+    assert window[last_user - 1]["role"] == "system"
+    assert "ADVISORY: beware" in str(window[last_user - 1]["content"])
+    # and NOT persisted into the caller's list
+    assert len(messages) == 2
+    assert all("ADVISORY" not in str(m.get("content", "")) for m in messages)
+
+
+def test_converse_no_turn_note_leaves_window_unchanged() -> None:
+    from halia.core.agent import converse
+
+    captured: dict[str, Any] = {}
+
+    class Recorder:
+        def chat(self, messages: list[Message], tools: Any = None) -> ChatResult:
+            captured["window"] = list(messages)
+            return ChatResult(content="ok", tool_calls=[])
+
+    messages: list[Message] = [
+        {"role": "system", "content": "S"},
+        {"role": "user", "content": "hi"},
+    ]
+    converse(messages, _CFG, default_registry(), provider=Recorder())  # no turn_note
+    assert [m["role"] for m in captured["window"]] == ["system", "user"]
+
+
 def test_keyboard_interrupt_propagates_and_turn_rolls_back_balanced() -> None:
     # Ctrl-C mid-run: converse must PROPAGATE KeyboardInterrupt (not swallow it), and the CLI's
     # roll-back (del messages[turn_start:]) must restore a BALANCED message list. Regression for
