@@ -304,6 +304,26 @@ def _with_title(title: str, content: str) -> str:
     return f"# {title}\n\n{content}"
 
 
+def _check_wide_table(content: str) -> int | None:
+    """Return the max column count of markdown tables if any table has 5+ columns, else None.
+
+    PDF renders wide tables with truncated columns. This check lets make_pdf reject
+    them early and suggest make_excel instead.
+    """
+    max_cols = 0
+    for line in content.splitlines():
+        line = line.strip()
+        if line.startswith("|") and line.endswith("|"):
+            # Count columns: split by |, ignoring leading/trailing empty splits
+            cols = len([c for c in line.split("|") if c.strip() or c == ""])
+            # Actual column count is between the pipes: "|a|b|c|" → 3 cols
+            inner = line.strip("|")
+            cols = len(inner.split("|")) if inner else 0
+            if cols > max_cols:
+                max_cols = cols
+    return max_cols if max_cols >= 5 else None
+
+
 def render_markdown_pdf(content: str) -> FPDF:
     """Render a markdown subset to a clean FPDF document (pure — caller does the I/O)."""
     pdf = FPDF()
@@ -413,6 +433,17 @@ class MakePdf:
             return "error: 'path' is required"
         if not isinstance(content, str) or not content.strip():
             return "error: 'content' is required and must be non-empty"
+
+        # Wide-table guard: detect markdown tables with 5+ columns. PDF renders
+        # these with truncated, unreadable columns. Block and suggest xlsx instead.
+        _wide = _check_wide_table(content)
+        if _wide:
+            return (
+                f"This table has {_wide} columns. PDF will truncate them and the "
+                "content won't be readable. I recommend using Excel instead for "
+                "tables with 5+ columns. Should I use Excel, or do you still want PDF?"
+            )
+
         if isinstance(title, str):
             content = _with_title(title, content)
 

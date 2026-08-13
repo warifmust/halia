@@ -53,9 +53,11 @@ class LearnFromReference:
     name = "learn_from_reference"
     description = (
         "Read files the user has taught via /teach and extract their format/rules. "
-        "Call this at the start of a task to learn the required format. Files are "
-        "filtered by the current profile (qa, finance, etc.) — only relevant files "
-        "are loaded. Returns the content of each taught file."
+        "Call this FIRST at the start of every tool-using task — before planning or "
+        "executing. Returns each taught file's format spec (description) and content. "
+        "Study the format spec carefully: it lists headers, column types, formatting rules, "
+        "and constraints. Plan your task around that format. Files are filtered by the "
+        "current profile (qa, finance, etc.) — only relevant files are loaded."
     )
     dangerous = False
     untrusted = False  # these are user-taught, trusted files
@@ -105,7 +107,7 @@ class LearnFromReference:
             if ref.url:
                 header += f"\nsource: {ref.url}  (cite this URL when you use it)"
             if ref.description:
-                header += f"\n{ref.description}"
+                header += f"\nFORMAT SPEC:\n{ref.description}"
             results.append(f"{header}\n{content}")
 
         if not results:
@@ -121,8 +123,11 @@ class SaveReference:
         "the user says things like 'remember this OpenAPI spec', 'use this doc for tests', or "
         "'keep this for later'. Saves it so learn_from_reference can load it in future runs. "
         "`source` = a local file path OR an http(s) URL; optional `profile` to scope it "
-        "(qa/finance/…) and `description`. Confirm what you'll save with the user first — never "
-        "save silently."
+        "(qa/finance/…) and `description`. The `description` is critical — write a structured "
+        "format spec: list headers, column data types, formatting rules, and constraints. This "
+        "is what the model reads later to follow the format precisely. "
+        "Follow the LEARNING WORKFLOW: fetch the source, analyze it, present your findings to "
+        "the user, ask what to learn, then store with a rich description. Never save silently."
     )
     dangerous = True  # the approval gate IS the confirmation (mirrors save_procedure)
     untrusted = False

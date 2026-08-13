@@ -305,7 +305,10 @@ _QA_PROMPT = (
     "and then convert it (that duplicates work, bloats context, and leaves stray files). "
     "make_pdf/make_docx/make_pptx write only the target file; pass keep_source=true ONLY if the "
     "user also wants the editable markdown. Do not emit multiple formats unprompted; offer them "
-    "instead.\n"
+    "instead. CRITICAL: if the user requests PDF for a table with 5+ columns, you MUST "
+    "refuse to generate it directly — warn them about truncation and ask to use xlsx "
+    "instead. Only proceed with PDF if they explicitly confirm after your warning. "
+    "See the system prompt OUTPUT FORMAT rule.\n"
     "- If the user asks for test RESULTS but you cannot execute the cases (they are unit/"
     "code-level rather than live endpoints, or no server is available), SAY SO plainly BEFORE "
     "producing the deliverable — never hand over a plan that silently omits the results they "
@@ -337,6 +340,11 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "read_excel",
             "read_pdf",
             "query_db",
+            "fetch_url",  # read web pages (safe, read-only)
+            "web_search",  # discover sources via DuckDuckGo
+            "save_reference",  # remember a doc/URL for future runs
+            "learn_from_reference",  # load taught docs/specs before working
+            "ask_user",  # pause + ask the user for gated data / a decision
             "write_file",  # for report deliverables; still approval-gated
             "make_pdf",  # render the report to a printable PDF
             "make_docx",  # or an editable Word report
@@ -350,6 +358,8 @@ BUILTIN_PRESETS: dict[str, Profile] = {
         skills=[
             "web_search",  # discover sources
             "fetch_url",  # then retrieve them
+            "save_reference",  # remember a doc/URL for future runs
+            "learn_from_reference",  # load taught docs/specs before working
             "read_file",
             "read_pdf",
             "list_files",
@@ -377,6 +387,8 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "list_files",
             "web_search",  # look up facts for lessons
             "fetch_url",
+            "save_reference",  # remember a doc/URL for future runs
+            "learn_from_reference",  # load taught docs/specs before working
             "write_file",  # produce class lists, reports, worksheets; approval-gated
             "make_pdf",  # render materials/reports to printable PDF
             "make_pptx",  # or slide decks for teaching
@@ -393,6 +405,8 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "readability",  # check reading level for the audience
             "web_search",  # research topic / audience / competitors
             "fetch_url",
+            "save_reference",  # remember a doc/URL for future runs
+            "learn_from_reference",  # load taught docs/specs before working
             "read_file",
             "list_files",
             "write_file",  # draft copy / briefs; approval-gated
@@ -417,6 +431,11 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "read_excel",
             "query_db",  # analyse databases
             "calculate",
+            "fetch_url",  # read web pages (safe, read-only)
+            "web_search",  # discover sources via DuckDuckGo
+            "save_reference",  # remember a doc/URL for future runs
+            "learn_from_reference",  # load taught docs/specs before working
+            "ask_user",  # pause + ask the user for gated data / a decision
             "make_chart",  # visualise
             "make_diagram",  # ER / data-flow / pipeline diagrams (Mermaid)
             "make_er_diagram",  # ER diagram GENERATED from the real schema/files (grounded)
@@ -441,6 +460,8 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "list_files",
             "web_search",  # look up the standard/regulation
             "fetch_url",
+            "save_reference",  # remember a doc/URL for future runs
+            "learn_from_reference",  # load taught docs/specs before working
             "write_file",
             "make_docx",  # gap-analysis reports
             "make_pdf",
@@ -468,6 +489,8 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "list_files",
             "web_search",  # CX benchmarks / best practice
             "fetch_url",
+            "save_reference",  # remember a doc/URL for future runs
+            "learn_from_reference",  # load taught docs/specs before working
             "write_file",  # deliverables; approval-gated
             "make_pptx",  # findings decks
             "make_pdf",
@@ -486,6 +509,8 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "save_procedure",  # remember a taught test procedure from chat (approval-gated)
             "save_reference",  # remember a doc/URL (e.g. an OpenAPI spec) for future runs
             "learn_from_reference",  # load taught docs/specs before working
+            "fetch_url",  # read web pages (safe, read-only) — never use http_request for this
+            "web_search",  # discover sources via DuckDuckGo
             "ask_user",  # pause + ask the tester for a token / gated data / a decision
             "http_request",  # call/test API endpoints (approval-gated)
             "openapi_lookup",  # resolve a spec/docs URL → real path/method/params (no guessing)
