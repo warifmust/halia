@@ -19,6 +19,14 @@ from halia.permissions.network import EgressDenied, check_egress
 
 _DEFAULT_MAX_CHARS = 5000
 _TIMEOUT = 20.0
+# A real browser User-Agent so read tools (fetch_url / web_search) reliably reach pages that
+# block non-browser clients (Cloudflare etc. flag bot UAs like `python-httpx`). This is a READ
+# tool sending a polite, common UA — distinct from http_request, which sends only the tester's
+# headers verbatim (fidelity for API testing).
+_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+)
 
 
 class _TextExtractor(HTMLParser):
@@ -59,7 +67,7 @@ def fetch_url_raw(url: str, client: httpx.Client | None = None) -> tuple[str, st
     owns = client is None
     http = client or httpx.Client(timeout=_TIMEOUT, follow_redirects=True)
     try:
-        resp = http.get(url, headers={"User-Agent": "halia/0.1"})
+        resp = http.get(url, headers={"User-Agent": _BROWSER_UA})
     finally:
         if owns:
             http.close()
@@ -204,7 +212,7 @@ class WebSearch:
 
         try:
             resp = self._client.get(
-                _SEARCH_URL, params={"q": query}, headers={"User-Agent": "Mozilla/5.0 (halia)"}
+                _SEARCH_URL, params={"q": query}, headers={"User-Agent": _BROWSER_UA}
             )
         except httpx.HTTPError as exc:
             return f"error searching for {query!r}: {exc}"

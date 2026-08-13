@@ -241,6 +241,19 @@ def test_json_invalid_string_reports_clear_error() -> None:
     assert out.startswith("error:") and "valid JSON" in out
 
 
+def test_http_request_does_not_inject_browser_ua() -> None:
+    # Fidelity: http_request sends only the tester's headers — no hidden browser UA (that's
+    # fetch_url's job). The tester must know exactly what's on the wire.
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["ua"] = request.headers.get("user-agent", "")
+        return httpx.Response(200, text="ok")
+
+    _skill(handler).run({"url": "https://example.com/api"})
+    assert "Mozilla" not in seen["ua"]  # no browser UA silently added
+
+
 def test_dangerous_and_wired() -> None:
     from halia.presets import get_preset
     from halia.skills import DEFAULT_SKILLS, available_skills, default_registry

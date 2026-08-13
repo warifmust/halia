@@ -35,6 +35,21 @@ def test_fetch_url_requires_http_scheme() -> None:
     assert "http" in out.lower()
 
 
+def test_fetch_url_sends_browser_user_agent() -> None:
+    # A read tool must send a real browser UA so sites that block bot UAs (Cloudflare etc.)
+    # don't 403 it — its whole job is reading human-facing pages.
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["ua"] = request.headers.get("user-agent", "")
+        return httpx.Response(200, text="<p>ok</p>")
+
+    _fetch(handler).run({"url": "https://example.com"})
+    assert seen["ua"].startswith("Mozilla/5.0")
+    assert "Chrome" in seen["ua"]
+    assert "halia" not in seen["ua"].lower()  # no longer the fragile halia/0.1 UA
+
+
 def test_fetch_url_requires_url() -> None:
     assert "required" in FetchUrl().run({})
 
