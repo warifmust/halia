@@ -224,7 +224,7 @@ class TeachHistory:
             last = events[0]
             if last.columns:
                 similar = find_similar_teaches(
-                    last.columns, profile=profile or None
+                    last.columns, profile=str(profile or "")
                 )
                 if len(similar) >= 2:
                     lines.append("")

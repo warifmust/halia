@@ -144,7 +144,7 @@ class BrowserOpen:
 
         try:
             with _lock:
-                return _run_in_thread(_open)
+                return _run_in_thread(_open)  # type: ignore[no-any-return]
         except Exception as exc:
             _close_browser()
             return f"error opening {url}: {exc}"
@@ -192,7 +192,7 @@ class BrowserNavigate:
 
         try:
             with _lock:
-                return _run_in_thread(_navigate)
+                return _run_in_thread(_navigate)  # type: ignore[no-any-return]
         except Exception as exc:
             return f"error navigating to {url}: {exc}"
 
@@ -240,7 +240,7 @@ class BrowserClick:
 
         try:
             with _lock:
-                return _run_in_thread(_click)
+                return _run_in_thread(_click)  # type: ignore[no-any-return]
         except Exception as exc:
             return f"error clicking: {exc}"
 
@@ -304,7 +304,7 @@ class BrowserType:
 
         try:
             with _lock:
-                return _run_in_thread(_type)
+                return _run_in_thread(_type)  # type: ignore[no-any-return]
         except Exception as exc:
             return f"error typing: {exc}"
 
@@ -350,7 +350,7 @@ class BrowserScreenshot:
 
         try:
             with _lock:
-                return _run_in_thread(_screenshot)
+                return _run_in_thread(_screenshot)  # type: ignore[no-any-return]
         except Exception as exc:
             return f"error taking screenshot: {exc}"
 
@@ -390,7 +390,7 @@ class BrowserRead:
 
         try:
             with _lock:
-                return _run_in_thread(_read)
+                return _run_in_thread(_read)  # type: ignore[no-any-return]
         except Exception as exc:
             return f"error reading page: {exc}"
 
@@ -445,7 +445,7 @@ class BrowserScroll:
 
         try:
             with _lock:
-                return _run_in_thread(_scroll)
+                return _run_in_thread(_scroll)  # type: ignore[no-any-return]
         except Exception as exc:
             return f"error scrolling: {exc}"
 
@@ -499,7 +499,7 @@ class BrowserWait:
 
         try:
             with _lock:
-                return _run_in_thread(_wait)
+                return _run_in_thread(_wait)  # type: ignore[no-any-return]
         except Exception as exc:
             return f"error waiting: {exc}"
 
