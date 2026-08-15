@@ -59,7 +59,7 @@ python_version = "3.11"
 strict = true
 
 [[tool.mypy.overrides]]
-module = ["openpyxl.*", "fpdf.*", "pptx.*", "docx.*"]
+module = ["openpyxl.*", "fpdf.*", "pptx.*", "docx.*", "playwright.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
