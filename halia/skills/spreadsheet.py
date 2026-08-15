@@ -61,6 +61,69 @@ def _valid_rows(rows: Any) -> bool:
     return isinstance(rows, list) and len(rows) > 0 and all(isinstance(r, list) for r in rows)
 
 
+def _check_format_match(headers: list[str]) -> str | None:
+    """Check if the header row matches any taught reference format spec.
+
+    Returns a warning string if there's a mismatch, None if headers match or no
+    reference is found. The warning tells the model to inform the user.
+    """
+    from halia.references import list_ref_files
+
+    refs = list_ref_files()
+    if not refs:
+        return None
+
+    headers_lower = [h.strip().lower() for h in headers]
+    for ref in refs:
+        if not ref.description:
+            continue
+        # Extract column names from the format spec description
+        # Look for patterns like "Headers: A, B, C" or "columns: A, B, C"
+        desc = ref.description.lower()
+        for prefix in ("headers:", "columns:", "format:", "fields:"):
+            if prefix in desc:
+                idx = desc.index(prefix) + len(prefix)
+                chunk = desc[idx:idx + 500].split("\n")[0].strip()
+                # Strip parenthesized type info before splitting
+                # e.g. "test id (string, pattern tc-xxx)" → "test id"
+                import re as _re
+                chunk = _re.sub(r"\([^)]*\)", "", chunk)
+                # Extract comma-separated or pipe-separated column names
+                if "," in chunk:
+                    spec_cols = [c.strip().strip('"').strip("'")
+                                 for c in chunk.split(",")]
+                elif "|" in chunk:
+                    spec_cols = [c.strip().strip('"').strip("'")
+                                 for c in chunk.split("|")]
+                else:
+                    continue
+                spec_cols = [c for c in spec_cols if c and len(c) > 1]
+                if not spec_cols:
+                    continue
+                spec_lower = [c.lower() for c in spec_cols]
+                # Check if headers roughly match the spec
+                if len(headers_lower) != len(spec_lower):
+                    return (
+                        f"Format note: reference '{ref.filename}' has "
+                        f"{len(spec_lower)} columns ({', '.join(spec_cols[:5])}...) "
+                        f"but your output has {len(headers_lower)} columns. "
+                        f"Ensure the format matches what was taught."
+                    )
+                # Check column names (fuzzy — check if most match)
+                matches = sum(
+                    1 for h, s in zip(headers_lower, spec_lower, strict=True)
+                    if h in s or s in h
+                )
+                if matches < len(spec_lower) * 0.5:
+                    return (
+                        f"Format note: reference '{ref.filename}' expects "
+                        f"columns like {', '.join(spec_cols[:5])}... but your "
+                        f"output has {', '.join(headers[:5])}... "
+                        f"Ensure the format matches what was taught."
+                    )
+    return None
+
+
 class MakeExcel:
     name = "make_excel"
     description = (
@@ -115,6 +178,16 @@ class MakeExcel:
         except PermissionDenied as exc:
             return f"blocked: {exc}"
 
+        # Format validation: check headers against taught reference specs.
+        warnings: list[str] = []
+        for _, sheet_rows in plan:
+            if sheet_rows and isinstance(sheet_rows[0], list) and sheet_rows[0]:
+                fmt_warn = _check_format_match(
+                    [str(h) for h in sheet_rows[0]]
+                )
+                if fmt_warn:
+                    warnings.append(fmt_warn)
+
         wb = Workbook()
         wb.remove(wb.active)  # drop the default sheet; we add our own
         for name, sheet_rows in plan:
@@ -124,4 +197,7 @@ class MakeExcel:
         except OSError as exc:
             return f"error writing {path}: {exc}"
         total = sum(len(r) for _, r in plan)
-        return f"wrote {len(plan)} sheet(s), {total} rows to {target}"
+        result = f"wrote {len(plan)} sheet(s), {total} rows to {target}"
+        if warnings:
+            result += "\n" + "\n".join(warnings)
+        return result

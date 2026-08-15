@@ -421,6 +421,7 @@ def run_tui(
     streaming = {"on": False}  # is an answer currently streaming to the screen this turn?
     compact_always = {"on": False}  # remembers an "always compact" choice for the session
     pending_image_id: str | None = None  # set by /image, consumed by next user message
+    pending_teach_paste: tuple[str, str] | None = None  # (profile, description) from /teach --paste
 
     def compact_consent() -> bool:
         # Asked when the window nears full (~85%). yes = once, always = auto for the session,
@@ -456,30 +457,48 @@ def run_tui(
         n = sum(1 for m in dropped if m.get("role") == "user")
         console.print(f"[dim]🗜 compacted {n} earlier turn(s) into a summary.[/dim]")
 
-    def _handle_teach(user_input: str) -> None:
-        """Handle /teach <path> [--profile <name>] [--description <text>]."""
+    def _handle_teach(user_input: str) -> tuple[bool, str, str]:
+        """Handle /teach <path> [--profile <name>] [--description <text>].
+
+        Returns (is_paste_mode, profile, description) if --paste is detected
+        WITHOUT inline content. If --paste has inline content, stores directly.
+        """
         from halia.references import store_reference
 
         parts = user_input.split(maxsplit=1)
         if len(parts) < 2 or not parts[1].strip():
             console.print(
-                "[yellow]Usage:[/yellow] /teach <path> [--profile qa] [--description \"text\"]\n"
-                "  Stores a file as a reference format. The model will follow it.\n"
+                "[yellow]Usage:[/yellow] /teach <path> [--profile qa] "
+                "[--description \"text\"]\n"
+                "  Stores a file as a reference format.\n"
+                "[yellow]Paste mode:[/yellow] /teach --paste <content> "
+                "[--profile qa] [--description \"text\"]\n"
+                "  Store pasted content directly as a reference.\n"
             )
-            return
+            return False, "", ""
         # Parse arguments
         args = parts[1].strip()
         path = ""
         profile = ""
         description = ""
+        paste_mode = False
+        paste_content = ""
         tokens = args.split()
         i = 0
         while i < len(tokens):
-            if tokens[i] == "--profile" and i + 1 < len(tokens):
+            if tokens[i] == "--paste":
+                paste_mode = True
+                i += 1
+                # Collect everything until the next --flag as content
+                content_parts = []
+                while i < len(tokens) and not tokens[i].startswith("--"):
+                    content_parts.append(tokens[i])
+                    i += 1
+                paste_content = " ".join(content_parts)
+            elif tokens[i] == "--profile" and i + 1 < len(tokens):
                 profile = tokens[i + 1]
                 i += 2
             elif tokens[i] == "--description" and i + 1 < len(tokens):
-                # Collect everything after --description as the description
                 description = " ".join(tokens[i + 1:])
                 break
             elif not tokens[i].startswith("--"):
@@ -487,9 +506,49 @@ def run_tui(
                 i += 1
             else:
                 i += 1
+
+        # Paste mode with inline content: store immediately
+        if paste_mode and paste_content:
+            import tempfile
+
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".md", delete=False, encoding="utf-8"
+                ) as tmp:
+                    tmp.write(paste_content)
+                    tmp_path = tmp.name
+                ref = store_reference(
+                    tmp_path, profile=profile, description=description
+                )
+                import os
+                os.unlink(tmp_path)
+
+                tag = f" → [cyan]{ref.profile}[/cyan]" if ref.profile else ""
+                size_kb = f"{ref.size_bytes / 1024:.0f}KB"
+                console.print(
+                    f"[green]✓[/green] Reference stored: "
+                    f"[bold]{ref.filename}[/bold]"
+                    f" ({size_kb}, {ref.file_type}){tag}"
+                )
+                console.print(
+                    "  [dim]The model will follow this format "
+                    "when working.[/dim]\n"
+                )
+            except Exception as exc:  # noqa: BLE001
+                console.print(f"[red]error:[/red] {exc}\n")
+            return False, "", ""
+
+        # Paste mode without content: wait for next message
+        if paste_mode:
+            console.print(
+                "[cyan]Paste mode:[/cyan] Paste or type your content now. "
+                "Send an empty line to finish.\n"
+            )
+            return True, profile, description
+
         if not path:
             console.print("[yellow]Usage:[/yellow] /teach <path> [--profile qa]\n")
-            return
+            return False, "", ""
         try:
             ref = store_reference(path, profile=profile, description=description)
             tag = f" → [cyan]{ref.profile}[/cyan]" if ref.profile else ""
@@ -503,6 +562,7 @@ def run_tui(
             )
         except (FileNotFoundError, ValueError) as exc:
             console.print(f"[red]error:[/red] {exc}\n")
+        return False, "", ""
 
     def _handle_files(user_input: str) -> None:
         """Handle /files [search <query>] to list or search taught files."""
@@ -659,7 +719,9 @@ def run_tui(
                 console.print(f"[red]error:[/red] {exc}\n")
             continue
         if user_input.lower().startswith("/teach"):
-            _handle_teach(user_input)
+            is_paste, paste_profile, paste_desc = _handle_teach(user_input)
+            if is_paste:
+                pending_teach_paste = (paste_profile, paste_desc)
             continue
         if user_input.lower().startswith("/files"):
             _handle_files(user_input)
@@ -705,6 +767,43 @@ def run_tui(
             user_input = to_run  # a `/procedure run` — fall through to execute it
 
         turn_start = len(messages)  # so a failed turn can be rolled back to a valid state
+
+        # If a paste teach is pending, store the content as a reference.
+        if pending_teach_paste is not None:
+            import tempfile
+
+            paste_profile, paste_desc = pending_teach_paste
+            pending_teach_paste = None  # consumed
+            if not user_input.strip():
+                console.print("[dim]paste cancelled — empty content.[/dim]\n")
+                continue
+            try:
+                from halia.references import store_reference
+
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".md", delete=False, encoding="utf-8"
+                ) as tmp:
+                    tmp.write(user_input)
+                    tmp_path = tmp.name
+                ref = store_reference(
+                    tmp_path, profile=paste_profile, description=paste_desc
+                )
+                import os
+                os.unlink(tmp_path)
+
+                tag = f" → [cyan]{ref.profile}[/cyan]" if ref.profile else ""
+                size_kb = f"{ref.size_bytes / 1024:.0f}KB"
+                console.print(
+                    f"[green]✓[/green] Pasted content stored as reference: "
+                    f"[bold]{ref.filename}[/bold] ({size_kb}, {ref.file_type}){tag}"
+                )
+                console.print(
+                    "  [dim]The model will follow this format when working.[/dim]\n"
+                )
+            except Exception as exc:  # noqa: BLE001
+                console.print(f"[red]error:[/red] {exc}\n")
+            continue
+
         # If an image was uploaded via /image, attach it to this message.
         if pending_image_id is not None:
             from halia.images import get_image_path

@@ -16,3 +16,9 @@ dist/
 
 # local working docs (project notes, roadmap, backlog — kept out of the repo)
 .claude/
+
+# generated output files
+*.xlsx
+*.pdf
+*.pptx
+*.docx
