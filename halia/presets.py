@@ -343,6 +343,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "fetch_url",  # read web pages (safe, read-only)
             "web_search",  # discover sources via DuckDuckGo
             "save_reference",  # remember a doc/URL for future runs
+            "teach_history",  # show format teaching history
             "learn_from_reference",  # load taught docs/specs before working
             "ask_user",  # pause + ask the user for gated data / a decision
             "write_file",  # for report deliverables; still approval-gated
@@ -359,6 +360,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "web_search",  # discover sources
             "fetch_url",  # then retrieve them
             "save_reference",  # remember a doc/URL for future runs
+            "teach_history",  # show format teaching history
             "learn_from_reference",  # load taught docs/specs before working
             "read_file",
             "read_pdf",
@@ -388,6 +390,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "web_search",  # look up facts for lessons
             "fetch_url",
             "save_reference",  # remember a doc/URL for future runs
+            "teach_history",  # show format teaching history
             "learn_from_reference",  # load taught docs/specs before working
             "write_file",  # produce class lists, reports, worksheets; approval-gated
             "make_pdf",  # render materials/reports to printable PDF
@@ -406,6 +409,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "web_search",  # research topic / audience / competitors
             "fetch_url",
             "save_reference",  # remember a doc/URL for future runs
+            "teach_history",  # show format teaching history
             "learn_from_reference",  # load taught docs/specs before working
             "read_file",
             "list_files",
@@ -434,6 +438,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "fetch_url",  # read web pages (safe, read-only)
             "web_search",  # discover sources via DuckDuckGo
             "save_reference",  # remember a doc/URL for future runs
+            "teach_history",  # show format teaching history
             "learn_from_reference",  # load taught docs/specs before working
             "ask_user",  # pause + ask the user for gated data / a decision
             "make_chart",  # visualise
@@ -461,6 +466,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "web_search",  # look up the standard/regulation
             "fetch_url",
             "save_reference",  # remember a doc/URL for future runs
+            "teach_history",  # show format teaching history
             "learn_from_reference",  # load taught docs/specs before working
             "write_file",
             "make_docx",  # gap-analysis reports
@@ -490,6 +496,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "web_search",  # CX benchmarks / best practice
             "fetch_url",
             "save_reference",  # remember a doc/URL for future runs
+            "teach_history",  # show format teaching history
             "learn_from_reference",  # load taught docs/specs before working
             "write_file",  # deliverables; approval-gated
             "make_pptx",  # findings decks
@@ -508,6 +515,7 @@ BUILTIN_PRESETS: dict[str, Profile] = {
             "check_expectation",  # deterministic PASS/FAIL verdict on a comparison
             "save_procedure",  # remember a taught test procedure from chat (approval-gated)
             "save_reference",  # remember a doc/URL (e.g. an OpenAPI spec) for future runs
+            "teach_history",  # show format teaching history
             "learn_from_reference",  # load taught docs/specs before working
             "fetch_url",  # read web pages (safe, read-only) — never use http_request for this
             "web_search",  # discover sources via DuckDuckGo

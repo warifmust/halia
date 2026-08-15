@@ -511,6 +511,8 @@ def run_tui(
         if paste_mode and paste_content:
             import tempfile
 
+            # Use paste content as description if none provided
+            desc = description or paste_content
             try:
                 with tempfile.NamedTemporaryFile(
                     mode="w", suffix=".md", delete=False, encoding="utf-8"
@@ -518,7 +520,7 @@ def run_tui(
                     tmp.write(paste_content)
                     tmp_path = tmp.name
                 ref = store_reference(
-                    tmp_path, profile=profile, description=description
+                    tmp_path, profile=profile, description=desc
                 )
                 import os
                 os.unlink(tmp_path)
@@ -533,6 +535,17 @@ def run_tui(
                 console.print(
                     "  [dim]The model will follow this format "
                     "when working.[/dim]\n"
+                )
+                # Record teach event for analytics
+                from halia.teach_log import (
+                    extract_columns_from_description,
+                    record_teach,
+                )
+
+                cols = extract_columns_from_description(desc)
+                record_teach(
+                    source="paste", columns=cols,
+                    profile=profile, ref_id=ref.id,
                 )
             except Exception as exc:  # noqa: BLE001
                 console.print(f"[red]error:[/red] {exc}\n")
@@ -551,6 +564,20 @@ def run_tui(
             return False, "", ""
         try:
             ref = store_reference(path, profile=profile, description=description)
+
+            # Record teach event for analytics
+            from halia.teach_log import (
+                extract_columns_from_description,
+                record_teach,
+            )
+
+            source_type = "url" if path.startswith(("http://", "https://")) else path
+            cols = extract_columns_from_description(ref.description or description)
+            record_teach(
+                source=source_type, columns=cols,
+                profile=profile, ref_id=ref.id,
+            )
+
             tag = f" → [cyan]{ref.profile}[/cyan]" if ref.profile else ""
             size_kb = f"{ref.size_bytes / 1024:.0f}KB"
             console.print(

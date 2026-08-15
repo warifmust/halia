@@ -132,6 +132,17 @@ CREATE TABLE IF NOT EXISTS failures (
     profile    TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_failures_created_at ON failures (created_at DESC);
+
+CREATE TABLE IF NOT EXISTS teach_log (
+    id         TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    source     TEXT NOT NULL,
+    columns    TEXT NOT NULL DEFAULT '',
+    profile    TEXT NOT NULL DEFAULT '',
+    ref_id     TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_teach_log_created_at ON teach_log (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_teach_log_profile ON teach_log (profile);
 """
 
 

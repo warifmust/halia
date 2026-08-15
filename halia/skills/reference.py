@@ -169,3 +169,68 @@ class SaveReference:
             )
         except (FileNotFoundError, ValueError, OSError, EgressDenied, httpx.HTTPError) as exc:
             return f"error: {exc}"
+
+
+class TeachHistory:
+    name = "teach_history"
+    description = (
+        "Show the history of format teaching events. Lists what the user has "
+        "taught (files, URLs, pasted content), when, and which columns were "
+        "captured. Use this to detect patterns: if the user taught similar "
+        "formats multiple times, suggest consolidating them."
+    )
+    dangerous = False
+    untrusted = False
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "profile": {
+                "type": "string",
+                "description": "Filter by profile (qa, finance, etc.). Empty = all.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max events to return (default 10).",
+            },
+        },
+    }
+
+    def run(self, args: dict[str, Any]) -> str:
+        from halia.teach_log import find_similar_teaches, list_teach_history
+
+        profile = args.get("profile", "")
+        limit = args.get("limit", 10)
+
+        if not isinstance(limit, int) or limit <= 0:
+            limit = 10
+
+        events = list_teach_history(profile=profile or None, limit=limit)
+        if not events:
+            if profile:
+                return f"no teach events found for profile '{profile}'."
+            return "no teach events found."
+
+        lines = [f"Teach history ({len(events)} events):"]
+        for e in events:
+            date = e.created_at[:10] if e.created_at else "?"
+            cols = e.columns[:50] + "..." if len(e.columns) > 50 else e.columns
+            cols = cols or "(no columns captured)"
+            tag = f" [{e.profile}]" if e.profile else ""
+            lines.append(f"  {date} | {e.source:20}{tag} | {cols}")
+
+        # Check for similar patterns
+        if len(events) >= 2:
+            last = events[0]
+            if last.columns:
+                similar = find_similar_teaches(
+                    last.columns, profile=profile or None
+                )
+                if len(similar) >= 2:
+                    lines.append("")
+                    lines.append(
+                        f"Note: {len(similar)} similar formats found. "
+                        "Consider consolidating into one reference."
+                    )
+
+        return "\n".join(lines)
