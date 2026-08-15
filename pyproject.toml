@@ -16,6 +16,11 @@ dependencies = [
     "prompt-toolkit>=3.0",
 ]
 
+[project.optional-dependencies]
+browser = [
+    "playwright>=1.49",
+]
+
 [project.scripts]
 halia = "halia.cli.main:app"
 

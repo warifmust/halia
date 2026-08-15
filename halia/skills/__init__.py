@@ -33,6 +33,23 @@ from halia.skills.textmetrics import CountText
 from halia.skills.web import FetchUrl, WebSearch
 from halia.skills.word import ReadDocx
 
+# Browser automation (optional — requires playwright)
+try:
+    from halia.skills.browser import (
+        BrowserClick,
+        BrowserClose,
+        BrowserNavigate,
+        BrowserOpen,
+        BrowserRead,
+        BrowserScreenshot,
+        BrowserScroll,
+        BrowserType,
+        BrowserWait,
+    )
+    _HAS_BROWSER = True
+except ImportError:
+    _HAS_BROWSER = False
+
 # The full catalogue of skills, by name.
 _SKILL_FACTORIES: dict[str, type] = {
     "read_file": ReadFile,
@@ -75,6 +92,20 @@ _SKILL_FACTORIES: dict[str, type] = {
     "save_reference": SaveReference,
     "teach_history": TeachHistory,
 }
+
+# Browser automation skills (optional — only available if playwright is installed)
+if _HAS_BROWSER:
+    _SKILL_FACTORIES.update({
+        "browser_open": BrowserOpen,
+        "browser_navigate": BrowserNavigate,
+        "browser_click": BrowserClick,
+        "browser_type": BrowserType,
+        "browser_screenshot": BrowserScreenshot,
+        "browser_read": BrowserRead,
+        "browser_scroll": BrowserScroll,
+        "browser_wait": BrowserWait,
+        "browser_close": BrowserClose,
+    })
 
 # Always included, regardless of profile: deterministic compute is part of the
 # trust floor — without it the model would do arithmetic in its head.

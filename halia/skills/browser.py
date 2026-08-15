@@ -1,0 +1,523 @@
+"""Browser automation skills — Playwright-based browser control.
+
+Provides browser_open, browser_navigate, browser_click, browser_type,
+browser_screenshot, browser_read, and browser_close skills.
+
+Phase 1 of the CUA (Computer Use Agent) implementation — the "hands" that
+CUA will指挥 in Phase 2.
+
+Trust note: browser actions are potentially dangerous (navigating to unknown
+sites, clicking elements, typing). All write actions require approval.
+Read-only actions (screenshot, read) are safe.
+"""
+
+from __future__ import annotations
+
+import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Any
+
+# Browser state — protected by _lock for thread safety
+_lock = threading.Lock()
+_playwright = None
+_browser = None
+_context = None
+_page = None
+_executor = ThreadPoolExecutor(max_workers=1)  # single-thread for Playwright
+
+
+def _run_in_thread(func: Any, *args: Any, **kwargs: Any) -> Any:
+    """Run a function in the Playwright thread to avoid event loop conflicts."""
+    future = _executor.submit(func, *args, **kwargs)
+    return future.result(timeout=60)
+
+
+def _ensure_playwright_sync() -> Any:
+    """Lazily import and initialize Playwright (sync, in thread)."""
+    global _playwright
+    if _playwright is None:
+        try:
+            from playwright.sync_api import sync_playwright
+            _playwright = sync_playwright().start()
+        except ImportError as exc:
+            raise ImportError(
+                "playwright is not installed. Install with: "
+                "pip install halia[browser] && playwright install chromium"
+            ) from exc
+    return _playwright
+
+
+def _ensure_page_sync(headless: bool = True) -> Any:
+    """Ensure we have an active browser page (sync, in thread)."""
+    global _browser, _context, _page
+    pw = _ensure_playwright_sync()
+    if _page is None or _page.is_closed():
+        if _browser is None or not _browser.is_connected():
+            _browser = pw.chromium.launch(headless=headless)
+            _context = _browser.new_context()
+            _page = _context.new_page()
+    return _page
+
+
+def _close_browser_sync() -> None:
+    """Close the browser and clean up (sync, in thread)."""
+    global _browser, _context, _page
+    if _page and not _page.is_closed():
+        _page.close()
+    _page = None
+    if _context:
+        _context.close()
+    _context = None
+    if _browser and _browser.is_connected():
+        _browser.close()
+    _browser = None
+
+
+def _ensure_page(headless: bool = True) -> Any:
+    """Thread-safe wrapper for _ensure_page_sync."""
+    with _lock:
+        return _run_in_thread(_ensure_page_sync, headless)
+
+
+def _close_browser() -> None:
+    """Thread-safe wrapper for _close_browser_sync."""
+    with _lock:
+        _run_in_thread(_close_browser_sync)
+
+
+class BrowserOpen:
+    name = "browser_open"
+    description = (
+        "Open a URL in the browser and return the page content. "
+        "Use this to visit a website, read its content, and prepare for "
+        "further interaction. Returns the page title and main text content. "
+        "Use headless=false to see the browser window."
+    )
+    dangerous = True  # navigates to external sites
+    untrusted = True  # content from external sites
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "url": {"type": "string", "description": "The URL to open."},
+            "headless": {
+                "type": "boolean",
+                "description": "Run in background (default: true). "
+                "Set to false to see the browser window.",
+            },
+            "wait": {
+                "type": "string",
+                "enum": ["load", "domcontentloaded", "networkidle"],
+                "description": "Wait condition (default: load).",
+            },
+        },
+        "required": ["url"],
+    }
+
+    def run(self, args: dict[str, Any]) -> str:
+        url = args.get("url", "")
+        if not isinstance(url, str) or not url.strip():
+            return "error: 'url' is required"
+        url = url.strip()
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+
+        headless = args.get("headless", True)
+        if not isinstance(headless, bool):
+            headless = True
+
+        wait = args.get("wait", "load")
+        if wait not in ("load", "domcontentloaded", "networkidle"):
+            wait = "load"
+
+        def _open() -> str:
+            page = _ensure_page_sync(headless=headless)
+            page.goto(url, wait_until=wait)
+            title = page.title()
+            text = page.evaluate("() => document.body.innerText")
+            if len(text) > 10000:
+                text = text[:10000] + "... [truncated]"
+            mode = "headless" if headless else "headful (visible window)"
+            return f"Page: {title}\nURL: {page.url}\nMode: {mode}\n\n{text}"
+
+        try:
+            with _lock:
+                return _run_in_thread(_open)
+        except Exception as exc:
+            _close_browser()
+            return f"error opening {url}: {exc}"
+
+
+class BrowserNavigate:
+    name = "browser_navigate"
+    description = (
+        "Navigate the current browser page to a new URL. "
+        "Requires browser_open to have been called first."
+    )
+    dangerous = True
+    untrusted = True
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "url": {"type": "string", "description": "The URL to navigate to."},
+            "wait": {
+                "type": "string",
+                "enum": ["load", "domcontentloaded", "networkidle"],
+                "description": "Wait condition (default: load).",
+            },
+        },
+        "required": ["url"],
+    }
+
+    def run(self, args: dict[str, Any]) -> str:
+        url = args.get("url", "")
+        if not isinstance(url, str) or not url.strip():
+            return "error: 'url' is required"
+        url = url.strip()
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+
+        wait = args.get("wait", "load")
+        if wait not in ("load", "domcontentloaded", "networkidle"):
+            wait = "load"
+
+        def _navigate() -> str:
+            page = _ensure_page_sync()
+            page.goto(url, wait_until=wait)
+            title = page.title()
+            return f"Navigated to: {title} ({page.url})"
+
+        try:
+            with _lock:
+                return _run_in_thread(_navigate)
+        except Exception as exc:
+            return f"error navigating to {url}: {exc}"
+
+
+class BrowserClick:
+    name = "browser_click"
+    description = (
+        "Click an element on the current page. Can click by text content, "
+        "CSS selector, or coordinates. Requires browser_open first."
+    )
+    dangerous = True
+    untrusted = False
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "text": {"type": "string", "description": "Click element containing this text."},
+            "selector": {"type": "string", "description": "CSS selector of element to click."},
+            "x": {"type": "number", "description": "X coordinate to click."},
+            "y": {"type": "number", "description": "Y coordinate to click."},
+        },
+    }
+
+    def run(self, args: dict[str, Any]) -> str:
+        text = args.get("text")
+        selector = args.get("selector")
+        x = args.get("x")
+        y = args.get("y")
+
+        if not any([text, selector, x is not None]):
+            return "error: provide 'text', 'selector', or 'x'/'y' coordinates"
+
+        def _click() -> str:
+            page = _ensure_page_sync()
+            if text:
+                page.get_by_text(text, exact=False).first.click()
+                return f"Clicked element with text: {text}"
+            elif selector:
+                page.locator(selector).first.click()
+                return f"Clicked element: {selector}"
+            elif x is not None and y is not None:
+                page.mouse.click(float(x), float(y))
+                return f"Clicked at ({x}, {y})"
+            return "error: no valid click target"
+
+        try:
+            with _lock:
+                return _run_in_thread(_click)
+        except Exception as exc:
+            return f"error clicking: {exc}"
+
+
+class BrowserType:
+    name = "browser_type"
+    description = (
+        "Type text into an input field or text area. Can target by placeholder, "
+        "label, selector, or coordinates. Requires browser_open first."
+    )
+    dangerous = True
+    untrusted = False
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "text": {"type": "string", "description": "Text to type."},
+            "placeholder": {"type": "string", "description": "Placeholder text of input field."},
+            "label": {"type": "string", "description": "Label text of input field."},
+            "selector": {"type": "string", "description": "CSS selector of input field."},
+            "press_enter": {
+                "type": "boolean",
+                "description": "Press Enter after typing (default: false).",
+            },
+        },
+        "required": ["text"],
+    }
+
+    def run(self, args: dict[str, Any]) -> str:
+        text = args.get("text", "")
+        if not text:
+            return "error: 'text' is required"
+
+        placeholder = args.get("placeholder")
+        label = args.get("label")
+        selector = args.get("selector")
+        press_enter = args.get("press_enter", False)
+
+        def _type() -> str:
+            page = _ensure_page_sync()
+            if placeholder:
+                page.get_by_placeholder(placeholder).fill(text)
+                if press_enter:
+                    page.get_by_placeholder(placeholder).press("Enter")
+                return f"Typed into placeholder: {placeholder}"
+            elif label:
+                page.get_by_label(label).fill(text)
+                if press_enter:
+                    page.get_by_label(label).press("Enter")
+                return f"Typed into label: {label}"
+            elif selector:
+                page.locator(selector).fill(text)
+                if press_enter:
+                    page.locator(selector).press("Enter")
+                return f"Typed into: {selector}"
+            else:
+                page.keyboard.type(text)
+                if press_enter:
+                    page.keyboard.press("Enter")
+                return f"Typed: {text[:50]}{'...' if len(text) > 50 else ''}"
+
+        try:
+            with _lock:
+                return _run_in_thread(_type)
+        except Exception as exc:
+            return f"error typing: {exc}"
+
+
+class BrowserScreenshot:
+    name = "browser_screenshot"
+    description = (
+        "Take a screenshot of the current page. Saves to a file and returns "
+        "the path. Use for visual verification or CUA vision analysis."
+    )
+    dangerous = False
+    untrusted = False
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Output file path (default: temp file).",
+            },
+            "full_page": {
+                "type": "boolean",
+                "description": "Capture full scrollable page (default: viewport only).",
+            },
+        },
+    }
+
+    def run(self, args: dict[str, Any]) -> str:
+        path = args.get("path")
+        full_page = args.get("full_page", False)
+
+        def _screenshot() -> str:
+            page = _ensure_page_sync()
+            if path:
+                screenshot_path = Path(path).expanduser()
+                screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+            else:
+                tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                screenshot_path = Path(tmp.name)
+                tmp.close()
+            page.screenshot(path=str(screenshot_path), full_page=full_page)
+            return f"Screenshot saved to: {screenshot_path}"
+
+        try:
+            with _lock:
+                return _run_in_thread(_screenshot)
+        except Exception as exc:
+            return f"error taking screenshot: {exc}"
+
+
+class BrowserRead:
+    name = "browser_read"
+    description = (
+        "Read the current page content. Returns the page title, URL, and "
+        "text content. Use to understand what's on the page."
+    )
+    dangerous = False
+    untrusted = True  # content from external sites
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "max_chars": {
+                "type": "integer",
+                "description": "Max characters to return (default 10000).",
+            },
+        },
+    }
+
+    def run(self, args: dict[str, Any]) -> str:
+        max_chars = args.get("max_chars", 10000)
+        if not isinstance(max_chars, int) or max_chars <= 0:
+            max_chars = 10000
+
+        def _read() -> str:
+            page = _ensure_page_sync()
+            title = page.title()
+            url = page.url
+            text = page.evaluate("() => document.body.innerText")
+            if len(text) > max_chars:
+                text = text[:max_chars] + "... [truncated]"
+            return f"Page: {title}\nURL: {url}\n\n{text}"
+
+        try:
+            with _lock:
+                return _run_in_thread(_read)
+        except Exception as exc:
+            return f"error reading page: {exc}"
+
+
+class BrowserScroll:
+    name = "browser_scroll"
+    description = (
+        "Scroll the page up or down. Use to reveal content below the fold "
+        "or to reach elements that are not currently visible."
+    )
+    dangerous = False
+    untrusted = False
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "direction": {
+                "type": "string",
+                "enum": ["up", "down", "top", "bottom"],
+                "description": "Scroll direction (default: down).",
+            },
+            "amount": {
+                "type": "integer",
+                "description": "Pixels to scroll (default: 500). Ignored for top/bottom.",
+            },
+        },
+    }
+
+    def run(self, args: dict[str, Any]) -> str:
+        direction = args.get("direction", "down")
+        amount = args.get("amount", 500)
+
+        if direction not in ("up", "down", "top", "bottom"):
+            direction = "down"
+        if not isinstance(amount, int) or amount <= 0:
+            amount = 500
+
+        def _scroll() -> str:
+            page = _ensure_page_sync()
+            if direction == "top":
+                page.evaluate("window.scrollTo(0, 0)")
+                return "Scrolled to top"
+            elif direction == "bottom":
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                return "Scrolled to bottom"
+            elif direction == "up":
+                page.evaluate(f"window.scrollBy(0, -{amount})")
+                return f"Scrolled up {amount}px"
+            else:  # down
+                page.evaluate(f"window.scrollBy(0, {amount})")
+                return f"Scrolled down {amount}px"
+
+        try:
+            with _lock:
+                return _run_in_thread(_scroll)
+        except Exception as exc:
+            return f"error scrolling: {exc}"
+
+
+class BrowserWait:
+    name = "browser_wait"
+    description = (
+        "Wait for an element to appear on the page. Use before clicking or "
+        "typing on JS-heavy pages where elements load asynchronously."
+    )
+    dangerous = False
+    untrusted = False
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "selector": {
+                "type": "string",
+                "description": "CSS selector to wait for.",
+            },
+            "text": {
+                "type": "string",
+                "description": "Wait for text to appear on page.",
+            },
+            "timeout": {
+                "type": "integer",
+                "description": "Max wait time in ms (default: 30000).",
+            },
+        },
+    }
+
+    def run(self, args: dict[str, Any]) -> str:
+        selector = args.get("selector")
+        text = args.get("text")
+        timeout = args.get("timeout", 30000)
+
+        if not selector and not text:
+            return "error: provide 'selector' or 'text'"
+        if not isinstance(timeout, int) or timeout <= 0:
+            timeout = 30000
+
+        def _wait() -> str:
+            page = _ensure_page_sync()
+            if selector:
+                page.wait_for_selector(selector, timeout=timeout)
+                return f"Element found: {selector}"
+            elif text:
+                page.wait_for_selector(f"text={text}", timeout=timeout)
+                return f"Text found: {text}"
+            return "error: no wait target"
+
+        try:
+            with _lock:
+                return _run_in_thread(_wait)
+        except Exception as exc:
+            return f"error waiting: {exc}"
+
+
+class BrowserClose:
+    name = "browser_close"
+    description = (
+        "Close the browser and end the session. Always call this when done "
+        "with browser automation to free resources."
+    )
+    dangerous = True
+    untrusted = False
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {},
+    }
+
+    def run(self, args: dict[str, Any]) -> str:
+        _close_browser()
+        return "Browser closed."
