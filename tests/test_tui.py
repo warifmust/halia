@@ -71,6 +71,6 @@ def test_slash_completer_dropdown() -> None:
 
     assert "/help" in texts("/") and "/exit" in texts("/")  # bare / lists all
     assert texts("/q") == ["/quit"]  # filters as you type
-    assert set(texts("/c")) == {"/commands", "/clear", "/compact", "/cost"}
+    assert set(texts("/c")) == {"/commands", "/clear", "/compact", "/config", "/cost"}
     assert texts("hello") == []  # normal chat → no dropdown
     assert texts("/local on") == []  # past the command word → no dropdown
