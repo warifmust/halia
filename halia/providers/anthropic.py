@@ -251,8 +251,49 @@ def _convert_messages(
                 })
             converted.append({"role": "assistant", "content": blocks})
         elif role in ("user", "assistant"):
-            text = content if isinstance(content, str) else ""
-            converted.append({"role": role, "content": text})
+            # Handle list content (images) and string content
+            if isinstance(content, list):
+                # Convert OpenAI image_url format to Anthropic format
+                image_blocks: list[dict[str, Any]] = []
+                for item in content:
+                    if isinstance(item, dict):
+                        if item.get("type") == "image_url":
+                            url = item.get("image_url", {}).get("url", "")
+                            if url.startswith("data:"):
+                                # Extract base64 data from data URL
+                                # Format: data:image/png;base64,<data>
+                                parts = url.split(",", 1)
+                                if len(parts) == 2:
+                                    media_type = parts[0].split(":")[1].split(";")[0]
+                                    image_blocks.append({
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": media_type,
+                                            "data": parts[1],
+                                        },
+                                    })
+                            else:
+                                # URL-based image
+                                image_blocks.append({
+                                    "type": "image",
+                                    "source": {
+                                        "type": "url",
+                                        "url": url,
+                                    },
+                                })
+                        elif item.get("type") == "text":
+                            image_blocks.append({
+                                "type": "text",
+                                "text": item.get("text", ""),
+                            })
+                        else:
+                            # Pass through other block types
+                            image_blocks.append(item)
+                converted.append({"role": role, "content": image_blocks})
+            else:
+                text = content if isinstance(content, str) else ""
+                converted.append({"role": role, "content": text})
         # Ignore unknown roles (Anthropic is strict).
 
     return "\n\n".join(system_parts), converted

@@ -1199,6 +1199,7 @@ def chat(
                 "  [cyan]/history[/cyan] [n]  show the last n turns (default 10)\n"
                 "  [cyan]/cost[/cyan]  session token usage (+ % cached, rough $ estimate)\n"
                 "  [cyan]/token[/cyan]  show/hide token usage in the status bar (on/off)\n"
+                "  [cyan]/config[/cyan] [setting] [value]  view or change config settings\n"
                 "  [cyan]/export[/cyan] [path]  save the conversation as markdown\n"
                 "  [cyan]/model[/cyan] [name]  show or switch the model\n"
                 "  [cyan]/profile[/cyan] [name]  show or switch the profile\n"
@@ -1312,6 +1313,9 @@ def chat(
             from halia.config.settings import read_config as _rc
 
             _chat_token(user_input, bool(_rc().get("show_tokens", False)))
+            continue
+        if user_input.lower().startswith("/config"):
+            _handle_config_chat(user_input)
             continue
         if user_input.lower().startswith("/export"):
             _chat_export(user_input, messages, session)
@@ -1810,6 +1814,52 @@ def _mark_profile_used() -> None:
         write_config(data)
 
 
+def _handle_config_chat(user_input: str) -> None:
+    """Handle /config [setting] [value] — view or change config settings."""
+    from halia.config.settings import read_config, write_config
+
+    parts = user_input.split(maxsplit=2)
+    if len(parts) < 2:
+        # Show current config
+        data = read_config()
+        console.print("[bold]Current config:[/bold]")
+        for key, value in data.items():
+            if key not in ("profile_used",):
+                console.print(f"  {key}: {value}")
+        console.print("\n[dim]Use /config <setting> <value> to change.[/dim]")
+        console.print("[dim]Settings: screenshot_dir, images_dir, files_dir[/dim]\n")
+        return
+
+    setting = parts[1].lower()
+    if len(parts) < 3:
+        # Show current value
+        data = read_config()
+        current = data.get(setting, "(not set)")
+        console.print(f"[bold]{setting}[/bold]: {current}\n")
+        return
+
+    value = parts[2].strip()
+    data = read_config()
+
+    # Handle path-based settings
+    if setting in ("screenshot_dir", "images_dir", "files_dir"):
+        from pathlib import Path
+        dir_path = Path(value).expanduser()
+        dir_path.mkdir(parents=True, exist_ok=True)
+        data[setting] = str(dir_path)
+        write_config(data)
+        console.print(f"[dim]{setting} set to: {dir_path}[/dim]\n")
+    elif setting == "show_tokens":
+        data["show_tokens"] = value.lower() in ("on", "true", "1")
+        write_config(data)
+        console.print(f"[dim]show_tokens set to: {data['show_tokens']}[/dim]\n")
+    else:
+        # Generic setting
+        data[setting] = value
+        write_config(data)
+        console.print(f"[dim]{setting} set to: {value}[/dim]\n")
+
+
 def _chat_token(command: str, current: bool) -> bool:
     """Handle `/token [on|off]` — toggle the status-bar token display (persisted); returns it."""
     from halia.config.settings import read_config, write_config
@@ -2242,6 +2292,56 @@ def profile_delete(name: Annotated[str, typer.Argument(help="Profile name.")]) -
         console.print(f"[green]✓[/green] deleted profile '{name}'")
     else:
         console.print(f"[yellow]no profile named '{name}'[/yellow]")
+
+
+@app.command()
+def config(
+    setting: Annotated[str | None, typer.Argument(help="Setting name.")] = None,
+    value: Annotated[str | None, typer.Argument(help="New value.")] = None,
+) -> None:
+    """View or change config settings.
+
+    Examples:
+        halia config                           # show all config
+        halia config screenshot_dir            # show current value
+        halia config screenshot_dir ~/path     # set value
+    """
+    from halia.config.settings import read_config, write_config
+
+    data = read_config()
+
+    if not setting:
+        # Show all config
+        console.print("[bold]Current config:[/bold]")
+        for key, val in data.items():
+            if key not in ("profile_used",):
+                console.print(f"  {key}: {val}")
+        console.print("\n[dim]Use: halia config <setting> <value>[/dim]")
+        console.print("[dim]Settings: screenshot_dir, images_dir, files_dir[/dim]")
+        return
+
+    if not value:
+        # Show current value
+        current = data.get(setting, "(not set)")
+        console.print(f"[bold]{setting}[/bold]: {current}")
+        return
+
+    # Set value
+    if setting in ("screenshot_dir", "images_dir", "files_dir"):
+        from pathlib import Path
+        dir_path = Path(value).expanduser()
+        dir_path.mkdir(parents=True, exist_ok=True)
+        data[setting] = str(dir_path)
+        write_config(data)
+        console.print(f"[green]✓[/green] {setting} set to: {dir_path}")
+    elif setting == "show_tokens":
+        data["show_tokens"] = value.lower() in ("on", "true", "1")
+        write_config(data)
+        console.print(f"[green]✓[/green] show_tokens set to: {data['show_tokens']}")
+    else:
+        data[setting] = value
+        write_config(data)
+        console.print(f"[green]✓[/green] {setting} set to: {value}")
 
 
 schedule_app = typer.Typer(help="Schedule procedures via the OS crontab (no daemon).")

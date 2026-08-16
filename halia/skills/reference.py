@@ -14,9 +14,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from halia.config.settings import CONFIG_DIR
-
-_FILES_DIR = CONFIG_DIR / "files"
 _MAX_CONTENT = 8000  # chars per file to avoid blowing context
 
 

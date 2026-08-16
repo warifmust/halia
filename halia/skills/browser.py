@@ -55,9 +55,10 @@ def _ensure_page_sync(headless: bool = True) -> Any:
     pw = _ensure_playwright_sync()
     if _page is None or _page.is_closed():
         if _browser is None or not _browser.is_connected():
+            _close_browser_sync()  # clean up stale state
             _browser = pw.chromium.launch(headless=headless)
             _context = _browser.new_context()
-            _page = _context.new_page()
+        _page = _context.new_page()
     return _page
 
 
@@ -313,7 +314,7 @@ class BrowserScreenshot:
     name = "browser_screenshot"
     description = (
         "Take a screenshot of the current page. Saves to a file and returns "
-        "the path. Use for visual verification or CUA vision analysis."
+        "the path. Automatically checks vision support for the current model."
     )
     dangerous = False
     untrusted = False
@@ -323,11 +324,15 @@ class BrowserScreenshot:
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Output file path (default: temp file).",
+                "description": "Output file path (default: temp file or config screenshot_dir).",
             },
             "full_page": {
                 "type": "boolean",
                 "description": "Capture full scrollable page (default: viewport only).",
+            },
+            "model": {
+                "type": "string",
+                "description": "Model name to check vision support (optional).",
             },
         },
     }
@@ -335,6 +340,7 @@ class BrowserScreenshot:
     def run(self, args: dict[str, Any]) -> str:
         path = args.get("path")
         full_page = args.get("full_page", False)
+        model = args.get("model")
 
         def _screenshot() -> str:
             page = _ensure_page_sync()
@@ -342,11 +348,53 @@ class BrowserScreenshot:
                 screenshot_path = Path(path).expanduser()
                 screenshot_path.parent.mkdir(parents=True, exist_ok=True)
             else:
-                tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-                screenshot_path = Path(tmp.name)
-                tmp.close()
+                # Check config for default screenshot directory
+                from halia.config.settings import read_config
+                config = read_config()
+                screenshot_dir = config.get("screenshot_dir", "")
+                if screenshot_dir:
+                    dir_path = Path(screenshot_dir).expanduser()
+                    dir_path.mkdir(parents=True, exist_ok=True)
+                    # Generate filename with timestamp
+                    import time
+                    ts = time.strftime("%Y%m%d_%H%M%S")
+                    screenshot_path = dir_path / f"screenshot_{ts}.png"
+                else:
+                    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                    screenshot_path = Path(tmp.name)
+                    tmp.close()
             page.screenshot(path=str(screenshot_path), full_page=full_page)
-            return f"Screenshot saved to: {screenshot_path}"
+
+            # Build result message
+            result = f"Screenshot saved to: {screenshot_path}"
+
+            # Auto-detect model from config if not provided
+            nonlocal model
+            if not model:
+                try:
+                    from halia.config.settings import load_config
+                    cfg = load_config()
+                    model = cfg.model
+                except Exception:
+                    pass
+
+            # Check vision support if model available
+            if model:
+                try:
+                    from halia.config.settings import load_config
+                    from halia.core.agent import build_provider
+                    from halia.cua.vision_check import check_vision_support
+                    cfg = load_config()
+                    provider = build_provider(cfg)
+                    has_vision = check_vision_support(model, provider)
+                    if has_vision:
+                        result += "\nVision: supported — model can analyze images"
+                    else:
+                        result += "\nVision: NOT supported — model cannot analyze images"
+                except Exception as e:
+                    result += f"\nVision check failed: {e}"
+
+            return result
 
         try:
             with _lock:
@@ -521,3 +569,57 @@ class BrowserClose:
     def run(self, args: dict[str, Any]) -> str:
         _close_browser()
         return "Browser closed."
+
+
+class BrowserEnsure:
+    name = "browser_ensure"
+    description = (
+        "Check if browser is running and restart if needed. Use after errors "
+        "or when browser may have crashed. Returns current browser status."
+    )
+    dangerous = False
+    untrusted = False
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "headless": {
+                "type": "boolean",
+                "description": "Restart in headless mode if needed (default: true).",
+            },
+        },
+    }
+
+    def run(self, args: dict[str, Any]) -> str:
+        headless = args.get("headless", True)
+        if not isinstance(headless, bool):
+            headless = True
+
+        def _ensure() -> str:
+            global _browser, _context, _page
+            status = []
+            # Check if browser is connected
+            if _browser is None or not _browser.is_connected():
+                status.append("Browser was not running — restarting")
+                _close_browser_sync()
+                _ensure_page_sync(headless=headless)
+            elif _page is None or _page.is_closed():
+                status.append("Page was closed — creating new page")
+                if _context is None:
+                    _ensure_page_sync(headless=headless)
+                else:
+                    _page = _context.new_page()
+            else:
+                status.append("Browser is running")
+                return f"Browser OK — on page: {_page.url}"
+
+            # If we restarted, report success
+            if _page and not _page.is_closed():
+                return f"{status[0]}. Now on page: {_page.url}"
+            return f"{status[0]}. Restart failed"
+
+        try:
+            with _lock:
+                return _run_in_thread(_ensure)  # type: ignore[no-any-return]
+        except Exception as exc:
+            return f"error ensuring browser: {exc}"

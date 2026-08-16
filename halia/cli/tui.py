@@ -55,6 +55,7 @@ _SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/history", "show the last n turns (default 10)"),
     ("/cost", "session token usage (+ % cached, rough $ estimate)"),
     ("/token", "show/hide token usage in the status bar (on/off)"),
+    ("/config", "view or change config settings (setting value)"),
     ("/export", "save the conversation as markdown (optional path)"),
     ("/model", "show or switch the model (name)"),
     ("/profile", "show or switch the profile (name)"),
@@ -618,6 +619,47 @@ def run_tui(
             )
         console.print()
 
+    def _handle_config_tui(user_input: str) -> None:
+        """Handle /config [setting] [value] — view or change config settings."""
+        from halia.config.settings import read_config, write_config
+
+        parts = user_input.split(maxsplit=2)
+        if len(parts) < 2:
+            data = read_config()
+            console.print("[bold]Current config:[/bold]")
+            for key, value in data.items():
+                if key not in ("profile_used",):
+                    console.print(f"  {key}: {value}")
+            console.print("\n[dim]Use /config <setting> <value> to change.[/dim]")
+            console.print("[dim]Settings: screenshot_dir, images_dir, files_dir[/dim]\n")
+            return
+
+        setting = parts[1].lower()
+        if len(parts) < 3:
+            data = read_config()
+            current = data.get(setting, "(not set)")
+            console.print(f"[bold]{setting}[/bold]: {current}\n")
+            return
+
+        value = parts[2].strip()
+        data = read_config()
+
+        if setting in ("screenshot_dir", "images_dir", "files_dir"):
+            from pathlib import Path
+            dir_path = Path(value).expanduser()
+            dir_path.mkdir(parents=True, exist_ok=True)
+            data[setting] = str(dir_path)
+            write_config(data)
+            console.print(f"[dim]{setting} set to: {dir_path}[/dim]\n")
+        elif setting == "show_tokens":
+            data["show_tokens"] = value.lower() in ("on", "true", "1")
+            write_config(data)
+            console.print(f"[dim]show_tokens set to: {data['show_tokens']}[/dim]\n")
+        else:
+            data[setting] = value
+            write_config(data)
+            console.print(f"[dim]{setting} set to: {value}[/dim]\n")
+
     def ctx_pct() -> int:
         """How full the sent-context window is (a char proxy for tokens)."""
         used = sum(len(str(m.get("content") or "")) for m in messages)
@@ -761,6 +803,9 @@ def run_tui(
             continue
         if user_input.lower().startswith("/token"):
             show_tokens = _chat_token(user_input, show_tokens)
+            continue
+        if user_input.lower().startswith("/config"):
+            _handle_config_tui(user_input)
             continue
         if user_input.lower().startswith("/export"):
             _chat_export(user_input, messages, sess)

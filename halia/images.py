@@ -21,7 +21,16 @@ from pathlib import Path
 from halia.config.settings import CONFIG_DIR
 from halia.store.database import DB_PATH, connect
 
-IMAGES_DIR = CONFIG_DIR / "images"
+
+def _get_images_dir() -> Path:
+    """Get images directory from config, or default."""
+    from halia.config.settings import read_config
+    config = read_config()
+    custom = config.get("images_dir")
+    if custom:
+        return Path(custom).expanduser()
+    return CONFIG_DIR / "images"
+
 
 # Supported image extensions
 _SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
@@ -47,7 +56,7 @@ class Image:
 
 
 def _ensure_dir() -> None:
-    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    _get_images_dir().mkdir(parents=True, exist_ok=True)
 
 
 def _content_hash(data: bytes) -> str:
@@ -163,7 +172,7 @@ def store_image(path: str, db_path: Path = DB_PATH) -> Image:
 
         # Store the file
         stored_filename = f"{content_hash}{ext}"
-        dest = IMAGES_DIR / stored_filename
+        dest = _get_images_dir() / stored_filename
         dest.write_bytes(data)
 
         # Get dimensions
@@ -214,7 +223,7 @@ def get_image_path(image_id: str, db_path: Path = DB_PATH) -> Path | None:
     img = get_image(image_id, db_path)
     if img is None:
         return None
-    path = IMAGES_DIR / img.filename
+    path = _get_images_dir() / img.filename
     return path if path.exists() else None
 
 
@@ -246,7 +255,7 @@ def delete_image(image_id: str, db_path: Path = DB_PATH) -> bool:
     if img is None:
         return False
     # Remove the file
-    file_path = IMAGES_DIR / img.filename
+    file_path = _get_images_dir() / img.filename
     if file_path.exists():
         file_path.unlink()
     # Remove from DB

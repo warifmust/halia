@@ -38,6 +38,7 @@ try:
     from halia.skills.browser import (
         BrowserClick,
         BrowserClose,
+        BrowserEnsure,
         BrowserNavigate,
         BrowserOpen,
         BrowserRead,
@@ -104,6 +105,7 @@ if _HAS_BROWSER:
         "browser_read": BrowserRead,
         "browser_scroll": BrowserScroll,
         "browser_wait": BrowserWait,
+        "browser_ensure": BrowserEnsure,
         "browser_close": BrowserClose,
     })
 

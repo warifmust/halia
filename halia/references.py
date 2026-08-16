@@ -21,7 +21,16 @@ from pathlib import Path
 from halia.config.settings import CONFIG_DIR
 from halia.store.database import DB_PATH, connect
 
-FILES_DIR = CONFIG_DIR / "files"
+
+def _get_files_dir() -> Path:
+    """Get files directory from config, or default."""
+    from halia.config.settings import read_config
+    config = read_config()
+    custom = config.get("files_dir")
+    if custom:
+        return Path(custom).expanduser()
+    return CONFIG_DIR / "files"
+
 
 # Supported file types for teaching
 _SUPPORTED_TYPES = {
@@ -49,7 +58,7 @@ class Reference:
 
 
 def _ensure_dir() -> None:
-    FILES_DIR.mkdir(parents=True, exist_ok=True)
+    _get_files_dir().mkdir(parents=True, exist_ok=True)
 
 
 def _content_hash(data: bytes) -> str:
@@ -88,7 +97,7 @@ def store_reference(
 
     # Copy file to storage
     stored_filename = f"{content_hash}{ext}"
-    dest = FILES_DIR / stored_filename
+    dest = _get_files_dir() / stored_filename
     dest.write_bytes(data)
 
     # Insert metadata
@@ -151,7 +160,7 @@ def store_url_reference(
     content_hash = _content_hash(data)
     _ensure_dir()
     stored_filename = f"{content_hash}.md"
-    (FILES_DIR / stored_filename).write_bytes(data)
+    (_get_files_dir() / stored_filename).write_bytes(data)
 
     parsed = urlparse(url)
     label = (parsed.netloc + parsed.path).rstrip("/") or url
@@ -248,7 +257,7 @@ def get_reference_path(ref_id: str, db_path: Path = DB_PATH) -> Path | None:
         ).fetchone()
         if not row:
             return None
-        path = FILES_DIR / row[0]
+        path = _get_files_dir() / row[0]
         return path if path.exists() else None
     finally:
         conn.close()
@@ -263,7 +272,7 @@ def delete_reference(ref_id: str, db_path: Path = DB_PATH) -> bool:
         ).fetchone()
         if not row:
             return False
-        file_path = FILES_DIR / row[0]
+        file_path = _get_files_dir() / row[0]
         if file_path.exists():
             file_path.unlink()
         conn.execute("DELETE FROM ref_files WHERE id = ?", (ref_id,))
