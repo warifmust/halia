@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import threading
+from typing import Any
 
 from rich.console import Console
 
@@ -182,7 +183,7 @@ def _setup_computer(console: Console) -> None:
         )
 
 
-def _pick_computer_backend(console: Console, config: dict) -> None:
+def _pick_computer_backend(console: Console, config: dict[str, Any]) -> None:
     """Ask user to choose between halia computer and CUA."""
     console.print(
         "\n[bold]Which computer use do you prefer?[/bold]\n"

@@ -257,35 +257,35 @@ class CuaComputer:
 
     def screenshot(self, path: str | None = None) -> str:
         """Take a desktop screenshot (sync wrapper)."""
-        return self._run_async(self._screenshot_async(path))
+        return str(self._run_async(self._screenshot_async(path)))
 
     def click(self, x: float, y: float, button: str = "left") -> str:
         """Click at coordinates (sync wrapper)."""
-        return self._run_async(self._click_async(x, y, button))
+        return str(self._run_async(self._click_async(x, y, button)))
 
     def type_text(self, text: str) -> str:
         """Type text (sync wrapper)."""
-        return self._run_async(self._type_async(text))
+        return str(self._run_async(self._type_async(text)))
 
     def scroll(self, x: float, y: float, direction: str = "down", amount: int = 3) -> str:
         """Scroll at coordinates (sync wrapper)."""
-        return self._run_async(self._scroll_async(x, y, direction, amount))
+        return str(self._run_async(self._scroll_async(x, y, direction, amount)))
 
     def desktop_state(self) -> str:
         """Get desktop state (sync wrapper)."""
-        return self._run_async(self._desktop_state_async())
+        return str(self._run_async(self._desktop_state_async()))
 
     def hotkey(self, keys: list[str]) -> str:
         """Press a hotkey combination (sync wrapper)."""
-        return self._run_async(self._hotkey_async(keys))
+        return str(self._run_async(self._hotkey_async(keys)))
 
     def press_key(self, key: str, modifiers: list[str] | None = None) -> str:
         """Press a single key (sync wrapper)."""
-        return self._run_async(self._press_key_async(key, modifiers))
+        return str(self._run_async(self._press_key_async(key, modifiers)))
 
     def clear_field(self) -> str:
         """Select-all then delete, clearing the focused text field."""
-        return self._run_async(self._clear_field_async())
+        return str(self._run_async(self._clear_field_async()))
 
     def close(self) -> None:
         """Shut down the CUA driver."""

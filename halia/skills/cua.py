@@ -27,7 +27,7 @@ def _is_cua_enabled() -> bool:
     return config.get("computer_backend") == "cua"
 
 
-def _get_cua():
+def _get_cua() -> Any:
     """Get the CUA computer instance."""
     from halia.computer.cua_backend import get_cua_computer
     return get_cua_computer()
@@ -118,13 +118,13 @@ class CuaScreenshot(Skill):
             cua = _get_cua()
             path = cua.screenshot()
 
-            img = Image.open(path)
+            img: Image.Image = Image.open(path)
             real_w, real_h = img.size
             max_width = 800
             if real_w > max_width:
                 ratio = max_width / real_w
                 img = img.resize(
-                    (max_width, int(real_h * ratio)), Image.LANCZOS
+                    (max_width, int(real_h * ratio)), Image.Resampling.LANCZOS
                 )
             # Record how much the image was shrunk so clicks/scrolls can be
             # mapped from image-space back to real screen coordinates.
@@ -205,7 +205,7 @@ class CuaClick(Skill):
             result = cua.click(rx, ry, button)
             if scale != 1.0:
                 result += f" [image {x},{y} -> screen {rx:.0f},{ry:.0f}]"
-            return result
+            return str(result)
         except Exception as exc:
             return f"error: {exc}"
 
@@ -313,7 +313,7 @@ class CuaScroll(Skill):
             result = cua.scroll(rx, ry, direction, amount)
             if scale != 1.0:
                 result += f" [image {x},{y} -> screen {rx:.0f},{ry:.0f}]"
-            return result
+            return str(result)
         except Exception as exc:
             return f"error: {exc}"
 
@@ -339,6 +339,6 @@ class CuaDesktopState(Skill):
 
         try:
             cua = _get_cua()
-            return cua.desktop_state()
+            return str(cua.desktop_state())
         except Exception as exc:
             return f"error: {exc}"

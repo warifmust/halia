@@ -114,7 +114,7 @@ def _get_computer_backend() -> str:
     """Get the configured computer backend."""
     try:
         from halia.config.settings import read_config
-        return read_config().get("computer_backend", "halia")
+        return str(read_config().get("computer_backend", "halia"))
     except Exception:
         return "halia"
 
