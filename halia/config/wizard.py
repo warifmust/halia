@@ -210,19 +210,44 @@ def _pick_computer_backend(console: Console, config: dict[str, Any]) -> None:
         console.print("[dim]  Use browser_open, browser_click, etc. to automate.[/dim]")
 
 
-def _install_playwright(console: Console) -> bool:
-    """Install Playwright via the project's browser extra, then install Chromium."""
+def _install_python_package(
+    console: Console,
+    package: str,
+    *,
+    message: str | None = None,
+    timeout: int = 300,
+) -> bool:
+    """Install a Python package into halia's own running environment.
+
+    Targets the interpreter halia is running under (``sys.executable``), so it
+    works whether halia was installed via ``uv tool install``, inside a venv,
+    or with plain pip — no active virtual environment is required.
+    """
     import shutil
     import subprocess
+    import sys
 
     uv = shutil.which("uv")
-    pip_cmd = [uv, "pip", "install", "-e", ".[browser]"] if uv else ["pip", "install", "playwright"]
+    if uv:
+        # Explicitly target halia's interpreter; avoids the "No virtual
+        # environment found" failure when no venv is active (e.g. uv tools).
+        cmd = [uv, "pip", "install", "--python", sys.executable, package]
+    else:
+        cmd = [sys.executable, "-m", "pip", "install", package]
 
-    # ── Step 1: install Python package with spinner ──
-    with _Spinner(console, "Installing playwright via project dependencies"):
-        result = subprocess.run(pip_cmd, capture_output=True, text=True, timeout=180)
+    with _Spinner(console, message or f"Installing {package}"):
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
-        console.print(f"[red]  Failed to install playwright: {result.stderr}[/red]")
+        console.print(f"[red]  Failed to install {package}: {result.stderr}[/red]")
+        return False
+    return True
+
+
+def _install_playwright(console: Console) -> bool:
+    """Install Playwright into halia's environment, then install Chromium."""
+    if not _install_python_package(
+        console, "playwright", message="Installing playwright", timeout=180
+    ):
         return False
 
     # ── Step 2: install Chromium with progress ──
@@ -236,8 +261,11 @@ def _run_with_chromium_progress(console: Console) -> None:
     import subprocess
     import sys
 
+    # Use `python -m playwright` so the CLI resolves even when playwright was
+    # installed into halia's own environment (e.g. a uv tool venv) and its
+    # bin/ is not on PATH.
     proc = subprocess.Popen(
-        ["playwright", "install", "chromium"],
+        [sys.executable, "-m", "playwright", "install", "chromium"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -337,9 +365,6 @@ def _get_cua_binary_path() -> str:
 
 def _setup_cua(console: Console) -> None:
     """Install cua-driver and enable CUA backend."""
-    import shutil
-    import subprocess
-
     console.print(
         "\n[bold]CUA — Computer Use Agent[/bold]\n"
         "\n"
@@ -361,15 +386,10 @@ def _setup_cua(console: Console) -> None:
         console.print("[dim]CUA installation skipped.[/dim]")
         return
 
-    # Install cua-driver
-    uv = shutil.which("uv")
-    pip_cmd = [uv, "pip", "install", "-e", ".[cua]"] if uv else ["pip", "install", "cua-driver"]
-
-    with _Spinner(console, "Installing cua-driver"):
-        result = subprocess.run(pip_cmd, capture_output=True, text=True, timeout=300)
-
-    if result.returncode != 0:
-        console.print(f"[red]  Failed to install cua-driver: {result.stderr}[/red]")
+    # Install cua-driver into halia's own running environment
+    if not _install_python_package(
+        console, "cua-driver", message="Installing cua-driver", timeout=300
+    ):
         console.print("[dim]  You can try later with: halia setup --cua[/dim]")
         return
 
