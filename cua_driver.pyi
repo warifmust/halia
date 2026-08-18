@@ -3,7 +3,6 @@
 from enum import Enum
 from typing import Any
 
-
 def get_binary_path() -> str: ...
 
 
