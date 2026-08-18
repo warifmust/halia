@@ -51,6 +51,20 @@ try:
 except ImportError:
     _HAS_BROWSER = False
 
+# CUA (Computer Use Agent) — optional, requires cua-driver
+try:
+    from halia.skills.cua import (
+        CuaClick,
+        CuaDesktopState,
+        CuaOpenUrl,
+        CuaScreenshot,
+        CuaScroll,
+        CuaType,
+    )
+    _HAS_CUA = True
+except ImportError:
+    _HAS_CUA = False
+
 # The full catalogue of skills, by name.
 _SKILL_FACTORIES: dict[str, type] = {
     "read_file": ReadFile,
@@ -95,7 +109,18 @@ _SKILL_FACTORIES: dict[str, type] = {
 }
 
 # Browser automation skills (optional — only available if playwright is installed)
-if _HAS_BROWSER:
+# When CUA backend is selected, browser skills are hidden so the agent uses CUA instead.
+def _get_computer_backend() -> str:
+    """Get the configured computer backend."""
+    try:
+        from halia.config.settings import read_config
+        return read_config().get("computer_backend", "halia")
+    except Exception:
+        return "halia"
+
+_backend = _get_computer_backend()
+
+if _HAS_BROWSER and _backend != "cua":
     _SKILL_FACTORIES.update({
         "browser_open": BrowserOpen,
         "browser_navigate": BrowserNavigate,
@@ -107,6 +132,17 @@ if _HAS_BROWSER:
         "browser_wait": BrowserWait,
         "browser_ensure": BrowserEnsure,
         "browser_close": BrowserClose,
+    })
+
+# CUA skills (optional — only available if cua-driver is installed)
+if _HAS_CUA:
+    _SKILL_FACTORIES.update({
+        "cua_screenshot": CuaScreenshot,
+        "cua_click": CuaClick,
+        "cua_type": CuaType,
+        "cua_scroll": CuaScroll,
+        "cua_desktop": CuaDesktopState,
+        "cua_open_url": CuaOpenUrl,
     })
 
 # Always included, regardless of profile: deterministic compute is part of the

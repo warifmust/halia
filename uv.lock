@@ -88,6 +88,18 @@ wheels = [
 ]
 
 [[package]]
+name = "cua-driver"
+version = "0.20.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/78/2c/2fb597f9debcdf43f481be705d4bc2b389999879a1a697e8fc513d149d62/cua_driver-0.20.0-py3-none-macosx_13_0_universal2.whl", hash = "sha256:5426f5d7ee41d4ad7c9b1738a231e10985be8f55e16735d85e7e896f805da10b", size = 37926103, upload-time = "2026-08-15T18:03:41.333Z" },
+    { url = "https://files.pythonhosted.org/packages/94/9d/1c1838b69067e83266c3d2aae02d74eef353a43dc8644884ccf03fe7f933/cua_driver-0.20.0-py3-none-manylinux_2_31_aarch64.whl", hash = "sha256:48833bc5e4c60e701fc9eefb57dbac36ec77ef3990f816fbbe85b4e954af2c77", size = 26143108, upload-time = "2026-08-15T18:03:43.797Z" },
+    { url = "https://files.pythonhosted.org/packages/fa/d7/a43008a328a40c85e7bc706fc20235b9abedc75e28b413817655153157ff/cua_driver-0.20.0-py3-none-manylinux_2_31_x86_64.whl", hash = "sha256:f60c35696a37f37ac954935e478ae4754f220856d022036625c9400d72185961", size = 25949924, upload-time = "2026-08-15T18:03:45.994Z" },
+    { url = "https://files.pythonhosted.org/packages/7d/ab/93766bbe0b593190f3db5dc869885897dff8f7a4aa434ac0cac5ee0236c6/cua_driver-0.20.0-py3-none-win_amd64.whl", hash = "sha256:43109e3dbabf8208ff3cbbce001349ba10c6c21bb8aae8c8273e8db646c3976c", size = 24812329, upload-time = "2026-08-15T18:03:48.078Z" },
+    { url = "https://files.pythonhosted.org/packages/52/df/e98082613b0ed349c9c4d0abfeb39d769ee80be0f3d9619defca4b5da773/cua_driver-0.20.0-py3-none-win_arm64.whl", hash = "sha256:29ff16f4df3c6931a5ad84403e0111df8ddb29e3b34b1883165062ffff1b0b49", size = 23142573, upload-time = "2026-08-15T18:03:50.301Z" },
+]
+
+[[package]]
 name = "defusedxml"
 version = "0.7.1"
 source = { registry = "https://pypi.org/simple" }
@@ -261,6 +273,7 @@ dependencies = [
     { name = "fpdf2" },
     { name = "httpx" },
     { name = "openpyxl" },
+    { name = "pillow" },
     { name = "prompt-toolkit" },
     { name = "pypdf" },
     { name = "python-docx" },
@@ -273,6 +286,9 @@ dependencies = [
 browser = [
     { name = "playwright" },
 ]
+cua = [
+    { name = "cua-driver" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -283,9 +299,11 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cua-driver", marker = "extra == 'cua'", specifier = ">=0.1" },
     { name = "fpdf2", specifier = ">=2.7" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "openpyxl", specifier = ">=3.1" },
+    { name = "pillow", specifier = ">=10.0" },
     { name = "playwright", marker = "extra == 'browser'", specifier = ">=1.49" },
     { name = "prompt-toolkit", specifier = ">=3.0" },
     { name = "pypdf", specifier = ">=4.0" },
@@ -294,7 +312,7 @@ requires-dist = [
     { name = "rich", specifier = ">=13" },
     { name = "typer", specifier = ">=0.12" },
 ]
-provides-extras = ["browser"]
+provides-extras = ["browser", "cua"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -121,6 +121,10 @@ SYSTEM_PROMPT = (
     "Should I use Excel, or do you still want PDF?' Wait for their answer. Only call "
     "make_pdf if they explicitly confirm after the warning. For narrow content (2-3 "
     "columns, short text), PDF is fine. "
+)
+
+# Browser/desktop automation section — added dynamically based on backend
+_BROWSER_PROMPT = (
     "BROWSER AUTOMATION: When the user asks you to interact with a website, use the "
     "browser tools. Follow this workflow: "
     "1) OPEN the page with browser_open (headless=false to let the user see it). "
@@ -134,11 +138,42 @@ SYSTEM_PROMPT = (
     "or 'browser has been closed', call browser_ensure to restart, then retry. "
     "Do not give up on the first failure. "
     "VISION: browser_screenshot automatically checks if the model can analyze images. "
-    "If vision is supported, you can ask the user to describe what's on screen or "
-    "analyze the screenshot yourself. If not supported, use browser_read for text. "
+)
+
+_CUA_PROMPT = (
+    "DESKTOP AUTOMATION (CUA): When the user asks you to interact with a website or "
+    "any desktop application, use the CUA tools. Follow this workflow: "
+    "1) OPEN URL: use cua_open_url to open a website. It uses the system's default "
+    "browser and waits for the page to load. "
+    "2) SCREENSHOT: take ONE cua_screenshot to see what's on screen. The image is "
+    "sent to you visually — analyze it carefully to find element positions. "
+    "3) CLICK: use cua_click at the coordinates you identified from the screenshot. "
+    "Give coordinates in the SCREENSHOT image's pixel space (the image may be "
+    "smaller than the real screen — halia scales them to the real screen for you). "
+    "4) TYPE: use cua_type to enter text into focused elements. If a field "
+    "already contains text you want to replace (re-filling, fixing a typo), "
+    "pass clear=true so the field is selected and cleared first — otherwise "
+    "your text appends to the existing content. "
+    "5) VERIFY: take ONE cua_screenshot after your action to confirm it worked. "
+    "IMPORTANT: Do NOT take multiple screenshots in a row. Take one, analyze it, "
+    "act, then take another. Repeated screenshots waste context. "
+    "Do NOT use browser_open or browser_* tools — they do NOT exist. Use cua_* tools only. "
+)
+
+_CLOSING_PROMPT = (
     "Only answer directly (no planning, no tools) for simple factual questions like "
     "'what is X' or 'how do I Y' that don't need file access or computation."
 )
+
+
+def _get_system_prompt() -> str:
+    """Build the system prompt with the correct automation section for the backend."""
+    from halia.config.settings import read_config
+    cfg = read_config()
+    backend = cfg.get("computer_backend", "halia")
+    if backend == "cua":
+        return SYSTEM_PROMPT + _CUA_PROMPT + _CLOSING_PROMPT
+    return SYSTEM_PROMPT + _BROWSER_PROMPT + _CLOSING_PROMPT
 
 DEFAULT_MAX_ITERS = 8
 
@@ -487,7 +522,7 @@ def ask(
     # PERSONA.md overlay comes from the caller via extra_system (the `ask` command passes it) —
     # not re-added here, to avoid double-applying it.
     messages: list[Message] = [
-        {"role": "system", "content": SYSTEM_PROMPT + extra_system},
+        {"role": "system", "content": _get_system_prompt() + extra_system},
         {"role": "user", "content": prompt},
     ]
     return (provider.chat(messages).content or "").strip()
@@ -595,6 +630,12 @@ def _execute_batch(
         _t0 = _perf()
         observation = _run_tool(ctx.registry, name, tc["arguments"], ctx.approver)
         _duration_ms = (_perf() - _t0) * 1000
+        # Check for pending image from CUA screenshot (side-channel)
+        _pending_img = None
+        if name == "cua_screenshot":
+            from halia.skills.cua import CuaScreenshot
+            _pending_img = CuaScreenshot._pending_image
+            CuaScreenshot._pending_image = None  # consume it
         # Track success/failure for the circuit breaker.
         # Read-only tools (jq, grep, read_file) get errors from bad queries,
         # not broken tools — don't count them as failures.
@@ -615,7 +656,36 @@ def _execute_batch(
         steps.append(step)
         if ctx.observer is not None:
             ctx.observer(step)
-        messages.append({"role": "tool", "tool_call_id": tc["id"], "content": observation})
+        # Build tool message
+        tool_msg: Message = {"role": "tool", "tool_call_id": tc["id"], "content": observation}
+        messages.append(tool_msg)
+        # If CUA screenshot captured an image, inject it as a user message
+        if _pending_img:
+            caption = "[System: desktop screenshot captured]"
+            if ctx.config.provider_kind == "anthropic":
+                img_content: Any = [
+                    {"type": "text", "text": caption},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/jpeg",
+                            "data": _pending_img,
+                        },
+                    },
+                ]
+            else:
+                img_content = [
+                    {"type": "text", "text": caption},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{_pending_img}",
+                            "detail": "low",
+                        },
+                    },
+                ]
+            messages.append({"role": "user", "content": img_content})
 
 
 def _pause(
@@ -771,7 +841,7 @@ def run(
     # NOTE: the PERSONA.md overlay is injected by the caller (CLI _prepare_context) into
     # extra_system, so it is NOT re-added here — doing both double-applied it (see chat/tui,
     # which already rely on extra_system carrying it).
-    system_content = SYSTEM_PROMPT + extra_system
+    system_content = _get_system_prompt() + extra_system
     if plan:
         plan_text = make_plan(prompt, config, provider, extra_system=extra_system)
         if plan_text:

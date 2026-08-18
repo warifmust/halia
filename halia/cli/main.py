@@ -138,11 +138,89 @@ def doctor() -> None:
 
 
 @app.command()
-def setup() -> None:
+def setup(
+    computer: Annotated[
+        bool, typer.Option("--computer", help="Enable browser automation (Playwright).")
+    ] = False,
+    cua: Annotated[
+        bool, typer.Option("--cua", help="Install CUA driver for full desktop automation.")
+    ] = False,
+) -> None:
     """Run the first-time setup wizard (provider, model, API key)."""
-    from halia.config.wizard import run_setup
+    from halia.config.wizard import _setup_computer, _setup_cua, run_setup
+
+    if cua:
+        # Just install CUA, skip full setup
+        _setup_cua(console)
+        return
+
+    if computer:
+        # Just enable computer, skip full setup
+        _setup_computer(console)
+        return
 
     run_setup(console)
+
+
+@app.command()
+def config(
+    setting: Annotated[str | None, typer.Argument(help="Setting name (optional).")] = None,
+    value: Annotated[str | None, typer.Argument(help="New value (optional).")] = None,
+) -> None:
+    """View or change config settings.
+
+    Examples:
+        halia config                           # show all config
+        halia config computer_backend          # show current value
+        halia config screenshot_dir ~/path     # set value
+    """
+    from halia.config.settings import read_config, write_config
+
+    data = read_config()
+
+    if not setting:
+        # Show all config
+        console.print("[bold]Current configuration:[/bold]\n")
+        for key, val in data.items():
+            if key in ("provider", "model"):
+                console.print(f"  [cyan]{key}[/cyan]: {val}")
+            elif key == "computer_enabled":
+                icon = "[green]✓[/green]" if val else "[red]✗[/red]"
+                console.print(f"  [cyan]computer[/cyan]: {icon} {'enabled' if val else 'disabled'}")
+            elif key == "computer_backend":
+                console.print(f"  [cyan]backend[/cyan]: {val}")
+            elif key == "trusted_dirs":
+                console.print(f"  [cyan]{key}[/cyan]: {len(val)} dir(s)")
+            else:
+                console.print(f"  [cyan]{key}[/cyan]: {val}")
+        console.print("\n[dim]Use: halia config <setting> <value>[/dim]")
+        return
+
+    if not value:
+        # Show specific setting
+        val = data.get(setting)
+        if val is None:
+            console.print(f"[yellow]Setting '{setting}' not found[/yellow]")
+        else:
+            console.print(f"[bold]{setting}[/bold]: {val}")
+        return
+
+    # Set value
+    if setting in ("screenshot_dir", "images_dir", "files_dir"):
+        from pathlib import Path
+        dir_path = Path(value).expanduser()
+        dir_path.mkdir(parents=True, exist_ok=True)
+        data[setting] = str(dir_path)
+        write_config(data)
+        console.print(f"[green]✓[/green] {setting} set to: {dir_path}")
+    elif setting == "show_tokens":
+        data["show_tokens"] = value.lower() in ("on", "true", "1")
+        write_config(data)
+        console.print(f"[green]✓[/green] show_tokens set to: {data['show_tokens']}")
+    else:
+        data[setting] = value
+        write_config(data)
+        console.print(f"[green]✓[/green] {setting} set to: {value}")
 
 
 @app.command()
@@ -571,10 +649,61 @@ def _make_approver() -> Any:
     trusted_dirs: set[str] = set()
     trusted_tools: set[str] = set()
     approved_read_dirs: set[str] = set()  # directories approved for reading
+    cua_batch_prompted = False  # only ask for full CUA control once per session
+
+    # Names of CUA desktop-automation tools. When the user grants full CUA control,
+    # all of these are added to trusted_tools so the agent can drive the desktop
+    # without per-action prompts. Kept in sync with halia/skills/__init__.py.
+    _CUA_TOOLS = (
+        "cua_open_url",
+        "cua_screenshot",
+        "cua_click",
+        "cua_type",
+        "cua_scroll",
+        "cua_desktop",
+    )
+
+    def _prompt_cua_batch() -> bool:
+        """Ask once for full-session CUA control. Returns True if granted."""
+        nonlocal cua_batch_prompted
+        cua_batch_prompted = True
+        console.print()
+        console.print(
+            "[bold white on red] 🖥️ FULL DESKTOP CONTROL [/bold white on red] "
+            "[bold]halia wants to drive your real mouse and keyboard[/bold]"
+        )
+        console.print(
+            "  It can click anything, type into any app, and open anything on this machine.",
+            style="white",
+        )
+        console.print(
+            "  This is broader than a file write. You can interrupt anytime with Ctrl+C.",
+            style="dim",
+        )
+        from halia.cli.input import pick
+
+        options = [
+            "yes — grant full CUA control for this session",
+            "no — keep per-action approval (slower, noisier)",
+        ]
+        choice = pick("Select:", options, default=0)
+        if choice.startswith("yes"):
+            trusted_tools.update(_CUA_TOOLS)
+            console.print("  [dim]granted full CUA control for this session[/dim]\n")
+            return True
+        console.print("  [dim]falling back to per-action CUA approval[/dim]\n")
+        return False
 
     def approve(name: str, arguments: str) -> bool:
         if name in trusted_tools:
             return True  # already trusted every call to this tool this session
+
+        # Batch gate for CUA desktop automation: one informed consent up front.
+        if name.startswith("cua_") and not cua_batch_prompted:
+            _prompt_cua_batch()
+            if name in trusted_tools:
+                return True
+
         target_dir = _write_target_dir(name, arguments)
         if target_dir is not None and target_dir in trusted_dirs:
             return True  # already trusted this dir this session — no re-prompt
@@ -1106,7 +1235,7 @@ def chat(
     from halia.audit.record import new_record, save_run
     from halia.cli.input import pick
     from halia.config.settings import is_trusted, trust_directory
-    from halia.core.agent import SYSTEM_PROMPT, RunLimitError, converse
+    from halia.core.agent import RunLimitError, _get_system_prompt, converse
     from halia.core.checkpoint import list_checkpoints
     from halia.core.session import get_session, new_session, save_session
     from halia.providers.base import ProviderError
@@ -1144,7 +1273,7 @@ def chat(
         messages: list[Message] = list(session.messages)
     else:
         config, registry, extra_system = _prepare_context(profile, allow_commands)
-        messages = [{"role": "system", "content": SYSTEM_PROMPT + extra_system}]
+        messages = [{"role": "system", "content": _get_system_prompt() + extra_system}]
         session = new_session(config.provider, config.model, profile, allow_commands, messages)
         save_session(session)  # persist immediately so it shows up in `halia sessions`
 
@@ -1917,7 +2046,7 @@ def _chat_profile(
     keeping the current provider/model. Validates the name first so an unknown profile
     can't trip `_prepare_context`'s hard exit.
     """
-    from halia.core.agent import SYSTEM_PROMPT
+    from halia.core.agent import _get_system_prompt
     from halia.presets import BUILTIN_PRESETS, resolve_profile
     from halia.profiles import list_profiles
 
@@ -1939,7 +2068,7 @@ def _chat_profile(
         return None
     _, registry, extra_system = _prepare_context(name, allow_commands)
     if messages and messages[0].get("role") == "system":
-        messages[0] = {"role": "system", "content": SYSTEM_PROMPT + extra_system}
+        messages[0] = {"role": "system", "content": _get_system_prompt() + extra_system}
     console.print(
         f"[green]✓[/green] profile → [bold]{name}[/bold] [dim](skills + persona updated)[/dim]\n"
     )
@@ -2292,56 +2421,6 @@ def profile_delete(name: Annotated[str, typer.Argument(help="Profile name.")]) -
         console.print(f"[green]✓[/green] deleted profile '{name}'")
     else:
         console.print(f"[yellow]no profile named '{name}'[/yellow]")
-
-
-@app.command()
-def config(
-    setting: Annotated[str | None, typer.Argument(help="Setting name.")] = None,
-    value: Annotated[str | None, typer.Argument(help="New value.")] = None,
-) -> None:
-    """View or change config settings.
-
-    Examples:
-        halia config                           # show all config
-        halia config screenshot_dir            # show current value
-        halia config screenshot_dir ~/path     # set value
-    """
-    from halia.config.settings import read_config, write_config
-
-    data = read_config()
-
-    if not setting:
-        # Show all config
-        console.print("[bold]Current config:[/bold]")
-        for key, val in data.items():
-            if key not in ("profile_used",):
-                console.print(f"  {key}: {val}")
-        console.print("\n[dim]Use: halia config <setting> <value>[/dim]")
-        console.print("[dim]Settings: screenshot_dir, images_dir, files_dir[/dim]")
-        return
-
-    if not value:
-        # Show current value
-        current = data.get(setting, "(not set)")
-        console.print(f"[bold]{setting}[/bold]: {current}")
-        return
-
-    # Set value
-    if setting in ("screenshot_dir", "images_dir", "files_dir"):
-        from pathlib import Path
-        dir_path = Path(value).expanduser()
-        dir_path.mkdir(parents=True, exist_ok=True)
-        data[setting] = str(dir_path)
-        write_config(data)
-        console.print(f"[green]✓[/green] {setting} set to: {dir_path}")
-    elif setting == "show_tokens":
-        data["show_tokens"] = value.lower() in ("on", "true", "1")
-        write_config(data)
-        console.print(f"[green]✓[/green] show_tokens set to: {data['show_tokens']}")
-    else:
-        data[setting] = value
-        write_config(data)
-        console.print(f"[green]✓[/green] {setting} set to: {value}")
 
 
 schedule_app = typer.Typer(help="Schedule procedures via the OS crontab (no daemon).")

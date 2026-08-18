@@ -51,15 +51,60 @@ def test_deny_choice_blocks(monkeypatch: Any) -> None:
     assert approve("write_file", '{"path": "/tmp/x/a.txt", "content": "1"}') is False
 
 
-def test_yes_choice_is_one_shot(monkeypatch: Any) -> None:
-    calls: list[str] = []
+def test_cua_batch_grant_trusts_all_cua_tools(monkeypatch: Any) -> None:
+    """Granting full CUA control on the first cua_* call skips prompts for all others."""
+    prompts: list[str] = []
 
     def fake_pick(title: str = "", options: list[str] | None = None, default: int = 0) -> str:
-        calls.append(title)
-        return options[0] if options else "yes"  # approve once, do NOT trust the folder
+        prompts.append(title)
+        # First prompt is the CUA batch gate; user grants full control.
+        return options[0] if options else "yes"
 
     monkeypatch.setattr("halia.cli.input.pick", fake_pick)
     approve = _make_approver()
+
+    # First CUA action prompts for full control.
+    assert approve("cua_open_url", '{"url": "https://example.com"}') is True
+    # Subsequent CUA actions are auto-approved without re-prompting.
+    assert approve("cua_click", '{"x": 100, "y": 200}') is True
+    assert approve("cua_type", '{"text": "hello"}') is True
+    assert approve("cua_screenshot", "{}") is True
+    assert len(prompts) == 1
+
+
+def test_cua_batch_deny_falls_back_to_per_call(monkeypatch: Any) -> None:
+    """Denying full CUA control falls back to per-action approval."""
+    prompts: list[str] = []
+
+    def fake_pick(title: str = "", options: list[str] | None = None, default: int = 0) -> str:
+        prompts.append(title)
+        # First prompt: CUA batch gate → deny. Then per-call prompts → approve once.
+        if len(prompts) == 1:
+            return options[1] if options else "no"
+        return options[0] if options else "yes"
+
+    monkeypatch.setattr("halia.cli.input.pick", fake_pick)
+    approve = _make_approver()
+
+    # First CUA action: batch gate denied, then per-call prompt approved.
+    assert approve("cua_open_url", '{"url": "https://example.com"}') is True
+    # Next CUA action: batch gate already declined, so per-call prompt again.
+    assert approve("cua_click", '{"x": 100, "y": 200}') is True
+    assert len(prompts) == 3  # batch gate + 2 per-call approvals
+
+
+def test_non_cua_tools_do_not_trigger_cua_batch(monkeypatch: Any) -> None:
+    """Regular tools should not prompt for CUA batch control."""
+    prompts: list[str] = []
+
+    def fake_pick(title: str = "", options: list[str] | None = None, default: int = 0) -> str:
+        prompts.append(title)
+        return options[0] if options else "yes"
+
+    monkeypatch.setattr("halia.cli.input.pick", fake_pick)
+    approve = _make_approver()
+
     assert approve("write_file", '{"path": "/tmp/x/a.txt", "content": "1"}') is True
-    assert approve("write_file", '{"path": "/tmp/x/b.txt", "content": "2"}') is True
-    assert len(calls) == 2  # each write re-prompted (folder was never trusted)
+    assert len(prompts) == 1
+    assert "CUA" not in prompts[0]
+

@@ -38,11 +38,19 @@ def _ensure_playwright_sync() -> Any:
     """Lazily import and initialize Playwright (sync, in thread)."""
     global _playwright
     if _playwright is None:
+        # Check if computer is enabled
+        from halia.config.settings import read_config
+        config = read_config()
+        if not config.get("computer_enabled"):
+            raise RuntimeError(
+                "halia computer is not enabled. "
+                "Run 'halia setup --computer' to enable browser automation."
+            )
         try:
             from playwright.sync_api import sync_playwright
             _playwright = sync_playwright().start()
         except ImportError as exc:
-            raise ImportError(
+            raise RuntimeError(
                 "playwright is not installed. Install with: "
                 "pip install halia[browser] && playwright install chromium"
             ) from exc

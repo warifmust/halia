@@ -4,6 +4,11 @@ A minimal, always-on denylist for read access — even "safe" read-only skills m
 not exfiltrate secrets (ssh keys, .env, credentials). This is the sensitive-floor
 pattern; the fuller leash (per-path allow/deny, approval gates for dangerous
 actions like run_command) builds on top of it later.
+
+Note: CUA (Computer Use Agent) operations bypass this guard because they operate
+on the desktop UI (screenshots, clicks, typing), not the filesystem. CUA skills
+do not call check_readable/check_writable. Audit logging is still enforced for
+all CUA operations regardless of backend selection.
 """
 
 from __future__ import annotations

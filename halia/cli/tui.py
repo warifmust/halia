@@ -319,8 +319,8 @@ def run_tui(
     from halia.config.settings import read_config
     from halia.core.agent import (
         DEFAULT_HISTORY_BUDGET_CHARS,
-        SYSTEM_PROMPT,
         RunLimitError,
+        _get_system_prompt,
         converse,
     )
     from halia.core.session import get_session, new_session, save_session
@@ -394,7 +394,7 @@ def run_tui(
         )
     else:
         config, registry, extra_system = _prepare_context(profile, allow_commands)
-        messages = [{"role": "system", "content": SYSTEM_PROMPT + extra_system}]
+        messages = [{"role": "system", "content": _get_system_prompt() + extra_system}]
         archived = []
         sess = new_session(config.provider, config.model, profile, allow_commands, messages)
         save_session(sess)
