@@ -142,6 +142,7 @@ class CuaScreenshot(Skill):
     multi_modal = True
     # Side-channel: agent loop reads this after the tool runs
     _pending_image: str | None = None
+    _pending_detail: str | None = None
     # Scale factor from the (resized) image the model sees back to real
     # screen pixels. Set on every screenshot; read by CuaClick/CuaScroll so
     # the model can give coordinates in image-space and we map them to the
@@ -152,6 +153,8 @@ class CuaScreenshot(Skill):
     _MAX_WIDTH = 1600
     _JPEG_QUALITY = 90
     _GRID_STEP = 100
+    _LOW_MAX_WIDTH = 800
+    _LOW_JPEG_QUALITY = 70
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,
@@ -160,6 +163,13 @@ class CuaScreenshot(Skill):
                 "type": "boolean",
                 "description": "Overlay a coordinate grid on the screenshot "
                 "(default: true). Set false for a raw screenshot.",
+            },
+            "detail": {
+                "type": "string",
+                "enum": ["high", "low"],
+                "description": "Resolution. 'high' (1600px) for precise "
+                "targeting; 'low' (800px, smaller) for quick verification. "
+                "Default: high.",
             },
         },
     }
@@ -172,6 +182,10 @@ class CuaScreenshot(Skill):
         if not isinstance(grid, bool):
             grid = True
 
+        detail = args.get("detail", "high")
+        if detail not in ("high", "low"):
+            detail = "high"
+
         try:
             import base64
             import io
@@ -183,10 +197,16 @@ class CuaScreenshot(Skill):
 
             img: Image.Image = Image.open(path)
             real_w, real_h = img.size
-            if real_w > CuaScreenshot._MAX_WIDTH:
-                ratio = CuaScreenshot._MAX_WIDTH / real_w
+            if detail == "low":
+                max_width = CuaScreenshot._LOW_MAX_WIDTH
+                quality = CuaScreenshot._LOW_JPEG_QUALITY
+            else:
+                max_width = CuaScreenshot._MAX_WIDTH
+                quality = CuaScreenshot._JPEG_QUALITY
+            if real_w > max_width:
+                ratio = max_width / real_w
                 img = img.resize(
-                    (CuaScreenshot._MAX_WIDTH, int(real_h * ratio)),
+                    (max_width, int(real_h * ratio)),
                     Image.Resampling.LANCZOS,
                 )
             # Record how much the image was shrunk so clicks/scrolls can be
@@ -198,10 +218,11 @@ class CuaScreenshot(Skill):
                 img = _overlay_grid(img, step=CuaScreenshot._GRID_STEP)
 
             buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=CuaScreenshot._JPEG_QUALITY, optimize=True)
+            img.save(buf, format="JPEG", quality=quality, optimize=True)
             CuaScreenshot._pending_image = base64.b64encode(
                 buf.getvalue()
             ).decode("ascii")
+            CuaScreenshot._pending_detail = detail
             return (
                 f"Screenshot captured ({img.size[0]}x{img.size[1]}). "
                 "Analyze the attached image. Give click/scroll coordinates in "
@@ -219,6 +240,7 @@ class CuaScreenshot(Skill):
                 CuaScreenshot._pending_image = base64.b64encode(
                     img_bytes
                 ).decode("ascii")
+                CuaScreenshot._pending_detail = "low"
                 return "Screenshot captured — analyze the attached image."
             except Exception as exc:
                 return f"error: {exc}"

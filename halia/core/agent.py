@@ -155,9 +155,10 @@ _CUA_PROMPT = (
     "already contains text you want to replace (re-filling, fixing a typo), "
     "pass clear=true so the field is selected and cleared first — otherwise "
     "your text appends to the existing content. "
-    "5) VERIFY: take ONE cua_screenshot after your action to confirm it worked. "
-    "IMPORTANT: Do NOT take multiple screenshots in a row. Take one, analyze it, "
-    "act, then take another. Repeated screenshots waste context. "
+    "5) VERIFY: take ONE cua_screenshot with detail=\"low\" to confirm it worked. "
+    "IMPORTANT: screenshots are expensive. Take at most TWO per task — one "
+    "high-detail screenshot to locate, and one detail=\"low\" screenshot to "
+    "verify. Do NOT re-screenshot unless the screen has changed. "
     "Do NOT use browser_open or browser_* tools — they do NOT exist. Use cua_* tools only. "
 )
 
@@ -634,10 +635,13 @@ def _execute_batch(
         _duration_ms = (_perf() - _t0) * 1000
         # Check for pending image from CUA screenshot (side-channel)
         _pending_img = None
+        _pending_detail = "low"
         if name == "cua_screenshot":
             from halia.skills.cua import CuaScreenshot
             _pending_img = CuaScreenshot._pending_image
+            _pending_detail = CuaScreenshot._pending_detail or "low"
             CuaScreenshot._pending_image = None  # consume it
+            CuaScreenshot._pending_detail = None
         # Track success/failure for the circuit breaker.
         # Read-only tools (jq, grep, read_file) get errors from bad queries,
         # not broken tools — don't count them as failures.
@@ -661,8 +665,12 @@ def _execute_batch(
         # Build tool message
         tool_msg: Message = {"role": "tool", "tool_call_id": tc["id"], "content": observation}
         messages.append(tool_msg)
-        # If CUA screenshot captured an image, inject it as a user message
+        # If CUA screenshot captured an image, inject it as a user message.
+        # Evict older screenshot images first — they are the dominant context
+        # cost and stale once a newer one arrives (the full record stays in
+        # the audit trail).
         if _pending_img:
+            _drop_old_screenshots(messages)
             caption = "[System: desktop screenshot captured]"
             if ctx.config.provider_kind == "anthropic":
                 img_content: Any = [
@@ -683,11 +691,31 @@ def _execute_batch(
                         "type": "image_url",
                         "image_url": {
                             "url": f"data:image/jpeg;base64,{_pending_img}",
-                            "detail": "low",
+                            "detail": _pending_detail,
                         },
                     },
                 ]
             messages.append({"role": "user", "content": img_content})
+
+
+def _drop_old_screenshots(messages: list[Message]) -> None:
+    """Evict earlier injected screenshot images from the message list.
+
+    Screenshot images are by far the largest context cost. Once a newer
+    screenshot arrives, older ones are stale — their text tool results stay,
+    and the audit trail keeps the full record, so only the image payloads are
+    dropped here.
+    """
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, list) and any(
+            isinstance(block, dict) and ("image" in block or "image_url" in block)
+            for block in content
+        ):
+            del messages[i]
 
 
 def _pause(
