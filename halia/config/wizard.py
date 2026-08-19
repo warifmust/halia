@@ -412,6 +412,14 @@ def _install_cua_driver(console: Console) -> bool:
 
     console.print("[green]✓[/green] CUA driver installed and enabled")
 
+    # On headless systems the driver cannot run — warn before the user relies on it.
+    from halia.computer.cua_backend import cua_available
+    if not cua_available():
+        console.print(
+            "[yellow]⚠[/yellow] This environment looks headless (no graphical "
+            "display) — CUA desktop automation will be unavailable here."
+        )
+
     # On macOS, trigger the accessibility permission dialog
     import platform
     if platform.system() == "Darwin":

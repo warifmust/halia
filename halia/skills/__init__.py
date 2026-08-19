@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from halia.computer.cua_backend import cua_available
 from halia.skills.ask import AskUser
 from halia.skills.base import Skill as Skill  # noqa: F401 — re-exported for external use
 from halia.skills.calc import Calculate
@@ -120,7 +121,12 @@ def _get_computer_backend() -> str:
 
 _backend = _get_computer_backend()
 
-if _HAS_BROWSER and _backend != "cua":
+# CUA drives a real desktop; on headless systems cua-driver cannot run. Treat
+# it as unavailable and keep browser skills as the fallback instead of hiding
+# them behind a broken CUA backend.
+_cua_usable = _HAS_CUA and cua_available()
+
+if _HAS_BROWSER and (_backend != "cua" or not _cua_usable):
     _SKILL_FACTORIES.update({
         "browser_open": BrowserOpen,
         "browser_navigate": BrowserNavigate,
@@ -134,8 +140,8 @@ if _HAS_BROWSER and _backend != "cua":
         "browser_close": BrowserClose,
     })
 
-# CUA skills (optional — only available if cua-driver is installed)
-if _HAS_CUA:
+# CUA skills (optional — only available if cua-driver is installed and usable)
+if _cua_usable:
     _SKILL_FACTORIES.update({
         "cua_screenshot": CuaScreenshot,
         "cua_click": CuaClick,

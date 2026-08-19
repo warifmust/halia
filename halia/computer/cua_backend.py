@@ -21,6 +21,18 @@ from pathlib import Path
 from typing import Any
 
 
+def cua_available() -> bool:
+    """Whether CUA desktop automation can run in this environment.
+
+    CUA drives a real desktop through the native window server. On headless
+    Linux there is no display, so the driver cannot load its X11 libraries or
+    open windows — return False so callers can fall back instead of surfacing
+    cryptic `libXi.so.6` / `xdg-open` failures.
+    """
+    from halia.computer import display_available
+    return display_available()
+
+
 class CuaComputer:
     """Desktop automation via cua-driver SDK."""
 

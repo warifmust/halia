@@ -19,6 +19,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+from halia.computer import display_available
+
 # Browser state — protected by _lock for thread safety
 _lock = threading.Lock()
 _playwright = None
@@ -57,9 +59,12 @@ def _ensure_playwright_sync() -> Any:
     return _playwright
 
 
-def _ensure_page_sync(headless: bool = True) -> Any:
+def _ensure_page_sync(headless: bool | None = None) -> Any:
     """Ensure we have an active browser page (sync, in thread)."""
     global _browser, _context, _page
+    if headless is None:
+        # Visible by default on a desktop; headless when there is no display.
+        headless = not display_available()
     pw = _ensure_playwright_sync()
     if _page is None or _page.is_closed():
         if _browser is None or not _browser.is_connected():
@@ -84,7 +89,7 @@ def _close_browser_sync() -> None:
     _browser = None
 
 
-def _ensure_page(headless: bool = True) -> Any:
+def _ensure_page(headless: bool | None = None) -> Any:
     """Thread-safe wrapper for _ensure_page_sync."""
     with _lock:
         return _run_in_thread(_ensure_page_sync, headless)
@@ -102,7 +107,8 @@ class BrowserOpen:
         "Open a URL in the browser and return the page content. "
         "Use this to visit a website, read its content, and prepare for "
         "further interaction. Returns the page title and main text content. "
-        "Use headless=false to see the browser window."
+        "Shows a visible browser window by default on desktop; pass "
+        "headless=true to run in the background with no window."
     )
     dangerous = True  # navigates to external sites
     untrusted = True  # content from external sites
@@ -113,8 +119,8 @@ class BrowserOpen:
             "url": {"type": "string", "description": "The URL to open."},
             "headless": {
                 "type": "boolean",
-                "description": "Run in background (default: true). "
-                "Set to false to see the browser window.",
+                "description": "Run with no visible window. "
+                "Default: false on desktop, true on headless servers.",
             },
             "wait": {
                 "type": "string",
@@ -133,9 +139,8 @@ class BrowserOpen:
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
 
-        headless = args.get("headless", True)
-        if not isinstance(headless, bool):
-            headless = True
+        headless_arg = args.get("headless")
+        headless = headless_arg if isinstance(headless_arg, bool) else not display_available()
 
         wait = args.get("wait", "load")
         if wait not in ("load", "domcontentloaded", "networkidle"):
@@ -593,15 +598,15 @@ class BrowserEnsure:
         "properties": {
             "headless": {
                 "type": "boolean",
-                "description": "Restart in headless mode if needed (default: true).",
+                "description": "Restart with no visible window. "
+                "Default: false on desktop, true on headless servers.",
             },
         },
     }
 
     def run(self, args: dict[str, Any]) -> str:
-        headless = args.get("headless", True)
-        if not isinstance(headless, bool):
-            headless = True
+        headless_arg = args.get("headless")
+        headless = headless_arg if isinstance(headless_arg, bool) else not display_available()
 
         def _ensure() -> str:
             global _browser, _context, _page

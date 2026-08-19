@@ -29,7 +29,14 @@ def _is_cua_enabled() -> bool:
 
 def _get_cua() -> Any:
     """Get the CUA computer instance."""
-    from halia.computer.cua_backend import get_cua_computer
+    from halia.computer.cua_backend import cua_available, get_cua_computer
+    if not cua_available():
+        raise RuntimeError(
+            "CUA desktop automation requires a graphical desktop "
+            "(X11/Wayland on Linux, or a logged-in macOS/Windows session). "
+            "This environment looks headless — use browser automation or "
+            "HTTP requests instead."
+        )
     return get_cua_computer()
 
 
@@ -64,15 +71,26 @@ class CuaOpenUrl(Skill):
 
         try:
             import platform
+            import shutil
             import subprocess
             import time
 
-            # Use system command to open URL in default browser (most reliable)
-            if platform.system() == "Darwin":
-                subprocess.Popen(["open", url])
+            # Open the URL in the default browser using the OS-native launcher.
+            system = platform.system()
+            if system == "Darwin":
+                launcher = ["open", url]
+            elif system == "Windows":
+                launcher = ["cmd", "/c", "start", "", url]
             else:
-                subprocess.Popen(["xdg-open", url])
+                if shutil.which("xdg-open") is None:
+                    return (
+                        "error: no graphical browser launcher (xdg-open) found — "
+                        "this looks like a headless system with no desktop. "
+                        "Open the URL manually, or use browser/HTTP automation."
+                    )
+                launcher = ["xdg-open", url]
 
+            subprocess.Popen(launcher)
             # Give the browser a moment to open the tab and start loading.
             time.sleep(1.5)
 

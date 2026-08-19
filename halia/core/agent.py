@@ -127,7 +127,8 @@ SYSTEM_PROMPT = (
 _BROWSER_PROMPT = (
     "BROWSER AUTOMATION: When the user asks you to interact with a website, use the "
     "browser tools. Follow this workflow: "
-    "1) OPEN the page with browser_open (headless=false to let the user see it). "
+    "1) OPEN the page with browser_open. It opens a visible window on desktop by "
+    "default; pass headless=true only when the user wants it to run in the background. "
     "2) WAIT for elements with browser_wait if the page loads slowly. "
     "3) READ the page with browser_read to understand what's on it. "
     "4) INTERACT: use browser_click, browser_type, browser_scroll to fill forms, "
@@ -168,10 +169,11 @@ _CLOSING_PROMPT = (
 
 def _get_system_prompt() -> str:
     """Build the system prompt with the correct automation section for the backend."""
+    from halia.computer.cua_backend import cua_available
     from halia.config.settings import read_config
     cfg = read_config()
     backend = cfg.get("computer_backend", "halia")
-    if backend == "cua":
+    if backend == "cua" and cua_available():
         return SYSTEM_PROMPT + _CUA_PROMPT + _CLOSING_PROMPT
     return SYSTEM_PROMPT + _BROWSER_PROMPT + _CLOSING_PROMPT
 
