@@ -112,6 +112,32 @@ def version() -> None:
 
 
 @app.command()
+def cua_debug() -> None:
+    """Dump the raw CUA desktop state (element tree JSON) for debugging."""
+    import json
+
+    from halia.computer.cua_backend import cua_available, get_cua_computer
+
+    if not cua_available():
+        console.print("[yellow]CUA is not available here (no graphical display).[/yellow]")
+        raise typer.Exit(1)
+
+    cua = get_cua_computer()
+    try:
+        raw = cua.desktop_state_json()
+    except Exception as exc:
+        console.print(f"[red]error: {exc}[/red]")
+        raise typer.Exit(1) from exc
+    finally:
+        cua.close()
+
+    try:
+        console.print(json.dumps(json.loads(raw), indent=2))
+    except Exception:
+        console.print(raw)
+
+
+@app.command()
 def doctor() -> None:
     """Diagnose the local install (config, DB, permission floor, cron, snapshots).
 

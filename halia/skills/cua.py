@@ -40,6 +40,35 @@ def _get_cua() -> Any:
     return get_cua_computer()
 
 
+def _overlay_grid(img: Any, step: int = 100) -> Any:
+    """Draw a faint coordinate grid + axis labels for precise click targeting."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    overlay = Image.new("RGBA", img.size, (255, 255, 255, 0))
+    draw = ImageDraw.Draw(overlay)
+    width, height = img.size
+    grid_color = (0, 0, 0, 18)
+    label_color = (0, 0, 0, 64)
+
+    for x in range(step, width, step):
+        draw.line([(x, 0), (x, height)], fill=grid_color, width=1)
+    for y in range(step, height, step):
+        draw.line([(0, y), (width, y)], fill=grid_color, width=1)
+
+    try:
+        font = ImageFont.load_default(size=10)
+    except TypeError:  # Pillow < 10 lacks the size argument
+        font = ImageFont.load_default()
+
+    for x in range(0, width, step):
+        draw.text((x + 2, 2), str(x), fill=label_color, font=font)
+    for y in range(0, height, step):
+        draw.text((2, y + 2), str(y), fill=label_color, font=font)
+
+    base = img.convert("RGBA")
+    return Image.alpha_composite(base, overlay).convert("RGB")
+
+
 class CuaOpenUrl(Skill):
     name = "cua_open_url"
     description = (
@@ -103,8 +132,9 @@ class CuaScreenshot(Skill):
     name = "cua_screenshot"
     description = (
         "Take a screenshot of the desktop. Captures the full screen via CUA driver. "
-        "The screenshot is returned as an image the model can analyze visually. "
-        "Use this to see what's on screen before clicking or typing."
+        "The screenshot is returned as an image the model can analyze visually, "
+        "with a faint coordinate grid overlay so elements can be targeted "
+        "precisely. Use this to see what's on screen before clicking or typing."
     )
     dangerous = False
     untrusted = False  # screenshots are read-only
@@ -117,15 +147,30 @@ class CuaScreenshot(Skill):
     # the model can give coordinates in image-space and we map them to the
     # real screen. Defaults to 1.0 (no scaling) until a screenshot is taken.
     _scale: float = 1.0
+    # Keep the screenshot large enough to click precisely without exploding
+    # image tokens. Native screens are usually 1920px wide.
+    _MAX_WIDTH = 1600
+    _JPEG_QUALITY = 90
+    _GRID_STEP = 100
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,
-        "properties": {},
+        "properties": {
+            "grid": {
+                "type": "boolean",
+                "description": "Overlay a coordinate grid on the screenshot "
+                "(default: true). Set false for a raw screenshot.",
+            },
+        },
     }
 
     def run(self, args: dict[str, Any]) -> str:
         if not _is_cua_enabled():
             return "error: CUA backend not enabled. Run 'halia setup --cua' first."
+
+        grid = args.get("grid", True)
+        if not isinstance(grid, bool):
+            grid = True
 
         try:
             import base64
@@ -138,20 +183,22 @@ class CuaScreenshot(Skill):
 
             img: Image.Image = Image.open(path)
             real_w, real_h = img.size
-            max_width = 800
-            if real_w > max_width:
-                ratio = max_width / real_w
+            if real_w > CuaScreenshot._MAX_WIDTH:
+                ratio = CuaScreenshot._MAX_WIDTH / real_w
                 img = img.resize(
-                    (max_width, int(real_h * ratio)), Image.Resampling.LANCZOS
+                    (CuaScreenshot._MAX_WIDTH, int(real_h * ratio)),
+                    Image.Resampling.LANCZOS,
                 )
             # Record how much the image was shrunk so clicks/scrolls can be
             # mapped from image-space back to real screen coordinates.
             CuaScreenshot._scale = real_w / img.size[0]
             if img.mode != "RGB":
                 img = img.convert("RGB")
+            if grid:
+                img = _overlay_grid(img, step=CuaScreenshot._GRID_STEP)
 
             buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=40, optimize=True)
+            img.save(buf, format="JPEG", quality=CuaScreenshot._JPEG_QUALITY, optimize=True)
             CuaScreenshot._pending_image = base64.b64encode(
                 buf.getvalue()
             ).decode("ascii")

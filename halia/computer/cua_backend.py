@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import atexit
 import base64
 import sys
 import tempfile
@@ -227,6 +228,31 @@ class CuaComputer:
 
         return "\n".join(parts)
 
+    async def _desktop_state_json_async(self) -> str:
+        """Return the raw desktop-state JSON (element tree) from cua-driver."""
+        from cua_driver import GetDesktopStateInput
+
+        driver = await self._ensure_session()
+        desktop = await driver.get_desktop_state(
+            GetDesktopStateInput(
+                session=self._session_name,
+                screenshot_out_file=None,
+            )
+        )
+        sections = []
+        text = getattr(desktop, "text", None)
+        structured = getattr(desktop, "structured_json", None)
+        raw = getattr(desktop, "raw_json", None)
+        if text:
+            sections.append(f"== text ==\n{text}")
+        if structured:
+            sections.append(f"== structured_json ==\n{structured}")
+        if raw:
+            sections.append(f"== raw_json ==\n{raw}")
+        if not sections:
+            return str(desktop)
+        return "\n\n".join(sections)
+
     async def _hotkey_async(self, keys: list[str]) -> str:
         """Press a hotkey combination via cua-driver."""
         from cua_driver import DesktopScope, HotkeyInput
@@ -287,6 +313,10 @@ class CuaComputer:
         """Get desktop state (sync wrapper)."""
         return str(self._run_async(self._desktop_state_async()))
 
+    def desktop_state_json(self) -> str:
+        """Get the raw desktop-state JSON (element tree) — sync wrapper."""
+        return str(self._run_async(self._desktop_state_json_async()))
+
     def hotkey(self, keys: list[str]) -> str:
         """Press a hotkey combination (sync wrapper)."""
         return str(self._run_async(self._hotkey_async(keys)))
@@ -329,3 +359,23 @@ def get_cua_computer() -> CuaComputer:
         if _instance is None:
             _instance = CuaComputer()
         return _instance
+
+
+def _close_singleton() -> None:
+    """Close the CUA driver before interpreter teardown.
+
+    Dropping the FFI driver reference while the native library is still loaded
+    avoids ``CuaDriver.__del__`` firing at shutdown, when the uniffi function
+    pointers are already gone (the ``'NoneType' object is not callable`` error).
+    """
+    global _instance
+    inst = _instance
+    _instance = None
+    if inst is not None:
+        try:
+            inst.close()
+        except Exception:
+            pass
+
+
+atexit.register(_close_singleton)
