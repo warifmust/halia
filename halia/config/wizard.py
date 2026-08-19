@@ -199,10 +199,15 @@ def _pick_computer_backend(console: Console, config: dict[str, Any]) -> None:
     )
 
     if choice.startswith("CUA"):
-        config["computer_backend"] = "cua"
-        write_config(config)
-        console.print("[green]✓[/green] CUA selected")
-        console.print("[dim]  Run `halia setup --cua` to install the CUA agent.[/dim]")
+        if not _install_cua_driver(console):
+            # CUA install failed — keep the browser backend so computer
+            # automation stays usable instead of leaving a broken CUA backend.
+            config["computer_backend"] = "halia"
+            write_config(config)
+            console.print(
+                "[yellow]⚠[/yellow] CUA install failed — "
+                "halia computer (browser) enabled instead."
+            )
     else:
         config["computer_backend"] = "halia"
         write_config(config)
@@ -386,12 +391,17 @@ def _setup_cua(console: Console) -> None:
         console.print("[dim]CUA installation skipped.[/dim]")
         return
 
+    _install_cua_driver(console)
+
+
+def _install_cua_driver(console: Console) -> bool:
+    """Install cua-driver into halia's environment and enable the CUA backend."""
     # Install cua-driver into halia's own running environment
     if not _install_python_package(
         console, "cua-driver", message="Installing cua-driver", timeout=300
     ):
         console.print("[dim]  You can try later with: halia setup --cua[/dim]")
-        return
+        return False
 
     # Update config
     from halia.config.settings import read_config, write_config
@@ -445,3 +455,4 @@ def _setup_cua(console: Console) -> None:
             )
 
     console.print("[dim]  Use cua_screenshot, cua_click, cua_type to automate desktop.[/dim]")
+    return True
