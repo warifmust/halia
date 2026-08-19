@@ -209,10 +209,36 @@ _TRUNCATION_NOTE: Message = {
 }
 
 
+# Images are sent as base64 data URLs; counting those raw bytes as "characters"
+# wildly overstates context usage (a 1600px JPEG is ~300k chars of base64 but
+# only ~1-2k tokens to the model). Weight an image block by a token estimate
+# instead (~4 chars/token).
+_IMAGE_BLOCK_CHARS = 4000
+
+
+def _content_chars(content: Any) -> int:
+    """Character cost of a message content field, weighting images realistically."""
+    if isinstance(content, str):
+        return len(content)
+    if isinstance(content, list):
+        total = 0
+        for block in content:
+            if not isinstance(block, dict):
+                total += len(str(block))
+            elif "text" in block:
+                total += len(str(block.get("text") or ""))
+            elif "image" in block or "image_url" in block:
+                total += _IMAGE_BLOCK_CHARS
+            else:
+                total += len(str(block))
+        return total
+    return len(str(content))
+
+
 def _msg_chars(message: Message) -> int:
     content = message.get("content") or ""
     tool_calls = message.get("tool_calls") or []
-    return len(str(content)) + len(json.dumps(tool_calls))
+    return _content_chars(content) + len(json.dumps(tool_calls))
 
 
 def _with_turn_note(window: list[Message], note: str) -> list[Message]:
@@ -1017,6 +1043,16 @@ def _run_tool(
         return f"error: invalid tool arguments for '{name}': {exc}"
     if not isinstance(parsed, dict):
         return f"error: tool arguments for '{name}' must be a JSON object"
+    # Some models wrap the real arguments in an extra `{"arguments": "<json>"`
+    # envelope. Unwrap it so the skill receives the intended object.
+    if set(parsed) == {"arguments"} and isinstance(parsed["arguments"], str):
+        inner = parsed["arguments"].strip()
+        try:
+            unwrapped: Any = json.loads(inner) if inner else {}
+        except json.JSONDecodeError:
+            unwrapped = None
+        if isinstance(unwrapped, dict):
+            parsed = unwrapped
     try:
         observation = skill.run(parsed)
     except Exception as exc:  # noqa: BLE001 — tool errors are observations, not crashes

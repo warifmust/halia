@@ -695,7 +695,7 @@ def _make_approver() -> Any:
         cua_batch_prompted = True
         console.print()
         console.print(
-            "[bold white on red] 🖥️ FULL DESKTOP CONTROL [/bold white on red] "
+            "[bold white on red] 🖥️  FULL DESKTOP CONTROL [/bold white on red] "
             "[bold]halia wants to drive your real mouse and keyboard[/bold]"
         )
         console.print(

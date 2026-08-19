@@ -321,6 +321,7 @@ def run_tui(
         DEFAULT_HISTORY_BUDGET_CHARS,
         RunLimitError,
         _get_system_prompt,
+        _total_chars,
         converse,
     )
     from halia.core.session import get_session, new_session, save_session
@@ -662,8 +663,7 @@ def run_tui(
 
     def ctx_pct() -> int:
         """How full the sent-context window is (a char proxy for tokens)."""
-        used = sum(len(str(m.get("content") or "")) for m in messages)
-        used += sum(len(str(m.get("tool_calls") or "")) for m in messages)
+        used = _total_chars(messages)
         return min(100, int(used / DEFAULT_HISTORY_BUDGET_CHARS * 100))
 
     def status_line() -> str:

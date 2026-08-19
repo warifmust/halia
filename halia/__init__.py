@@ -1,3 +1,3 @@
 """halia — a trust-first general agent."""
 
-__version__ = "0.26.9"
+__version__ = "0.26.10"
