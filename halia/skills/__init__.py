@@ -140,8 +140,8 @@ if _HAS_BROWSER and (_backend != "cua" or not _cua_usable):
         "browser_close": BrowserClose,
     })
 
-# CUA skills (optional — only available if cua-driver is installed and usable)
-if _cua_usable:
+# CUA skills — only when the CUA backend is selected AND it can actually run.
+if _cua_usable and _backend == "cua":
     _SKILL_FACTORIES.update({
         "cua_screenshot": CuaScreenshot,
         "cua_click": CuaClick,

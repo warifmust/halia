@@ -118,6 +118,16 @@ class CuaComputer:
             )
         )
 
+        # Surface driver-level failures instead of returning an empty file that
+        # later fails as "cannot identify image file".
+        if getattr(desktop, "is_error", False):
+            detail = getattr(desktop, "text", "") or getattr(desktop, "error_code", "")
+            raise RuntimeError(f"CUA desktop state failed: {detail}".rstrip())
+
+        if not (hasattr(desktop, "images") and desktop.images):
+            detail = getattr(desktop, "text", "") or "no screenshot returned"
+            raise RuntimeError(f"CUA returned no screenshot: {detail}".rstrip())
+
         # Save screenshot
         if path:
             screenshot_path = Path(path).expanduser()
@@ -126,20 +136,18 @@ class CuaComputer:
             screenshot_path = Path(tmp.name)
             tmp.close()
 
-        # desktop.images contains the screenshot data
-        if hasattr(desktop, "images") and desktop.images:
-            img = desktop.images[0]
-            # CUA stores images as base64-encoded data
-            if hasattr(img, "data_base64") and img.data_base64:
-                screenshot_path.write_bytes(base64.b64decode(img.data_base64))
-            elif hasattr(img, "data") and img.data:
-                screenshot_path.write_bytes(img.data)
-            elif hasattr(img, "url") and img.url:
-                import httpx
-                resp = httpx.get(img.url)
-                screenshot_path.write_bytes(resp.content)
-            else:
-                raise RuntimeError("CUA returned image with no data")
+        img = desktop.images[0]
+        # CUA stores images as base64-encoded data
+        if hasattr(img, "data_base64") and img.data_base64:
+            screenshot_path.write_bytes(base64.b64decode(img.data_base64))
+        elif hasattr(img, "data") and img.data:
+            screenshot_path.write_bytes(img.data)
+        elif hasattr(img, "url") and img.url:
+            import httpx
+            resp = httpx.get(img.url)
+            screenshot_path.write_bytes(resp.content)
+        else:
+            raise RuntimeError("CUA returned image with no data")
 
         return str(screenshot_path)
 
