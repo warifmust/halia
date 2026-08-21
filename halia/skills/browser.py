@@ -1,14 +1,16 @@
 """Browser automation skills — Playwright-based browser control.
 
-Provides browser_open, browser_navigate, browser_click, browser_type,
-browser_screenshot, browser_read, and browser_close skills.
+Provides browser_open, browser_navigate, browser_new_tab, browser_switch_tab,
+browser_click, browser_type, browser_screenshot, browser_read, browser_extract,
+and browser_close skills.
 
 Phase 1 of the CUA (Computer Use Agent) implementation — the "hands" that
 CUA will指挥 in Phase 2.
 
-Trust note: browser actions are potentially dangerous (navigating to unknown
-sites, clicking elements, typing). All write actions require approval.
-Read-only actions (screenshot, read) are safe.
+Trust note: browser automation is gated by a one-time "full browser control"
+consent prompt (like CUA). After consent, all browser actions — navigate, read,
+extract, click, type, tabs — run freely. Destructive actions (shell commands)
+are still gated per-action by the existing approval floor.
 """
 
 from __future__ import annotations
@@ -34,6 +36,51 @@ def _run_in_thread(func: Any, *args: Any, **kwargs: Any) -> Any:
     """Run a function in the Playwright thread to avoid event loop conflicts."""
     future = _executor.submit(func, *args, **kwargs)
     return future.result(timeout=60)
+
+
+def _chrome_installed() -> bool:
+    """Best-effort detection of a system Google Chrome install."""
+    import shutil
+    import sys
+
+    if sys.platform == "darwin":
+        return Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome").exists()
+    if sys.platform == "win32":
+        import os
+
+        candidates = [
+            os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+        ]
+        return any(Path(c).exists() for c in candidates)
+    return (
+        shutil.which("google-chrome") is not None
+        or shutil.which("google-chrome-stable") is not None
+    )
+
+
+def _browser_launch_kwargs() -> dict[str, Any]:
+    """Resolve which Chromium binary to launch, preferring a real browser.
+
+    Default ("auto"): the system Google Chrome if installed (full codecs, DRM,
+    a real browser) — else Playwright's bundled full Chromium. `channel="chromium"`
+    selects the full build rather than the stripped headless shell. Override with
+    config `browser_channel` (chrome/msedge/chromium) or `browser_executable_path`
+    (Arc, Brave, …).
+    """
+    from halia.config.settings import read_config
+
+    config = read_config()
+    exe = config.get("browser_executable_path", "")
+    if isinstance(exe, str) and exe.strip():
+        return {"executable_path": exe.strip()}
+    channel = config.get("browser_channel", "auto")
+    if channel in ("chrome", "msedge", "chromium"):
+        return {"channel": channel}
+    if _chrome_installed():
+        return {"channel": "chrome"}
+    return {"channel": "chromium"}
 
 
 def _ensure_playwright_sync() -> Any:
@@ -69,9 +116,15 @@ def _ensure_page_sync(headless: bool | None = None) -> Any:
     if _page is None or _page.is_closed():
         if _browser is None or not _browser.is_connected():
             _close_browser_sync()  # clean up stale state
-            _browser = pw.chromium.launch(headless=headless)
+            launch_kwargs = _browser_launch_kwargs()
+            launch_kwargs["headless"] = headless
+            _browser = pw.chromium.launch(**launch_kwargs)
             _context = _browser.new_context()
-        _page = _context.new_page()
+        # If other tabs are still open, adopt the most recent one; otherwise
+        # open a fresh page. This keeps multi-tab sessions working after the
+        # active tab is closed.
+        pages = _context.pages
+        _page = pages[-1] if pages else _context.new_page()
     return _page
 
 
@@ -110,7 +163,7 @@ class BrowserOpen:
         "Shows a visible browser window by default on desktop; pass "
         "headless=true to run in the background with no window."
     )
-    dangerous = True  # navigates to external sites
+    dangerous = False  # covered by the one-time browser consent gate
     untrusted = True  # content from external sites
     parameters: dict[str, Any] = {
         "type": "object",
@@ -170,7 +223,7 @@ class BrowserNavigate:
         "Navigate the current browser page to a new URL. "
         "Requires browser_open to have been called first."
     )
-    dangerous = True
+    dangerous = False
     untrusted = True
     parameters: dict[str, Any] = {
         "type": "object",
@@ -211,13 +264,141 @@ class BrowserNavigate:
             return f"error navigating to {url}: {exc}"
 
 
+class BrowserNewTab:
+    name = "browser_new_tab"
+    description = (
+        "Open a URL in a new browser tab and switch to it. Keeps the previous "
+        "page open in the background. Use browser_switch_tab to move between "
+        "tabs. Requires browser_open first (opens one if not already open)."
+    )
+    dangerous = False  # covered by the one-time browser consent gate
+    untrusted = True  # content from external sites
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "url": {"type": "string", "description": "The URL to open in the new tab."},
+            "wait": {
+                "type": "string",
+                "enum": ["load", "domcontentloaded", "networkidle"],
+                "description": "Wait condition (default: load).",
+            },
+        },
+        "required": ["url"],
+    }
+
+    def run(self, args: dict[str, Any]) -> str:
+        url = args.get("url", "")
+        if not isinstance(url, str) or not url.strip():
+            return "error: 'url' is required"
+        url = url.strip()
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+
+        wait = args.get("wait", "load")
+        if wait not in ("load", "domcontentloaded", "networkidle"):
+            wait = "load"
+
+        def _new_tab() -> str:
+            global _page
+            had_page = _page is not None and not _page.is_closed()
+            page = _ensure_page_sync()
+            if had_page:
+                new_page = page.context.new_page()
+                _page = new_page
+            else:
+                # First tab — reuse the blank page we just ensured.
+                new_page = page
+            new_page.goto(url, wait_until=wait)
+            title = new_page.title()
+            text = new_page.evaluate("() => document.body.innerText")
+            if len(text) > 10000:
+                text = text[:10000] + "... [truncated]"
+            count = len(page.context.pages)
+            return (
+                f"Opened new tab ({count} open): {title}\n"
+                f"URL: {new_page.url}\n\n{text}"
+            )
+
+        try:
+            with _lock:
+                return _run_in_thread(_new_tab)  # type: ignore[no-any-return]
+        except Exception as exc:
+            return f"error opening new tab {url}: {exc}"
+
+
+class BrowserSwitchTab:
+    name = "browser_switch_tab"
+    description = (
+        "Manage browser tabs. With no arguments, lists all open tabs with their "
+        "index, title, and URL. Pass 'index' to switch to that tab, or 'close' "
+        "to close the tab at that index. Other browser tools act on the active "
+        "tab."
+    )
+    dangerous = False
+    untrusted = True  # lists titles/URLs from external sites
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "index": {
+                "type": "integer",
+                "description": "Switch to the tab at this 0-based index.",
+            },
+            "close": {
+                "type": "integer",
+                "description": "Close the tab at this 0-based index.",
+            },
+        },
+    }
+
+    def run(self, args: dict[str, Any]) -> str:
+        index = args.get("index")
+        close = args.get("close")
+
+        def _switch() -> str:
+            global _page
+            page = _ensure_page_sync()
+            pages = list(page.context.pages)
+
+            if close is not None:
+                if not isinstance(close, int) or close < 0 or close >= len(pages):
+                    return f"error: no tab at index {close} ({len(pages)} tab(s) open)"
+                pages[close].close()
+                remaining = list(page.context.pages)
+                _page = remaining[-1] if remaining else None
+                return f"Closed tab {close}. {len(remaining)} tab(s) open."
+
+            if index is not None:
+                if not isinstance(index, int) or index < 0 or index >= len(pages):
+                    return f"error: no tab at index {index} ({len(pages)} tab(s) open)"
+                _page = pages[index]
+                _page.bring_to_front()
+                return f"Switched to tab {index}: {_page.title()} ({_page.url})"
+
+            if not pages:
+                return "No tabs open."
+            lines = []
+            for i, p in enumerate(pages):
+                marker = " *" if p is _page else ""
+                title = p.title()[:60]
+                lines.append(f"{i}{marker}: {title} — {p.url}")
+            return "Tabs:\n" + "\n".join(lines)
+
+        try:
+            with _lock:
+                return _run_in_thread(_switch)  # type: ignore[no-any-return]
+        except Exception as exc:
+            return f"error managing tabs: {exc}"
+
+
 class BrowserClick:
     name = "browser_click"
     description = (
         "Click an element on the current page. Can click by text content, "
         "CSS selector, or coordinates. Requires browser_open first."
     )
-    dangerous = True
+    dangerous = False  # covered by the one-time browser consent gate
     untrusted = False
     parameters: dict[str, Any] = {
         "type": "object",
@@ -265,7 +446,7 @@ class BrowserType:
         "Type text into an input field or text area. Can target by placeholder, "
         "label, selector, or coordinates. Requires browser_open first."
     )
-    dangerous = True
+    dangerous = False  # covered by the one-time browser consent gate
     untrusted = False
     parameters: dict[str, Any] = {
         "type": "object",
@@ -327,10 +508,16 @@ class BrowserScreenshot:
     name = "browser_screenshot"
     description = (
         "Take a screenshot of the current page. Saves to a file and returns "
-        "the path. Automatically checks vision support for the current model."
+        "the page as an image the model can analyze visually. Also checks "
+        "vision support for the current model."
     )
     dangerous = False
     untrusted = False
+    # Multi-modal: the tool result includes an image content block.
+    multi_modal = True
+    # Side-channel: agent loop reads this after the tool runs.
+    _pending_image: str | None = None
+    _pending_detail: str | None = None
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,
@@ -378,8 +565,40 @@ class BrowserScreenshot:
                     tmp.close()
             page.screenshot(path=str(screenshot_path), full_page=full_page)
 
+            # Encode the image and stage it for the agent loop to inject as a
+            # visual observation (same side-channel as cua_screenshot). Keep it
+            # reasonably sized so image tokens don't blow up the context window.
+            try:
+                import base64
+                import io
+
+                from PIL import Image
+
+                img: Image.Image = Image.open(screenshot_path)
+                img.thumbnail((1600, 4096), Image.Resampling.LANCZOS)
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=90, optimize=True)
+                BrowserScreenshot._pending_image = base64.b64encode(
+                    buf.getvalue()
+                ).decode("ascii")
+                BrowserScreenshot._pending_detail = "high"
+                dims = f" ({img.size[0]}x{img.size[1]})"
+            except Exception:
+                import base64
+
+                BrowserScreenshot._pending_image = base64.b64encode(
+                    screenshot_path.read_bytes()
+                ).decode("ascii")
+                BrowserScreenshot._pending_detail = "high"
+                dims = ""
+
             # Build result message
-            result = f"Screenshot saved to: {screenshot_path}"
+            result = (
+                f"Screenshot saved to: {screenshot_path}{dims}. "
+                "Analyze the attached image."
+            )
 
             # Auto-detect model from config if not provided
             nonlocal model
@@ -565,13 +784,94 @@ class BrowserWait:
             return f"error waiting: {exc}"
 
 
+class BrowserExtract:
+    name = "browser_extract"
+    description = (
+        "Extract structured data from the current page by CSS selector. "
+        "Returns the tag, text, and an optional attribute value for each "
+        "matching element. Use to pull links, table cells, or form values."
+    )
+    dangerous = False
+    untrusted = True  # content from external sites
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "selector": {
+                "type": "string",
+                "description": "CSS selector to query (e.g. 'a', '.price', '#result').",
+            },
+            "attribute": {
+                "type": "string",
+                "description": "Optional: return this attribute's value "
+                "(e.g. 'href', 'src', 'value'). Omit to return text content.",
+            },
+            "all": {
+                "type": "boolean",
+                "description": "Extract all matches (default: false — first match only).",
+            },
+            "max_items": {
+                "type": "integer",
+                "description": "Max elements to return when all=true (default: 50).",
+            },
+        },
+        "required": ["selector"],
+    }
+
+    def run(self, args: dict[str, Any]) -> str:
+        selector = args.get("selector", "")
+        if not isinstance(selector, str) or not selector.strip():
+            return "error: 'selector' is required"
+        attribute = args.get("attribute") or ""
+        all_matches = args.get("all", False)
+        max_items = args.get("max_items", 50)
+        if not isinstance(max_items, int) or max_items <= 0:
+            max_items = 50
+        limit = max_items if all_matches else 1
+
+        def _extract() -> str:
+            import json
+
+            page = _ensure_page_sync()
+            js = """(opts) => {
+                const els = Array.from(document.querySelectorAll(opts.selector))
+                    .slice(0, opts.limit);
+                return els.map((el, index) => {
+                    const out = { index, tag: el.tagName.toLowerCase() };
+                    if (opts.attribute) {
+                        out[opts.attribute] = el.getAttribute(opts.attribute);
+                    } else {
+                        const text = (el.innerText || el.textContent || '')
+                            .replace(/\\s+/g, ' ').trim();
+                        out.text = text.length > 500 ? text.slice(0, 500) + '…' : text;
+                    }
+                    return out;
+                });
+            }"""
+            items = page.evaluate(
+                js, {"selector": selector, "attribute": attribute, "limit": limit}
+            )
+            if not items:
+                return f"No elements matched: {selector}"
+            return (
+                f"{len(items)} element(s) matched {selector}:\n"
+                + json.dumps(items, ensure_ascii=False, indent=2)
+            )
+
+        try:
+            with _lock:
+                return _run_in_thread(_extract)  # type: ignore[no-any-return]
+        except Exception as exc:
+            return f"error extracting: {exc}"
+
+
 class BrowserClose:
     name = "browser_close"
     description = (
         "Close the browser and end the session. Always call this when done "
         "with browser automation to free resources."
     )
-    dangerous = True
+    dangerous = False
     untrusted = False
     parameters: dict[str, Any] = {
         "type": "object",

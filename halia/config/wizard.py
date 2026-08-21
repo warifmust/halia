@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 import threading
-from typing import Any
 
 from rich.console import Console
 
@@ -140,8 +139,8 @@ def _resolve_api_key(console: Console, provider: str) -> str:
 
 
 def _setup_computer(console: Console) -> None:
-    """Offer to enable halia computer (browser automation via Playwright)."""
-    from halia.config.settings import read_config
+    """Offer to enable halia computer (browser + desktop automation)."""
+    from halia.config.settings import read_config, write_config
 
     config = read_config()
     if config.get("computer_enabled"):
@@ -149,31 +148,38 @@ def _setup_computer(console: Console) -> None:
         return
 
     console.print(
-        "\n[bold]halia computer[/bold] — browser automation\n"
+        "\n[bold]halia computer[/bold] — browser + desktop automation\n"
         "\n"
-        "halia can control a browser for automation tasks:\n"
+        "halia can control a web browser (Playwright) and your desktop (CUA):\n"
         "  • Fill forms, click buttons, navigate websites\n"
+        "  • Drive apps you're already signed into (Sheets, Excel, …)\n"
         "  • Take screenshots for visual verification\n"
         "  • Run automated tests on web applications\n"
         "\n"
-        "This requires Playwright (browser engine).\n"
+        "This installs Playwright (browser engine) and the CUA driver.\n"
     )
 
     choice = pick(
         "Enable halia computer?",
-        ["Yes — install Playwright (~200MB)", "No — skip for now (can add later)"],
+        ["Yes — install Playwright and CUA (~400MB)", "No — skip for now (can add later)"],
         default=0,
     )
 
     if choice.startswith("Yes"):
         console.print("\n[dim]Installing Playwright...[/dim]")
-        success = _install_playwright(console)
-        if success:
-            config["computer_enabled"] = True
-            _pick_computer_backend(console, config)
-        else:
+        if not _install_playwright(console):
             console.print("[yellow]⚠️[/yellow] Playwright installation failed")
             console.print("[dim]  You can try later with: halia setup --computer[/dim]")
+            return
+        # CUA is best-effort: browser automation still works without it.
+        _install_cua_driver(console)
+        config["computer_enabled"] = True
+        config["computer_backend"] = "auto"  # blended: halia picks per task
+        write_config(config)
+        console.print("[green]✓[/green] halia computer enabled (blended browser + desktop)")
+        console.print(
+            "[dim]  Force one backend: halia config computer_backend browser|auto[/dim]"
+        )
     else:
         config["computer_enabled"] = False
         write_config(config)
@@ -181,38 +187,6 @@ def _setup_computer(console: Console) -> None:
             "[dim]halia computer skipped. "
             "Enable later with: halia setup --computer[/dim]"
         )
-
-
-def _pick_computer_backend(console: Console, config: dict[str, Any]) -> None:
-    """Ask user to choose between halia computer and CUA."""
-    console.print(
-        "\n[bold]Which computer use do you prefer?[/bold]\n"
-    )
-
-    choice = pick(
-        "",
-        [
-            "Halia computer — lightweight, guarded by halia's trust layer",
-            "CUA — full computer-use agent from cua.ai, more powerful",
-        ],
-        default=0,
-    )
-
-    if choice.startswith("CUA"):
-        if not _install_cua_driver(console):
-            # CUA install failed — keep the browser backend so computer
-            # automation stays usable instead of leaving a broken CUA backend.
-            config["computer_backend"] = "halia"
-            write_config(config)
-            console.print(
-                "[yellow]⚠[/yellow] CUA install failed — "
-                "halia computer (browser) enabled instead."
-            )
-    else:
-        config["computer_backend"] = "halia"
-        write_config(config)
-        console.print("[green]✓[/green] halia computer enabled")
-        console.print("[dim]  Use browser_open, browser_click, etc. to automate.[/dim]")
 
 
 def _install_python_package(
@@ -395,7 +369,7 @@ def _setup_cua(console: Console) -> None:
 
 
 def _install_cua_driver(console: Console) -> bool:
-    """Install cua-driver into halia's environment and enable the CUA backend."""
+    """Install cua-driver into halia's environment and enable blended computer use."""
     # Install cua-driver into halia's own running environment
     if not _install_python_package(
         console, "cua-driver", message="Installing cua-driver", timeout=300
@@ -403,14 +377,14 @@ def _install_cua_driver(console: Console) -> bool:
         console.print("[dim]  You can try later with: halia setup --cua[/dim]")
         return False
 
-    # Update config
+    # Update config — blended by default (halia picks browser vs desktop per task).
     from halia.config.settings import read_config, write_config
     config = read_config()
     config["computer_enabled"] = True
-    config["computer_backend"] = "cua"
+    config["computer_backend"] = "auto"
     write_config(config)
 
-    console.print("[green]✓[/green] CUA driver installed and enabled")
+    console.print("[green]✓[/green] CUA driver installed and enabled (blended)")
 
     # On headless systems the driver cannot run — warn before the user relies on it.
     from halia.computer.cua_backend import cua_available
@@ -462,5 +436,7 @@ def _install_cua_driver(console: Console) -> bool:
                 f"  Binary: {_get_cua_binary_path()}[/dim]"
             )
 
-    console.print("[dim]  Use cua_screenshot, cua_click, cua_type to automate desktop.[/dim]")
+    console.print(
+        "[dim]  Halia uses the browser for web tasks and CUA for desktop/logged-in apps.[/dim]"
+    )
     return True

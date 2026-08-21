@@ -108,3 +108,91 @@ def test_non_cua_tools_do_not_trigger_cua_batch(monkeypatch: Any) -> None:
     assert len(prompts) == 1
     assert "CUA" not in prompts[0]
 
+
+def test_browser_consent_granted_once(monkeypatch: Any) -> None:
+    """Granting full browser control on the first browser action covers the rest."""
+    prompts: list[str] = []
+
+    def fake_pick(title: str = "", options: list[str] | None = None, default: int = 0) -> str:
+        prompts.append(title)
+        return options[0] if options else "yes"
+
+    monkeypatch.setattr("halia.cli.input.pick", fake_pick)
+    approve = _make_approver()
+
+    assert approve.check_consent("browser_open") is True
+    assert approve.check_consent("browser_click") is True
+    assert approve.check_consent("browser_type") is True
+    assert approve.check_consent("browser_screenshot") is True
+    assert len(prompts) == 1  # asked once, then trusted for the session
+
+
+def test_browser_consent_denied_persists(monkeypatch: Any) -> None:
+    """Declining full browser control blocks browser tools without re-prompting."""
+    prompts: list[str] = []
+
+    def fake_pick(title: str = "", options: list[str] | None = None, default: int = 0) -> str:
+        prompts.append(title)
+        return options[1] if options else "no"
+
+    monkeypatch.setattr("halia.cli.input.pick", fake_pick)
+    approve = _make_approver()
+
+    assert approve.check_consent("browser_open") is False
+    assert approve.check_consent("browser_read") is False
+    assert len(prompts) == 1  # asked once, then cached decline
+
+
+def test_non_browser_tools_skip_consent(monkeypatch: Any) -> None:
+    """Only browser_* tools trigger the browser consent gate."""
+    prompts: list[str] = []
+
+    def fake_pick(title: str = "", options: list[str] | None = None, default: int = 0) -> str:
+        prompts.append(title)
+        return options[0] if options else "yes"
+
+    monkeypatch.setattr("halia.cli.input.pick", fake_pick)
+    approve = _make_approver()
+
+    assert approve.check_consent("write_file") is True
+    assert approve.check_consent("cua_open_url") is True
+    assert approve.check_consent("http_request") is True
+    assert len(prompts) == 0  # no consent prompt for non-browser tools
+
+
+def test_browser_consent_does_not_grant_cua(monkeypatch: Any) -> None:
+    """Granting browser control must NOT auto-grant desktop (CUA) control."""
+    prompts: list[str] = []
+
+    def fake_pick(title: str = "", options: list[str] | None = None, default: int = 0) -> str:
+        prompts.append(title)
+        return options[0] if options else "yes"
+
+    monkeypatch.setattr("halia.cli.input.pick", fake_pick)
+    approve = _make_approver()
+
+    # Grant browser consent.
+    assert approve.check_consent("browser_open") is True
+    # CUA is a different gate — it must still prompt (and grant on its own).
+    assert approve("cua_click", '{"x": 100, "y": 200}') is True
+    assert len(prompts) == 2  # browser consent + cua consent
+
+
+def test_cua_consent_does_not_grant_browser(monkeypatch: Any) -> None:
+    """Granting desktop (CUA) control must NOT auto-grant browser control."""
+    prompts: list[str] = []
+
+    def fake_pick(title: str = "", options: list[str] | None = None, default: int = 0) -> str:
+        prompts.append(title)
+        return options[0] if options else "yes"
+
+    monkeypatch.setattr("halia.cli.input.pick", fake_pick)
+    approve = _make_approver()
+
+    # Grant CUA consent (first dangerous cua_* call).
+    assert approve("cua_open_url", '{"url": "https://example.com"}') is True
+    assert len(prompts) == 1  # CUA gate only
+    # Browser consent is a different gate — it must still prompt.
+    assert approve.check_consent("browser_open") is True
+    assert len(prompts) == 2  # cua consent + browser consent
+

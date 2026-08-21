@@ -131,14 +131,19 @@ _BROWSER_PROMPT = (
     "default; pass headless=true only when the user wants it to run in the background. "
     "2) WAIT for elements with browser_wait if the page loads slowly. "
     "3) READ the page with browser_read to understand what's on it. "
-    "4) INTERACT: use browser_click, browser_type, browser_scroll to fill forms, "
+    "4) EXTRACT structured data (links, table rows, attributes) with browser_extract "
+    "by CSS selector instead of re-reading the whole page. "
+    "5) INTERACT: use browser_click, browser_type, browser_scroll to fill forms, "
     "click buttons, navigate. Use CSS selectors when possible, fall back to text. "
-    "5) VERIFY: after each action, read or screenshot to confirm it worked. "
-    "6) CLOSE with browser_close when done. "
+    "6) TABS: open a page in a new tab with browser_new_tab; list, switch, or "
+    "close tabs with browser_switch_tab. Other browser tools act on the active tab. "
+    "7) VERIFY: after each action, read or screenshot to confirm it worked. "
+    "8) CLOSE with browser_close when done. "
     "ERROR RECOVERY: If browser_open or any action fails with 'Target page closed' "
     "or 'browser has been closed', call browser_ensure to restart, then retry. "
     "Do not give up on the first failure. "
-    "VISION: browser_screenshot automatically checks if the model can analyze images. "
+    "VISION: browser_screenshot saves the page to a file AND shows it to you as an "
+    "image you can analyze visually (when the model supports images). "
 )
 
 _CUA_PROMPT = (
@@ -169,6 +174,27 @@ _CUA_PROMPT = (
     "Do NOT use browser_open or browser_* tools — they do NOT exist. Use cua_* tools only. "
 )
 
+_BLENDED_PROMPT = (
+    "COMPUTER AUTOMATION: two backends are available — a browser (browser_*) and "
+    "desktop control (cua_*). Choose per step.\n"
+    "PREFER browser_* for FRESH, ANONYMOUS web work: public pages, research, "
+    "filling forms, clicking, extracting, screenshots, tabs. DOM selectors are "
+    "precise. BUT browser_* opens its OWN isolated browser — no cookies, no logins, "
+    "no profile — anything behind an auth gate will appear logged out.\n"
+    "USE cua_* when:\n"
+    "1) You need an EXISTING logged-in session — Google Sheets/Docs/Gmail, any site "
+    "or app the user is already signed into, or the user's own desktop apps. cua_* "
+    "drives the user's real, already-open windows, so it stays inside the auth gate "
+    "and never touches the user's credentials.\n"
+    "2) The target is a native desktop app (terminal, file manager, Excel, etc.).\n"
+    "3) The browser can't reach it: canvas/WebGL, cross-origin iframes, native file "
+    "open/save dialogs, OS permission prompts, browser chrome.\n"
+    "4) browser_* failed with an unrecoverable error — escalate to cua_*.\n"
+    "If the user says 'go to the browser' or references something they can already "
+    "see / are logged into, default to cua_*. Don't hop between backends mid-task "
+    "without reason. "
+)
+
 _CLOSING_PROMPT = (
     "Only answer directly (no planning, no tools) for simple factual questions like "
     "'what is X' or 'how do I Y' that don't need file access or computation."
@@ -176,14 +202,18 @@ _CLOSING_PROMPT = (
 
 
 def _get_system_prompt() -> str:
-    """Build the system prompt with the correct automation section for the backend."""
-    from halia.computer.cua_backend import cua_available
-    from halia.config.settings import read_config
-    cfg = read_config()
-    backend = cfg.get("computer_backend", "halia")
-    if backend == "cua" and cua_available():
+    """Build the system prompt with the right automation section for the backend."""
+    from halia.skills import available_backends
+
+    backends = available_backends()
+    if "browser" in backends and "cua" in backends:
+        return SYSTEM_PROMPT + _BLENDED_PROMPT + _CLOSING_PROMPT
+    if "cua" in backends:
         return SYSTEM_PROMPT + _CUA_PROMPT + _CLOSING_PROMPT
-    return SYSTEM_PROMPT + _BROWSER_PROMPT + _CLOSING_PROMPT
+    if "browser" in backends:
+        return SYSTEM_PROMPT + _BROWSER_PROMPT + _CLOSING_PROMPT
+    # No computer backend available — don't advertise tools that aren't registered.
+    return SYSTEM_PROMPT + _CLOSING_PROMPT
 
 DEFAULT_MAX_ITERS = 8
 
@@ -663,18 +693,28 @@ def _execute_batch(
                 ctx.observer(step)
             messages.append({"role": "tool", "tool_call_id": tc["id"], "content": observation})
             continue
+        # Browser consent gate: one-time "full browser control" prompt before the
+        # first browser action. Browser tools aren't dangerous (consent covers the
+        # family), so this hook is the only place the gate can fire. On decline we
+        # return the denial so the agent can ask the user how they'd like to proceed.
+        check_consent = getattr(ctx.approver, "check_consent", None)
+        if check_consent is not None and not check_consent(name):
+            observation = (
+                "denied by user: browser automation consent was declined — "
+                "ask the user how they'd like to proceed"
+            )
+            log_tool_call(name, tc["arguments"], 0.0, "denied")
+            step = Step(tool=name, arguments=tc["arguments"], observation=observation)
+            steps.append(step)
+            if ctx.observer is not None:
+                ctx.observer(step)
+            messages.append({"role": "tool", "tool_call_id": tc["id"], "content": observation})
+            continue
         _t0 = _perf()
         observation = _run_tool(ctx.registry, name, tc["arguments"], ctx.approver)
         _duration_ms = (_perf() - _t0) * 1000
-        # Check for pending image from CUA screenshot (side-channel)
-        _pending_img = None
-        _pending_detail = "low"
-        if name == "cua_screenshot":
-            from halia.skills.cua import CuaScreenshot
-            _pending_img = CuaScreenshot._pending_image
-            _pending_detail = CuaScreenshot._pending_detail or "low"
-            CuaScreenshot._pending_image = None  # consume it
-            CuaScreenshot._pending_detail = None
+        # Check for pending image from a screenshot skill (side-channel)
+        _pending_img, _pending_detail = _take_pending_image(name)
         # Track success/failure for the circuit breaker.
         # Read-only tools (jq, grep, read_file) get errors from bad queries,
         # not broken tools — don't count them as failures.
@@ -704,7 +744,11 @@ def _execute_batch(
         # the audit trail).
         if _pending_img:
             _drop_old_screenshots(messages)
-            caption = "[System: desktop screenshot captured]"
+            caption = (
+                "[System: desktop screenshot captured]"
+                if name == "cua_screenshot"
+                else "[System: browser screenshot captured]"
+            )
             if ctx.config.provider_kind == "anthropic":
                 img_content: Any = [
                     {"type": "text", "text": caption},
@@ -729,6 +773,35 @@ def _execute_batch(
                     },
                 ]
             messages.append({"role": "user", "content": img_content})
+
+
+def _take_pending_image(name: str) -> tuple[str | None, str]:
+    """Consume a staged screenshot image from a screenshot skill.
+
+    Screenshot skills (cua_screenshot, browser_screenshot) stash a base64 JPEG
+    on the skill class; the agent loop pulls it here to inject as a visual
+    observation. Returns (image_b64, detail), or (None, "low") if none.
+    """
+    try:
+        if name == "cua_screenshot":
+            from halia.skills.cua import CuaScreenshot
+
+            img = CuaScreenshot._pending_image
+            detail = CuaScreenshot._pending_detail or "low"
+            CuaScreenshot._pending_image = None  # consume it
+            CuaScreenshot._pending_detail = None
+            return img, detail
+        if name == "browser_screenshot":
+            from halia.skills.browser import BrowserScreenshot
+
+            img = BrowserScreenshot._pending_image
+            detail = BrowserScreenshot._pending_detail or "low"
+            BrowserScreenshot._pending_image = None  # consume it
+            BrowserScreenshot._pending_detail = None
+            return img, detail
+    except ImportError:
+        return None, "low"
+    return None, "low"
 
 
 def _drop_old_screenshots(messages: list[Message]) -> None:

@@ -40,11 +40,14 @@ try:
         BrowserClick,
         BrowserClose,
         BrowserEnsure,
+        BrowserExtract,
         BrowserNavigate,
+        BrowserNewTab,
         BrowserOpen,
         BrowserRead,
         BrowserScreenshot,
         BrowserScroll,
+        BrowserSwitchTab,
         BrowserType,
         BrowserWait,
     )
@@ -112,15 +115,23 @@ _SKILL_FACTORIES: dict[str, type] = {
     "teach_history": TeachHistory,
 }
 
-# Browser automation skills (optional — only available if playwright is installed)
-# When CUA backend is selected, browser skills are hidden so the agent uses CUA instead.
+# Computer backends are BLENDED by default: browser (Playwright) and CUA (desktop)
+# are both registered when available, and the model picks per task. `computer_backend`
+# can force one backend: "auto" (default), "browser", or "cua".
 def _get_computer_backend() -> str:
-    """Get the configured computer backend."""
+    """Get the configured computer backend: 'auto', 'browser', or 'cua'."""
     try:
         from halia.config.settings import read_config
-        return str(read_config().get("computer_backend", "halia"))
+        backend = str(read_config().get("computer_backend", "auto"))
+        # Legacy: "halia" was the old name for the built-in browser backend.
+        if backend == "halia":
+            backend = "browser"
+        # Unknown values must not silently disable computer automation.
+        if backend not in ("auto", "browser", "cua"):
+            backend = "auto"
+        return backend
     except Exception:
-        return "halia"
+        return "auto"
 
 _backend = _get_computer_backend()
 
@@ -129,22 +140,32 @@ _backend = _get_computer_backend()
 # them behind a broken CUA backend.
 _cua_usable = _HAS_CUA and cua_available()
 
-if _HAS_BROWSER and (_backend != "cua" or not _cua_usable):
+# Browser skills: blended, browser-forced, or cua-forced-but-unrunnable (fallback).
+_browser_on = _HAS_BROWSER and (
+    _backend in ("auto", "browser") or (_backend == "cua" and not _cua_usable)
+)
+# CUA skills: blended or cua-forced, and only when a display actually exists.
+_cua_on = _cua_usable and _backend in ("auto", "cua")
+
+if _browser_on:
     _SKILL_FACTORIES.update({
         "browser_open": BrowserOpen,
         "browser_navigate": BrowserNavigate,
+        "browser_new_tab": BrowserNewTab,
         "browser_click": BrowserClick,
         "browser_type": BrowserType,
         "browser_screenshot": BrowserScreenshot,
         "browser_read": BrowserRead,
+        "browser_extract": BrowserExtract,
         "browser_scroll": BrowserScroll,
+        "browser_switch_tab": BrowserSwitchTab,
         "browser_wait": BrowserWait,
         "browser_ensure": BrowserEnsure,
         "browser_close": BrowserClose,
     })
 
-# CUA skills — only when the CUA backend is selected AND it can actually run.
-if _cua_usable and _backend == "cua":
+# CUA skills — blended or forced, and only when they can actually run.
+if _cua_on:
     _SKILL_FACTORIES.update({
         "cua_screenshot": CuaScreenshot,
         "cua_click": CuaClick,
@@ -166,6 +187,16 @@ _ALWAYS = ["calculate"]
 # catalogue means any new skill auto-joins the default — it can't silently drift
 # behind the verticals again.
 DEFAULT_SKILLS = [name for name in _SKILL_FACTORIES if name != "run_command"]
+
+
+def available_backends() -> set[str]:
+    """Computer backends currently registered: subset of {'browser', 'cua'}."""
+    backends: set[str] = set()
+    if any(name.startswith("browser_") for name in _SKILL_FACTORIES):
+        backends.add("browser")
+    if any(name.startswith("cua_") for name in _SKILL_FACTORIES):
+        backends.add("cua")
+    return backends
 
 
 def available_skills() -> list[str]:
