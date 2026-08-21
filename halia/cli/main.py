@@ -830,7 +830,16 @@ def _prepare_context(
 
     Exits with an error message on config/profile problems.
     """
+    # Rebuild the skill catalogue after setup/config: on a fresh install the
+    # setup wizard (run before this) may have installed playwright/cua-driver
+    # and set the backend AFTER halia.skills was first imported, so its
+    # browser/CUA registration was computed against a stale config. Re-executing
+    # the module re-reads config and installed packages now.
+    import importlib
     from dataclasses import replace
+
+    import halia.skills as _skills_pkg
+    importlib.reload(_skills_pkg)
 
     from halia.config.settings import ConfigError, load_config
     from halia.core.agent import persona_overlay
