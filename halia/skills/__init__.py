@@ -57,7 +57,10 @@ try:
     from halia.skills.cua import (
         CuaClick,
         CuaDesktopState,
+        CuaDoubleClick,
+        CuaHotkey,
         CuaOpenUrl,
+        CuaPressKey,
         CuaScreenshot,
         CuaScroll,
         CuaType,
@@ -145,10 +148,13 @@ if _cua_usable and _backend == "cua":
     _SKILL_FACTORIES.update({
         "cua_screenshot": CuaScreenshot,
         "cua_click": CuaClick,
+        "cua_double_click": CuaDoubleClick,
         "cua_type": CuaType,
         "cua_scroll": CuaScroll,
         "cua_desktop": CuaDesktopState,
         "cua_open_url": CuaOpenUrl,
+        "cua_press_key": CuaPressKey,
+        "cua_hotkey": CuaHotkey,
     })
 
 # Always included, regardless of profile: deterministic compute is part of the

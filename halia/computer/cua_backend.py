@@ -151,8 +151,10 @@ class CuaComputer:
 
         return str(screenshot_path)
 
-    async def _click_async(self, x: float, y: float, button: str = "left") -> str:
-        """Click at coordinates via cua-driver."""
+    async def _click_async(
+        self, x: float, y: float, button: str = "left", count: int = 1
+    ) -> str:
+        """Click at coordinates via cua-driver (count=2 for a double-click)."""
         from cua_driver import ClickButton, ClickInput, DesktopScope
 
         # Map string button name to enum
@@ -172,10 +174,11 @@ class CuaComputer:
                 target=None,
                 scope=DesktopScope.DESKTOP,
                 button=btn,
-                count=1,
+                count=count,
             )
         )
-        return f"Clicked {button} at ({x}, {y})"
+        verb = "Double-clicked" if count >= 2 else "Clicked"
+        return f"{verb} {button} at ({x}, {y})"
 
     async def _type_async(self, text: str) -> str:
         """Type text via cua-driver."""
@@ -308,6 +311,10 @@ class CuaComputer:
     def click(self, x: float, y: float, button: str = "left") -> str:
         """Click at coordinates (sync wrapper)."""
         return str(self._run_async(self._click_async(x, y, button)))
+
+    def double_click(self, x: float, y: float, button: str = "left") -> str:
+        """Double-click at coordinates (sync wrapper)."""
+        return str(self._run_async(self._click_async(x, y, button, count=2)))
 
     def type_text(self, text: str) -> str:
         """Type text (sync wrapper)."""

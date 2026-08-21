@@ -297,6 +297,129 @@ class CuaClick(Skill):
             return f"error: {exc}"
 
 
+class CuaDoubleClick(Skill):
+    name = "cua_double_click"
+    description = (
+        "Double-click at coordinates on the desktop. Use this to OPEN files, "
+        "folders, or apps on macOS/Windows (a single click only selects). "
+        "Works on any desktop element. Use cua_screenshot first to see where "
+        "to double-click."
+    )
+    dangerous = True
+    untrusted = False
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "x": {"type": "number", "description": "X coordinate to double-click."},
+            "y": {"type": "number", "description": "Y coordinate to double-click."},
+            "button": {
+                "type": "string",
+                "enum": ["left", "right", "middle"],
+                "description": "Mouse button (default: left).",
+            },
+        },
+        "required": ["x", "y"],
+    }
+
+    def run(self, args: dict[str, Any]) -> str:
+        if not _is_cua_enabled():
+            return "error: CUA backend not enabled. Run 'halia setup --cua' first."
+
+        x = args.get("x")
+        y = args.get("y")
+        button = args.get("button", "left")
+
+        if x is None or y is None:
+            return "error: 'x' and 'y' coordinates are required"
+
+        try:
+            scale = CuaScreenshot._scale
+            rx = float(x) * scale
+            ry = float(y) * scale
+            cua = _get_cua()
+            result = cua.double_click(rx, ry, button)
+            if scale != 1.0:
+                result += f" [image {x},{y} -> screen {rx:.0f},{ry:.0f}]"
+            return str(result)
+        except Exception as exc:
+            return f"error: {exc}"
+
+
+class CuaPressKey(Skill):
+    name = "cua_press_key"
+    description = (
+        "Press a single key on the keyboard (e.g. 'return', 'enter', 'tab', "
+        "'escape', 'delete', letters, digits). Use this to confirm a selection "
+        "or trigger the focused control — select a file with cua_click, then "
+        "press Return to open it. Do NOT type key names with cua_type."
+    )
+    dangerous = True
+    untrusted = False
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "key": {
+                "type": "string",
+                "description": "Key to press (e.g. 'return', 'enter', 'tab', 'escape', 'a').",
+            },
+        },
+        "required": ["key"],
+    }
+
+    def run(self, args: dict[str, Any]) -> str:
+        if not _is_cua_enabled():
+            return "error: CUA backend not enabled. Run 'halia setup --cua' first."
+
+        key = args.get("key", "")
+        if not key:
+            return "error: 'key' is required"
+
+        try:
+            cua = _get_cua()
+            return str(cua.press_key(key))
+        except Exception as exc:
+            return f"error: {exc}"
+
+
+class CuaHotkey(Skill):
+    name = "cua_hotkey"
+    description = (
+        "Press a keyboard shortcut (e.g. ['cmd', 'o'] to open a selected file, "
+        "['cmd', 'w'] to close a window, ['cmd', 'tab'] to switch apps). On "
+        "macOS use 'cmd'; on Windows/Linux use 'ctrl'."
+    )
+    dangerous = True
+    untrusted = False
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "keys": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Keys to press together, e.g. ['cmd', 'o'].",
+            },
+        },
+        "required": ["keys"],
+    }
+
+    def run(self, args: dict[str, Any]) -> str:
+        if not _is_cua_enabled():
+            return "error: CUA backend not enabled. Run 'halia setup --cua' first."
+
+        keys = args.get("keys")
+        if not isinstance(keys, list) or not keys:
+            return "error: 'keys' (a list of strings) is required"
+
+        try:
+            cua = _get_cua()
+            return str(cua.hotkey([str(k) for k in keys]))
+        except Exception as exc:
+            return f"error: {exc}"
+
+
 class CuaType(Skill):
     """Type text into the focused element."""
 

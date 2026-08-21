@@ -684,9 +684,12 @@ def _make_approver() -> Any:
         "cua_open_url",
         "cua_screenshot",
         "cua_click",
+        "cua_double_click",
         "cua_type",
         "cua_scroll",
         "cua_desktop",
+        "cua_press_key",
+        "cua_hotkey",
     )
 
     def _prompt_cua_batch() -> bool:
