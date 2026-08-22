@@ -149,8 +149,11 @@ _BROWSER_PROMPT = (
 _CUA_PROMPT = (
     "DESKTOP AUTOMATION (CUA): When the user asks you to interact with a website or "
     "any desktop application, use the CUA tools. Follow this workflow: "
-    "1) OPEN URL: use cua_open_url to open a website. It uses the system's default "
-    "browser and waits for the page to load. "
+    "1) OPEN A WEB PAGE: use cua_open_url ONLY for http/https web URLs (it opens the "
+    "default browser). NEVER use it for local files, folders, or apps — to open those, "
+    "navigate Finder/Explorer: cua_click to select, cua_double_click (or cua_press_key "
+    "'return') to open, or cua_hotkey (['cmd','shift','g']) to go to a path. To launch "
+    "an app, use Spotlight (['cmd','space']) or double-click its icon. "
     "2) SCREENSHOT: take a cua_screenshot to see what's on screen. Use detail=\"high\" "
     "whenever you need to locate something to CLICK (small buttons, icons, links) — "
     "a high-detail image is far easier to aim at precisely. Reserve detail=\"low\" "

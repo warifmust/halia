@@ -73,9 +73,11 @@ def _overlay_grid(img: Any, step: int = 100) -> Any:
 class CuaOpenUrl(Skill):
     name = "cua_open_url"
     description = (
-        "Open a URL in the default browser via CUA desktop automation. "
-        "Uses keyboard shortcut to open a new tab, types the URL, and presses Enter. "
-        "Use this instead of cua_click to navigate to websites."
+        "Open a WEB URL (http/https) in the system's default browser. "
+        "Do NOT use this for local files or folders — to open a file, folder, "
+        "or app, use the desktop tools instead (cua_click to select, "
+        "cua_double_click or cua_press_key 'return' to open, cua_hotkey "
+        "['cmd','shift','g'] to go to a path, or ['cmd','space'] for Spotlight)."
     )
     dangerous = True  # opening URLs can be risky
     untrusted = True  # content from external sites
@@ -95,6 +97,21 @@ class CuaOpenUrl(Skill):
         url = args.get("url", "").strip()
         if not url:
             return "error: 'url' is required"
+
+        # This tool opens WEB pages only. A filesystem path (file://, ~/, /…)
+        # must be handled by the desktop tools, not routed into a browser.
+        lower = url.lower()
+        if lower.startswith(("file:", "file://")):
+            return (
+                "error: cua_open_url opens web URLs (http/https) only. "
+                f"'{url}' is a local file/folder — open it with cua_double_click "
+                "or cua_hotkey (e.g. ['cmd','shift','g'] to go to a folder in Finder)."
+            )
+        if url.startswith(("/", "~", ".")) and "://" not in url:
+            return (
+                f"error: '{url}' looks like a local path, not a web URL. "
+                "Use cua_double_click or cua_hotkey for files and folders."
+            )
 
         if not url.startswith(("http://", "https://")):
             url = "https://" + url

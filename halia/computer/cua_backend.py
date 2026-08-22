@@ -89,6 +89,11 @@ class CuaComputer:
         else:
             return asyncio.run(coro)
 
+    def _is_session_ended(self, message: str) -> bool:
+        """Detect the cua-driver 'session ended' error (from a message or error object)."""
+        text = (message or "").lower()
+        return "session has ended" in text or "call start_session" in text
+
     async def _ensure_session(self) -> Any:
         """Ensure we have an active CUA session (started once, then reused)."""
         driver = self._ensure_driver()
@@ -106,23 +111,47 @@ class CuaComputer:
         self._session_started = True
         return driver
 
+    async def _with_session_retry(self, op: Any) -> Any:
+        """Run a driver operation, restarting the session once if it has ended.
+
+        The cua-driver session can end out from under us (timeout, crash, or a
+        previous ``close()``). When it does, every ``get_desktop_state``/input
+        call fails with "this session has ended". Without recovery the agent is
+        stuck — it retries dead tools and drifts to whatever still "works".
+        Reset the flag, call ``start_session`` again, and retry once.
+        """
+        last_exc: BaseException | None = None
+        for _ in range(2):
+            try:
+                driver = await self._ensure_session()
+                result = await op(driver)
+                # The driver sometimes returns an error object instead of raising.
+                if getattr(result, "is_error", False):
+                    detail = getattr(result, "text", "") or getattr(result, "error_code", "")
+                    raise RuntimeError(str(detail).rstrip())
+                return result
+            except Exception as exc:  # noqa: BLE001 — retry once, then re-raise
+                last_exc = exc
+                if not self._is_session_ended(str(exc)):
+                    raise
+                # Session ended — drop the stale flag so the next attempt restarts.
+                self._session_started = False
+        assert last_exc is not None  # the loop always runs at least once
+        raise last_exc
+
     async def _screenshot_async(self, path: str | None = None) -> str:
         """Take a desktop screenshot via cua-driver."""
         from cua_driver import GetDesktopStateInput
 
-        driver = await self._ensure_session()
-        desktop = await driver.get_desktop_state(
-            GetDesktopStateInput(
-                session=self._session_name,
-                screenshot_out_file=None,
+        async def _get(driver: Any) -> Any:
+            return await driver.get_desktop_state(
+                GetDesktopStateInput(
+                    session=self._session_name,
+                    screenshot_out_file=None,
+                )
             )
-        )
 
-        # Surface driver-level failures instead of returning an empty file that
-        # later fails as "cannot identify image file".
-        if getattr(desktop, "is_error", False):
-            detail = getattr(desktop, "text", "") or getattr(desktop, "error_code", "")
-            raise RuntimeError(f"CUA desktop state failed: {detail}".rstrip())
+        desktop = await self._with_session_retry(_get)
 
         if not (hasattr(desktop, "images") and desktop.images):
             detail = getattr(desktop, "text", "") or "no screenshot returned"
@@ -165,18 +194,20 @@ class CuaComputer:
         }
         btn = btn_map.get(button, ClickButton.LEFT)
 
-        driver = await self._ensure_session()
-        await driver.click(
-            ClickInput(
-                session=self._session_name,
-                x=x,
-                y=y,
-                target=None,
-                scope=DesktopScope.DESKTOP,
-                button=btn,
-                count=count,
+        async def _op(driver: Any) -> Any:
+            return await driver.click(
+                ClickInput(
+                    session=self._session_name,
+                    x=x,
+                    y=y,
+                    target=None,
+                    scope=DesktopScope.DESKTOP,
+                    button=btn,
+                    count=count,
+                )
             )
-        )
+
+        await self._with_session_retry(_op)
         verb = "Double-clicked" if count >= 2 else "Clicked"
         return f"{verb} {button} at ({x}, {y})"
 
@@ -184,15 +215,17 @@ class CuaComputer:
         """Type text via cua-driver."""
         from cua_driver import DesktopScope, TypeTextInput
 
-        driver = await self._ensure_session()
-        await driver.type_text(
-            TypeTextInput(
-                session=self._session_name,
-                text=text,
-                target=None,
-                scope=DesktopScope.DESKTOP,
+        async def _op(driver: Any) -> Any:
+            return await driver.type_text(
+                TypeTextInput(
+                    session=self._session_name,
+                    text=text,
+                    target=None,
+                    scope=DesktopScope.DESKTOP,
+                )
             )
-        )
+
+        await self._with_session_retry(_op)
         return f"Typed: {text[:50]}{'...' if len(text) > 50 else ''}"
 
     async def _scroll_async(
@@ -201,32 +234,38 @@ class CuaComputer:
         """Scroll at coordinates via cua-driver."""
         from cua_driver import DesktopScope, ScrollBy, ScrollDirection, ScrollInput
 
-        driver = await self._ensure_session()
-        await driver.scroll(
-            ScrollInput(
-                session=self._session_name,
-                x=x,
-                y=y,
-                direction=ScrollDirection.DOWN if direction == "down" else ScrollDirection.UP,
-                target=None,
-                scope=DesktopScope.DESKTOP,
-                by=ScrollBy.LINE,
-                amount=amount,
+        async def _op(driver: Any) -> Any:
+            return await driver.scroll(
+                ScrollInput(
+                    session=self._session_name,
+                    x=x,
+                    y=y,
+                    direction=(
+                        ScrollDirection.DOWN if direction == "down" else ScrollDirection.UP
+                    ),
+                    target=None,
+                    scope=DesktopScope.DESKTOP,
+                    by=ScrollBy.LINE,
+                    amount=amount,
+                )
             )
-        )
+
+        await self._with_session_retry(_op)
         return f"Scrolled {direction} at ({x}, {y})"
 
     async def _desktop_state_async(self) -> str:
         """Get full desktop state via cua-driver."""
         from cua_driver import GetDesktopStateInput
 
-        driver = await self._ensure_session()
-        desktop = await driver.get_desktop_state(
-            GetDesktopStateInput(
-                session=self._session_name,
-                screenshot_out_file=None,
+        async def _get(driver: Any) -> Any:
+            return await driver.get_desktop_state(
+                GetDesktopStateInput(
+                    session=self._session_name,
+                    screenshot_out_file=None,
+                )
             )
-        )
+
+        desktop = await self._with_session_retry(_get)
 
         # Build a readable state description
         parts = ["Desktop state:"]
@@ -243,13 +282,15 @@ class CuaComputer:
         """Return the raw desktop-state JSON (element tree) from cua-driver."""
         from cua_driver import GetDesktopStateInput
 
-        driver = await self._ensure_session()
-        desktop = await driver.get_desktop_state(
-            GetDesktopStateInput(
-                session=self._session_name,
-                screenshot_out_file=None,
+        async def _get(driver: Any) -> Any:
+            return await driver.get_desktop_state(
+                GetDesktopStateInput(
+                    session=self._session_name,
+                    screenshot_out_file=None,
+                )
             )
-        )
+
+        desktop = await self._with_session_retry(_get)
         sections = []
         text = getattr(desktop, "text", None)
         structured = getattr(desktop, "structured_json", None)
@@ -268,31 +309,35 @@ class CuaComputer:
         """Press a hotkey combination via cua-driver."""
         from cua_driver import DesktopScope, HotkeyInput
 
-        driver = await self._ensure_session()
-        await driver.hotkey(
-            HotkeyInput(
-                session=self._session_name,
-                keys=keys,
-                target=None,
-                scope=DesktopScope.DESKTOP,
+        async def _op(driver: Any) -> Any:
+            return await driver.hotkey(
+                HotkeyInput(
+                    session=self._session_name,
+                    keys=keys,
+                    target=None,
+                    scope=DesktopScope.DESKTOP,
+                )
             )
-        )
+
+        await self._with_session_retry(_op)
         return f"Pressed hotkey: {'+'.join(keys)}"
 
     async def _press_key_async(self, key: str, modifiers: list[str] | None = None) -> str:
         """Press a single key via cua-driver."""
         from cua_driver import DesktopScope, PressKeyInput
 
-        driver = await self._ensure_session()
-        await driver.press_key(
-            PressKeyInput(
-                session=self._session_name,
-                key=key,
-                target=None,
-                scope=DesktopScope.DESKTOP,
-                modifiers=modifiers or [],
+        async def _op(driver: Any) -> Any:
+            return await driver.press_key(
+                PressKeyInput(
+                    session=self._session_name,
+                    key=key,
+                    target=None,
+                    scope=DesktopScope.DESKTOP,
+                    modifiers=modifiers or [],
+                )
             )
-        )
+
+        await self._with_session_retry(_op)
         return f"Pressed key: {key}"
 
     async def _clear_field_async(self) -> str:
