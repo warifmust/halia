@@ -112,6 +112,59 @@ def version() -> None:
 
 
 @app.command()
+def upgrade(
+    check: Annotated[
+        bool, typer.Option("--check", help="Only check for a newer version; don't install.")
+    ] = False,
+    yes: Annotated[
+        bool, typer.Option("--yes", "-y", help="Skip the confirmation prompt.")
+    ] = False,
+) -> None:
+    """Upgrade halia to the latest version from GitHub (uses uv, no curl)."""
+    from halia.upgrade import fetch_latest_version, is_newer, perform_upgrade
+
+    console.print(f"halia [bold]{__version__}[/bold] — checking for updates…")
+
+    try:
+        latest = fetch_latest_version()
+    except Exception as exc:  # noqa: BLE001 — network errors are user-facing
+        console.print(f"[red]error checking for updates:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    if not is_newer(latest, __version__):
+        console.print(f"[green]✓[/green] Already up to date ({__version__}).")
+        return
+
+    console.print(f"[cyan]A newer version is available:[/cyan] [bold]{latest}[/bold]")
+    if check:
+        console.print("[dim]Run `halia upgrade` to install it.[/dim]")
+        return
+
+    if not yes:
+        import sys
+
+        if not sys.stdin.isatty():
+            console.print(
+                "[yellow]Not a terminal — pass --yes to confirm the upgrade.[/yellow]"
+            )
+            raise typer.Exit(1)
+        from halia.cli.input import ask
+
+        answer = ask(f"Upgrade {__version__} → {latest}? [y/N] ").strip().lower()
+        if answer not in ("y", "yes"):
+            console.print("[dim]Cancelled.[/dim]")
+            return
+
+    console.print(f"[dim]Reinstalling halia from GitHub ({latest})…[/dim]")
+    ok, detail = perform_upgrade()
+    if not ok:
+        console.print(f"[red]Upgrade failed:[/red] {detail}")
+        raise typer.Exit(1)
+
+    console.print(f"[green]✓[/green] halia upgraded to [bold]{latest}[/bold].")
+
+
+@app.command()
 def cua_debug() -> None:
     """Dump the raw CUA desktop state (element tree JSON) for debugging."""
     import json
