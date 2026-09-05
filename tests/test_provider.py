@@ -14,6 +14,19 @@ def _provider(handler: object) -> OpenAICompatProvider:
     return OpenAICompatProvider(base_url="https://x/v1", api_key="k", model="m", client=client)
 
 
+def _provider_retry(
+    handler: object,
+    max_retries: int = 0,
+    retry_base: float = 0.0,
+    retry_cap: float = 0.0,
+) -> OpenAICompatProvider:
+    client = httpx.Client(transport=httpx.MockTransport(handler))  # type: ignore[arg-type]
+    return OpenAICompatProvider(
+        base_url="https://x/v1", api_key="k", model="m", client=client,
+        max_retries=max_retries, retry_base=retry_base, retry_cap=retry_cap,
+    )
+
+
 def test_parse_usage_captures_cached_tokens() -> None:
     from halia.providers.openai_compat import _parse_usage
 
@@ -181,4 +194,74 @@ def test_stream_http_error_raises() -> None:
         return httpx.Response(500, text="boom")
 
     with pytest.raises(ProviderError):
-        _provider(handler).chat([{"role": "user", "content": "hi"}], on_delta=lambda s: None)
+        _provider_retry(handler).chat([{"role": "user", "content": "hi"}], on_delta=lambda s: None)
+
+
+# --- retry + throttle ---
+
+
+def test_retries_on_429_then_succeeds() -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, text="rate limited")
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    result = _provider_retry(handler, max_retries=2).chat([{"role": "user", "content": "hi"}])
+    assert result.content == "ok"
+    assert calls["n"] == 2
+
+
+def test_retry_gives_up_after_max_attempts() -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(503, text="still down")
+
+    with pytest.raises(ProviderError, match="503"):
+        _provider_retry(handler, max_retries=2).chat([{"role": "user", "content": "hi"}])
+    assert calls["n"] == 3  # 1 initial + 2 retries
+
+
+def test_no_retry_on_non_transient_4xx() -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(400, text="bad request")
+
+    with pytest.raises(ProviderError, match="400"):
+        _provider_retry(handler, max_retries=3).chat([{"role": "user", "content": "hi"}])
+    assert calls["n"] == 1
+
+
+def test_stream_retries_429_before_first_byte() -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, text="rate limited")
+        return httpx.Response(200, text=_sse({"choices": [{"delta": {"content": "ok"}}]}))
+
+    seen: list[str] = []
+    provider = _provider_retry(handler, max_retries=2)
+    result = provider.chat([{"role": "user", "content": "hi"}], on_delta=seen.append)
+    assert result.content == "ok"
+    assert seen == ["ok"]
+    assert calls["n"] == 2
+
+
+def test_max_rpm_sets_min_interval() -> None:
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200)))
+    fast = OpenAICompatProvider(
+        base_url="https://x/v1", api_key="k", model="m", client=client, max_rpm=60
+    )
+    assert fast._min_interval == 1.0
+    off = OpenAICompatProvider(
+        base_url="https://x/v1", api_key="k", model="m", client=client, max_rpm=0
+    )
+    assert off._min_interval == 0.0

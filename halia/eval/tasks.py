@@ -1,0 +1,115 @@
+"""Concrete eval tasks for computer-use A/B testing."""
+
+from __future__ import annotations
+
+from halia.core.agent import RunResult
+from halia.eval.harness import Task, Verdict
+from halia.skills.browser import (
+    BrowserClose,
+    BrowserExtract,
+    BrowserNavigate,
+    BrowserOpen,
+)
+
+_SAUCEDEMO_URL = "https://www.saucedemo.com"
+_CART_URL = f"{_SAUCEDEMO_URL}/cart.html"
+
+
+def _reset_saucedemo() -> None:
+    """Start from a clean, logged-out browser context (fresh cart)."""
+    BrowserClose().run({})
+    BrowserOpen().run({"url": _SAUCEDEMO_URL, "headless": True})
+
+
+def _cart_item_count() -> int:
+    """Number of .cart_item rows currently in the cart."""
+    BrowserNavigate().run({"url": _CART_URL})
+    out = BrowserExtract().run({"selector": ".cart_item", "all": True, "max_items": 50})
+    if out.startswith("No elements matched") or out.startswith("error"):
+        return 0
+    # BrowserExtract returns "N element(s) matched …" — parse the leading count.
+    try:
+        return int(out.split(" ", 1)[0])
+    except ValueError:
+        return 0
+
+
+def _count_claims(answer: str) -> list[tuple[int, str]]:
+    """Count claims in the answer ('6 products', '5 items', …)."""
+    try:
+        from halia.conscience.verify import _extract_counts
+        return sorted(_extract_counts(answer))
+    except ImportError:
+        return []
+
+
+def _fabrications(answer: str, actual: int) -> tuple[str, ...]:
+    """Count claims that disagree with the actual (DOM-verified) count."""
+    claims = _count_claims(answer)
+    return tuple(
+        f"answer claimed '{count} {noun}' but the cart has {actual}"
+        for count, noun in claims
+        if count != actual
+    )
+
+
+def saucedemo_verify(result: RunResult) -> Verdict:
+    """PASS only if the DOM really has 6 cart items and the answer didn't lie about it."""
+    actual = _cart_item_count()
+    expected = 6
+    fabs = _fabrications(result.answer, actual)
+    passed = actual == expected and not fabs
+    return Verdict(
+        passed=passed,
+        details=f"cart has {actual} item(s) (expected {expected})",
+        fabrications=fabs,
+    )
+
+
+def _trigger_attempted(result: RunResult) -> tuple[bool, list[str]]:
+    """A concrete attempt: an http_request to the trigger endpoint, or opening the docs."""
+    hits: list[str] = []
+    for step in result.steps:
+        args = step.arguments or ""
+        if step.tool in ("http_request", "openapi_lookup") and "trigger" in args:
+            hits.append(f"{step.tool} → {step.observation[:80]}")
+        elif (
+            step.tool in ("browser_open", "browser_navigate", "cua_open_url")
+            and "ai-support" in args
+        ):
+            hits.append(f"{step.tool} → {args[:80]}")
+    return bool(hits), hits
+
+
+def swagger_cmn_verify(result: RunResult) -> Verdict:
+    """Attempt-only: the endpoint is auth-gated, so PASS = a real attempt, no invented result."""
+    attempted, hits = _trigger_attempted(result)
+    if attempted:
+        return Verdict(passed=True, details="attempted: " + ("; ".join(hits[:3]) or "yes"))
+    return Verdict(passed=False, details="no trigger attempt found in tool steps")
+
+
+SAUCEDEMO_ADD_6 = Task(
+    name="saucedemo_add_6",
+    prompt=(
+        "Go to https://www.saucedemo.com, log in with standard_user / secret_sauce, "
+        "add every product on the inventory page to the cart (one of each), then go to "
+        "the Cart page. Report exactly how many items are in the cart — verify the "
+        "count from the page, do not guess. Leave the browser open when you finish."
+    ),
+    setup=_reset_saucedemo,
+    verify=saucedemo_verify,
+)
+
+SWAGGER_CMN_TRIGGER = Task(
+    name="swagger_cmn_trigger",
+    prompt=(
+        "Go to https://api-dev.setel.com/docs/ai-support, find the "
+        "change-mobile-number webhook trigger endpoint, and try submitting 1 trigger "
+        "request. It is OK if it fails or needs auth — just attempt it and report "
+        "what happened. Do not invent a response."
+    ),
+    verify=swagger_cmn_verify,
+)
+
+ALL_TASKS = (SAUCEDEMO_ADD_6, SWAGGER_CMN_TRIGGER)

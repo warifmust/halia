@@ -9,6 +9,7 @@ emit each step live via an `observer`, so a run is auditable, not opaque.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import uuid
@@ -203,6 +204,25 @@ _CLOSING_PROMPT = (
     "'what is X' or 'how do I Y' that don't need file access or computation."
 )
 
+# Anti-loop rules appended to every automation prompt — the guardrails against the
+# "retry the same action until it works" failure mode.
+_LOOP_GUARD_PROMPT = (
+    "ANTI-LOOP RULES (critical): "
+    "1) VERIFY after acting: an action only happened if a tool result confirmed it. "
+    "An error or timeout means it did NOT happen — never claim it did. "
+    "2) If the screen/page is UNCHANGED after your action (an identical screenshot, "
+    "or a read returning the same content), the action had NO effect. Do NOT repeat "
+    "it — diagnose why (wrong selector, wrong coordinates, element not in view) and "
+    "switch approach. "
+    "3) Never repeat the SAME action (same click coordinates, same selector, same "
+    "URL, same open/close) more than twice. After two attempts with no progress, "
+    "STOP and choose a different strategy or ask the user. "
+    "4) The circuit breaker disables a failing tool for the rest of the run — "
+    "restarting the browser does NOT reset it. "
+    "5) Never report a count of items/rows/products from memory or assumption — "
+    "read it from the page or a tool result. "
+)
+
 
 def _get_system_prompt() -> str:
     """Build the system prompt with the right automation section for the backend."""
@@ -210,11 +230,11 @@ def _get_system_prompt() -> str:
 
     backends = available_backends()
     if "browser" in backends and "cua" in backends:
-        return SYSTEM_PROMPT + _BLENDED_PROMPT + _CLOSING_PROMPT
+        return SYSTEM_PROMPT + _BLENDED_PROMPT + _LOOP_GUARD_PROMPT + _CLOSING_PROMPT
     if "cua" in backends:
-        return SYSTEM_PROMPT + _CUA_PROMPT + _CLOSING_PROMPT
+        return SYSTEM_PROMPT + _CUA_PROMPT + _LOOP_GUARD_PROMPT + _CLOSING_PROMPT
     if "browser" in backends:
-        return SYSTEM_PROMPT + _BROWSER_PROMPT + _CLOSING_PROMPT
+        return SYSTEM_PROMPT + _BROWSER_PROMPT + _LOOP_GUARD_PROMPT + _CLOSING_PROMPT
     # No computer backend available — don't advertise tools that aren't registered.
     return SYSTEM_PROMPT + _CLOSING_PROMPT
 
@@ -482,7 +502,9 @@ _CORRECTION_TEMPLATE = (
     "These figures in your answer were not produced by any tool: {figures}. "
     "If they are arithmetic results (totals, averages, percentages), recompute them "
     "using the tools (calculate, aggregate_csv, reconcile_csv, …). "
-    "If they are factual data (dates, names, identifiers, counts) that cannot be "
+    "If they are COUNTS (e.g. '6 products', '5 rows'), VERIFY them by reading the "
+    "page/tool output — never report a count you did not read from a tool result. "
+    "If they are other factual data (dates, names, identifiers) that cannot be "
     "computed by a tool, keep them but note they are from general knowledge, not a "
     "tool result. Do NOT remove valid factual information — only recompute things "
     "that should have been calculated."
@@ -629,6 +651,19 @@ class _Ctx:
     _tool_failures: dict[str, int] = field(default_factory=dict)
     # Max consecutive failures before a tool is marked unavailable.
     max_tool_failures: int = 3
+    # Repetition guard: recent UI tool-call signatures, to stop no-progress loops
+    # where the model retries the exact same action expecting a different result.
+    _recent_calls: list[str] = field(default_factory=list)
+    # Identical UI action may be attempted this many times before the guard blocks it.
+    repeat_warn_at: int = 2
+    # Exploration guard: consecutive recon steps (screenshots/scrolls/app-switches)
+    # since the last progress-producing tool. Long runs of pure recon are no-progress
+    # loops; warn, then hard-block, once the budget is exhausted.
+    _exploration_steps: int = 0
+    # Consecutive recon steps before a soft "stop exploring" nudge is appended.
+    exploration_warn_at: int = 8
+    # Consecutive recon steps before recon tools are hard-blocked.
+    exploration_block_at: int = 16
 
 
 def _is_dangerous(registry: SkillRegistry, name: str) -> bool:
@@ -657,6 +692,35 @@ _READ_TOOLS = frozenset({
     "grep_file", "list_files", "search_code",
 })
 
+# UI tools where an IDENTICAL repeat is almost always a no-progress loop (the same
+# click coordinates, the same URL, the same typed text). The repetition guard watches
+# these specifically — reads and screenshots are excluded because their no-progress
+# (unchanged result) is detected separately.
+_REPEAT_GUARD_TOOLS = frozenset({
+    "browser_click", "browser_type", "browser_open", "browser_navigate",
+    "browser_close", "cua_click", "cua_double_click", "cua_type", "cua_open_url",
+})
+
+# Recon tools that don't advance the task on their own: screenshots, scrolls, waits,
+# and app-switch hotkeys. A long consecutive run of ONLY these is a no-progress loop
+# (the model scrolling/screenshotting the same page forever). Reads, clicks, and types
+# reset the counter because they extract data or change state.
+_EXPLORATION_TOOLS = frozenset({
+    "browser_screenshot", "browser_scroll", "browser_wait",
+    "cua_screenshot", "cua_scroll", "cua_hotkey", "cua_desktop",
+})
+
+
+def _call_signature(name: str, arguments: str) -> str:
+    """A canonical identity for a tool call, so an identical retry can be detected."""
+    try:
+        parsed = json.loads(arguments) if arguments.strip() else {}
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        return f"{name}:{json.dumps(parsed, sort_keys=True, default=str)}"
+    return f"{name}:{arguments.strip()}"
+
 
 def _execute_batch(
     ctx: _Ctx, calls: list[ToolCall], messages: list[Message], steps: list[Step]
@@ -669,11 +733,35 @@ def _execute_batch(
     circuit_notes: list[str] = []
     for tc in calls:
         name = tc["name"]
+        sig = _call_signature(name, tc["arguments"])
+        guard_tool = name in _REPEAT_GUARD_TOOLS
+        repeats = ctx._recent_calls.count(sig) if guard_tool else 0
         # Circuit breaker: skip tools that have failed too many times consecutively.
         if ctx._tool_failures.get(name, 0) >= ctx.max_tool_failures:
             observation = (
                 f"circuit breaker: '{name}' has failed {ctx.max_tool_failures} times "
-                f"consecutively — skipping. Find an alternative approach."
+                f"consecutively and is now DISABLED for the rest of this run. It will "
+                f"NOT recover by restarting the browser or retrying — do NOT call "
+                f"'{name}' again. Use a different tool or ask the user how to proceed."
+            )
+            log_tool_call(name, tc["arguments"], 0.0, "skipped")
+            step = Step(tool=name, arguments=tc["arguments"], observation=observation)
+            steps.append(step)
+            if ctx.observer is not None:
+                ctx.observer(step)
+            messages.append({"role": "tool", "tool_call_id": tc["id"], "content": observation})
+            circuit_notes.append(name)
+            if guard_tool:
+                ctx._recent_calls.append(sig)
+            continue
+        # Exploration guard (hard block): a model stuck in pure recon — screenshots,
+        # scrolls, app-switch hotkeys — with no other tool in between is forced to stop.
+        if name in _EXPLORATION_TOOLS and ctx._exploration_steps >= ctx.exploration_block_at:
+            observation = (
+                f"exploration guard: {ctx._exploration_steps} consecutive "
+                f"screenshots/scrolls/app-switches without any other progress. "
+                f"STOP exploring. Report your findings now, or use a different tool "
+                f"(browser_read / browser_extract to read the page as text)."
             )
             log_tool_call(name, tc["arguments"], 0.0, "skipped")
             step = Step(tool=name, arguments=tc["arguments"], observation=observation)
@@ -683,6 +771,29 @@ def _execute_batch(
             messages.append({"role": "tool", "tool_call_id": tc["id"], "content": observation})
             circuit_notes.append(name)
             continue
+        # Repetition guard: an IDENTICAL UI action attempted again and again is a
+        # no-progress loop — these calls usually "succeed" (no error), so the circuit
+        # breaker never sees them. Block before the tool runs again.
+        if guard_tool and repeats >= ctx.repeat_warn_at:
+            observation = (
+                f"repetition guard: '{name}' with the same arguments has already been "
+                f"tried {repeats} times this run without progress. Do NOT retry it — "
+                f"change approach (different selector, coordinates, URL, or strategy) "
+                f"or ask the user."
+            )
+            log_tool_call(name, tc["arguments"], 0.0, "skipped")
+            step = Step(tool=name, arguments=tc["arguments"], observation=observation)
+            steps.append(step)
+            if ctx.observer is not None:
+                ctx.observer(step)
+            messages.append({"role": "tool", "tool_call_id": tc["id"], "content": observation})
+            circuit_notes.append(name)
+            ctx._recent_calls.append(sig)
+            continue
+        if guard_tool:
+            ctx._recent_calls.append(sig)
+            if len(ctx._recent_calls) > 40:
+                ctx._recent_calls = ctx._recent_calls[-20:]
         if ctx.on_activity is not None:
             ctx.on_activity(name)
         # Read approval: check if this read tool's directory is approved.
@@ -717,7 +828,26 @@ def _execute_batch(
         observation = _run_tool(ctx.registry, name, tc["arguments"], ctx.approver)
         _duration_ms = (_perf() - _t0) * 1000
         # Check for pending image from a screenshot skill (side-channel)
-        _pending_img, _pending_detail = _take_pending_image(name)
+        _pending_img, _pending_detail, _unchanged = _take_pending_image(name)
+        # Exploration guard (soft nudge): count consecutive recon steps; a long run of
+        # screenshots/scrolls/app-switches with nothing else in between is a no-progress
+        # loop, so warn before it escalates to a hard block.
+        if name in _EXPLORATION_TOOLS:
+            ctx._exploration_steps += 1
+        else:
+            ctx._exploration_steps = 0
+        if (
+            name in _EXPLORATION_TOOLS
+            and not observation.startswith("error")
+            and ctx._exploration_steps >= ctx.exploration_warn_at
+            and ctx._exploration_steps % ctx.exploration_warn_at == 0
+        ):
+            observation += (
+                f"\n\n⚠️ You have taken {ctx._exploration_steps} consecutive "
+                "screenshot/scroll/app-switch actions without any other progress. "
+                "Do NOT keep scrolling. Report what you have found so far, or ask "
+                "the user what to focus on."
+            )
         # Track success/failure for the circuit breaker.
         # Read-only tools (jq, grep, read_file) get errors from bad queries,
         # not broken tools — don't count them as failures.
@@ -752,6 +882,13 @@ def _execute_batch(
                 if name == "cua_screenshot"
                 else "[System: browser screenshot captured]"
             )
+            if _unchanged:
+                caption += (
+                    " ⚠️ UNCHANGED from the previous screenshot — the screen did not "
+                    "change, so your last action had NO visible effect. Do NOT repeat "
+                    "it. Diagnose why (wrong selector/coordinates, not in view) and "
+                    "switch approach."
+                )
             if ctx.config.provider_kind == "anthropic":
                 img_content: Any = [
                     {"type": "text", "text": caption},
@@ -778,12 +915,14 @@ def _execute_batch(
             messages.append({"role": "user", "content": img_content})
 
 
-def _take_pending_image(name: str) -> tuple[str | None, str]:
+def _take_pending_image(name: str) -> tuple[str | None, str, bool]:
     """Consume a staged screenshot image from a screenshot skill.
 
     Screenshot skills (cua_screenshot, browser_screenshot) stash a base64 JPEG
     on the skill class; the agent loop pulls it here to inject as a visual
-    observation. Returns (image_b64, detail), or (None, "low") if none.
+    observation. Returns (image_b64, detail, unchanged) — `unchanged` is True when
+    this screenshot is byte-identical to the previous one from the same backend,
+    i.e. the screen did not change since the last screenshot.
     """
     try:
         if name == "cua_screenshot":
@@ -793,7 +932,12 @@ def _take_pending_image(name: str) -> tuple[str | None, str]:
             detail = CuaScreenshot._pending_detail or "low"
             CuaScreenshot._pending_image = None  # consume it
             CuaScreenshot._pending_detail = None
-            return img, detail
+            if img is None:
+                return None, "low", False
+            digest = hashlib.sha256(img.encode("ascii")).hexdigest()
+            unchanged = CuaScreenshot._last_hash == digest
+            CuaScreenshot._last_hash = digest
+            return img, detail, unchanged
         if name == "browser_screenshot":
             from halia.skills.browser import BrowserScreenshot
 
@@ -801,10 +945,15 @@ def _take_pending_image(name: str) -> tuple[str | None, str]:
             detail = BrowserScreenshot._pending_detail or "low"
             BrowserScreenshot._pending_image = None  # consume it
             BrowserScreenshot._pending_detail = None
-            return img, detail
+            if img is None:
+                return None, "low", False
+            digest = hashlib.sha256(img.encode("ascii")).hexdigest()
+            unchanged = BrowserScreenshot._last_hash == digest
+            BrowserScreenshot._last_hash = digest
+            return img, detail, unchanged
     except ImportError:
-        return None, "low"
-    return None, "low"
+        return None, "low", False
+    return None, "low", False
 
 
 def _drop_old_screenshots(messages: list[Message]) -> None:

@@ -518,6 +518,8 @@ class BrowserScreenshot:
     # Side-channel: agent loop reads this after the tool runs.
     _pending_image: str | None = None
     _pending_detail: str | None = None
+    # Hash of the last staged screenshot — used to detect an UNCHANGED page.
+    _last_hash: str | None = None
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,

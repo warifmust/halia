@@ -161,6 +161,8 @@ class CuaScreenshot(Skill):
     # Side-channel: agent loop reads this after the tool runs
     _pending_image: str | None = None
     _pending_detail: str | None = None
+    # Hash of the last staged screenshot — used to detect an UNCHANGED screen.
+    _last_hash: str | None = None
     # Scale factor from the (resized) image the model sees back to real
     # screen pixels. Set on every screenshot; read by CuaClick/CuaScroll so
     # the model can give coordinates in image-space and we map them to the

@@ -80,6 +80,183 @@ def test_circuit_breaker_resets_on_success() -> None:
     assert ctx._tool_failures.get("flaky_tool", 0) == 1
 
 
+def test_repetition_guard_blocks_identical_ui_action() -> None:
+    """A UI tool called with the SAME args 4x runs only twice — the 3rd/4th are blocked."""
+    from halia.audit.trace import Step
+    from halia.core.agent import _Ctx, _execute_batch
+
+    registry = MagicMock()
+    skill = MagicMock()
+    skill.name = "browser_click"
+    skill.dangerous = False
+    skill.run.return_value = "Clicked element: #login"
+    registry.get.return_value = skill
+    registry.tool_schemas.return_value = []
+
+    ctx = _Ctx(
+        provider=MagicMock(), config=MagicMock(), registry=registry,
+        prompt="t", extra_system="", plan="", max_iters=8,
+        max_corrections=1, observer=None, approver=None,
+        pause_on_approval=False, max_tool_failures=3,
+    )
+    messages: list[dict[str, Any]] = []
+    steps: list[Step] = []
+    call = {"name": "browser_click", "arguments": '{"selector": "#login"}'}
+    calls = [
+        {"id": "c1", **call},
+        {"id": "c2", **call},
+        {"id": "c3", **call},
+        {"id": "c4", **call},
+    ]
+
+    _execute_batch(ctx, calls, messages, steps)  # type: ignore[arg-type]
+
+    assert skill.run.call_count == 2  # first two run; 3rd + 4th are blocked
+    assert any("repetition guard" in m["content"] for m in messages)
+    assert "repetition guard" in messages[-1]["content"]
+
+
+def test_repetition_guard_allows_distinct_calls() -> None:
+    """Different arguments (e.g. 6 distinct add-to-cart selectors) are NOT blocked."""
+    from halia.audit.trace import Step
+    from halia.core.agent import _Ctx, _execute_batch
+
+    registry = MagicMock()
+    skill = MagicMock()
+    skill.name = "browser_click"
+    skill.dangerous = False
+    skill.run.return_value = "Clicked element"
+    registry.get.return_value = skill
+    registry.tool_schemas.return_value = []
+
+    ctx = _Ctx(
+        provider=MagicMock(), config=MagicMock(), registry=registry,
+        prompt="t", extra_system="", plan="", max_iters=8,
+        max_corrections=1, observer=None, approver=None,
+        pause_on_approval=False, max_tool_failures=3,
+    )
+    messages: list[dict[str, Any]] = []
+    steps: list[Step] = []
+    selectors = ["#a", "#b", "#c", "#d", "#e", "#f"]
+    calls = [
+        {"id": f"c{i}", "name": "browser_click", "arguments": json.dumps({"selector": s})}
+        for i, s in enumerate(selectors)
+    ]
+
+    _execute_batch(ctx, calls, messages, steps)  # type: ignore[arg-type]
+
+    assert skill.run.call_count == 6
+    assert not any("repetition guard" in m["content"] for m in messages)
+
+
+def test_take_pending_image_detects_unchanged_screenshot() -> None:
+    """Two identical screenshots → the second reports unchanged; a different one does not."""
+    from halia.core.agent import _take_pending_image
+    from halia.skills.cua import CuaScreenshot
+
+    CuaScreenshot._last_hash = None
+    CuaScreenshot._pending_image = "AAAA"
+    CuaScreenshot._pending_detail = "high"
+
+    img, detail, unchanged = _take_pending_image("cua_screenshot")
+    assert (img, detail, unchanged) == ("AAAA", "high", False)
+
+    CuaScreenshot._pending_image = "AAAA"
+    CuaScreenshot._pending_detail = "high"
+    img, detail, unchanged = _take_pending_image("cua_screenshot")
+    assert (img, detail, unchanged) == ("AAAA", "high", True)
+
+    CuaScreenshot._pending_image = "BBBB"
+    CuaScreenshot._pending_detail = "high"
+    img, detail, unchanged = _take_pending_image("cua_screenshot")
+    assert (img, detail, unchanged) == ("BBBB", "high", False)
+
+    CuaScreenshot._last_hash = None  # reset for other tests
+
+
+def test_exploration_guard_blocks_pure_recon_loop() -> None:
+    """A run of only screenshot/scroll recon is soft-warned, then hard-blocked."""
+    from halia.audit.trace import Step
+    from halia.core.agent import _Ctx, _execute_batch
+
+    registry = MagicMock()
+    skill = MagicMock()
+    skill.name = "cua_screenshot"
+    skill.dangerous = False
+    skill.run.return_value = "Screenshot captured (1600x1039)."
+    registry.get.return_value = skill
+    registry.tool_schemas.return_value = []
+
+    ctx = _Ctx(
+        provider=MagicMock(), config=MagicMock(), registry=registry,
+        prompt="t", extra_system="", plan="", max_iters=8,
+        max_corrections=1, observer=None, approver=None,
+        pause_on_approval=False, max_tool_failures=3,
+        exploration_warn_at=4, exploration_block_at=8,
+    )
+    messages: list[dict[str, Any]] = []
+    steps: list[Step] = []
+    calls = [
+        {"id": f"c{i}", "name": "cua_screenshot", "arguments": "{}"}
+        for i in range(12)
+    ]
+
+    _execute_batch(ctx, calls, messages, steps)  # type: ignore[arg-type]
+
+    # The first 8 run; the 9th onward are exploration-blocked.
+    assert skill.run.call_count == 8
+    assert any("exploration guard" in m["content"] for m in messages)
+    # The soft nudge fired at the warn threshold (4).
+    assert any("consecutive" in m["content"] for m in messages)
+
+
+def test_exploration_counter_resets_on_progress_tool() -> None:
+    """A click/read between recon steps resets the exploration budget."""
+    from halia.audit.trace import Step
+    from halia.core.agent import _Ctx, _execute_batch
+
+    registry = MagicMock()
+    screenshot = MagicMock()
+    screenshot.name = "cua_screenshot"
+    screenshot.dangerous = False
+    screenshot.run.return_value = "Screenshot captured (1600x1039)."
+    click = MagicMock()
+    click.name = "cua_click"
+    click.dangerous = False
+    click.run.return_value = "Clicked left"
+    registry.get.side_effect = lambda name: {
+        "cua_screenshot": screenshot, "cua_click": click,
+    }[name]
+    registry.tool_schemas.return_value = []
+
+    ctx = _Ctx(
+        provider=MagicMock(), config=MagicMock(), registry=registry,
+        prompt="t", extra_system="", plan="", max_iters=8,
+        max_corrections=1, observer=None, approver=None,
+        pause_on_approval=False, max_tool_failures=3,
+        exploration_warn_at=2, exploration_block_at=4,
+    )
+    messages: list[dict[str, Any]] = []
+    steps: list[Step] = []
+    # screenshot, screenshot, CLICK, screenshot, screenshot, screenshot, screenshot
+    calls = [
+        {"id": "s1", "name": "cua_screenshot", "arguments": "{}"},
+        {"id": "s2", "name": "cua_screenshot", "arguments": "{}"},
+        {"id": "k1", "name": "cua_click", "arguments": '{"x": 1, "y": 1}'},
+        {"id": "s3", "name": "cua_screenshot", "arguments": "{}"},
+        {"id": "s4", "name": "cua_screenshot", "arguments": "{}"},
+        {"id": "s5", "name": "cua_screenshot", "arguments": "{}"},
+        {"id": "s6", "name": "cua_screenshot", "arguments": "{}"},
+    ]
+
+    _execute_batch(ctx, calls, messages, steps)  # type: ignore[arg-type]
+
+    # The click reset the counter, so no exploration block fired.
+    assert screenshot.run.call_count == 6
+    assert click.run.call_count == 1
+    assert not any("exploration guard" in m["content"] for m in messages)
+
+
 # --- Structured logging ---
 
 

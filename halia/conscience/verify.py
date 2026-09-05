@@ -35,6 +35,17 @@ _NAME_PREFIX = re.compile(r"[A-Z][A-Za-z]*[ \-]$")
 # 1,250.00" are all still ground-checked; only true X.Y version tokens are waved through.
 _VERSION_LIKE = re.compile(r"\d+\.\d")
 
+# A count claim: a bare integer immediately followed by a countable noun. These are
+# facts about HOW MANY of something exist — the model must have READ them from a tool
+# output, never counted from memory or assumption.
+_COUNT_NOUNS = (
+    r"products?|items?|rows?|columns?|entries?|records?|cases?|files?|links?|"
+    r"buttons?|elements?|tabs?|windows?|monitors?|results?|matches?|errors?|"
+    r"warnings?|tests?|steps?|endpoints?|tickets?|orders?|users?|accounts?|"
+    r"fields?|headers?|cells?"
+)
+_COUNT = re.compile(rf"\b(\d{{1,3}})\s+({_COUNT_NOUNS})\b", re.IGNORECASE)
+
 
 def _extract(text: str, figures_only: bool) -> set[Decimal]:
     cleaned = _DATE.sub(" ", text)
@@ -65,6 +76,17 @@ def _extract(text: str, figures_only: bool) -> set[Decimal]:
             found.add(Decimal(normalized))
         except InvalidOperation:
             continue
+    return found
+
+
+def _extract_counts(text: str) -> set[tuple[int, str]]:
+    """(count, noun) pairs stated in `text` — the bare-integer claims to ground-check."""
+    cleaned = _DATE.sub(" ", text)
+    cleaned = _URL.sub(" ", cleaned)
+    cleaned = _IPV4.sub(" ", cleaned)
+    found: set[tuple[int, str]] = set()
+    for match in _COUNT.finditer(cleaned):
+        found.add((int(match.group(1)), match.group(2).lower()))
     return found
 
 
@@ -102,4 +124,13 @@ def ungrounded_numbers(answer: str, steps: list[Step]) -> list[str]:
         grounded |= _extract(step.observation, figures_only=False)
     answer_figures = _extract(answer, figures_only=True)
     ungrounded = [fig for fig in sorted(answer_figures) if not _is_grounded(fig, grounded)]
-    return [format(number, "f") for number in ungrounded]
+    result = [format(number, "f") for number in ungrounded]
+
+    # Counts: a bare-integer count must have been read from a tool output. Grounding is
+    # simple integer membership (no rounding) — '6 products' is only grounded if 6
+    # actually appeared in a tool observation.
+    grounded_ints = {int(f) for f in grounded if f == f.to_integral_value()}
+    for count, noun in sorted(_extract_counts(answer)):
+        if count not in grounded_ints:
+            result.append(f"{count} {noun}")
+    return result

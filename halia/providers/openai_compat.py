@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import json
 import os
+import random
+import threading
+import time
 from typing import Any
 
 import httpx
@@ -29,6 +32,43 @@ try:
 except ValueError:
     _DEFAULT_TIMEOUT = 180.0
 
+# Transient statuses worth retrying with backoff. 429 (rate limit) and 5xx (server errors)
+# usually clear within seconds; other 4xx are deterministic (auth, bad request) and must not
+# be retried.
+_RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+# Retry-on-429/5xx knobs: max attempts AFTER the first, base backoff (seconds, exponential),
+# and a cap on the per-attempt delay. Override via env for tight loops or generous tiers.
+try:
+    _DEFAULT_MAX_RETRIES = int(os.environ.get("HALIA_RETRY_MAX", "3"))
+except ValueError:
+    _DEFAULT_MAX_RETRIES = 3
+try:
+    _DEFAULT_RETRY_BASE = float(os.environ.get("HALIA_RETRY_BASE", "1.0"))
+except ValueError:
+    _DEFAULT_RETRY_BASE = 1.0
+try:
+    _DEFAULT_RETRY_CAP = float(os.environ.get("HALIA_RETRY_CAP", "30"))
+except ValueError:
+    _DEFAULT_RETRY_CAP = 30.0
+
+# Opt-in client-side throttle: max requests per minute (0 = disabled). HALIA_MAX_RPM=60
+# enforces a 1s minimum gap between model calls, keeping a tight loop under a provider's
+# RPM tier instead of tripping 429 and relying on retries.
+try:
+    _DEFAULT_MAX_RPM = int(os.environ.get("HALIA_MAX_RPM", "0"))
+except ValueError:
+    _DEFAULT_MAX_RPM = 0
+
+
+class _RetryableResponse(Exception):
+    """A 429/5xx received BEFORE any streamed token — safe to retry the whole request."""
+
+    def __init__(self, message: str, response: httpx.Response) -> None:
+        super().__init__(message)
+        self.message = message
+        self.response = response
+
 
 class OpenAICompatProvider:
     """Calls `{base_url}/chat/completions` and returns a `ChatResult`.
@@ -45,11 +85,22 @@ class OpenAICompatProvider:
         timeout: float = _DEFAULT_TIMEOUT,
         client: httpx.Client | None = None,
         auth_header: str = "Bearer",
+        max_retries: int = _DEFAULT_MAX_RETRIES,
+        retry_base: float = _DEFAULT_RETRY_BASE,
+        retry_cap: float = _DEFAULT_RETRY_CAP,
+        max_rpm: int = _DEFAULT_MAX_RPM,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._model = model
         self._auth_header = auth_header
+        self._max_retries = max_retries
+        self._retry_base = retry_base
+        self._retry_cap = retry_cap
+        # Optional client-side RPM throttle (0 = disabled).
+        self._min_interval = 60.0 / max_rpm if max_rpm > 0 else 0.0
+        self._last_request_ts = 0.0
+        self._throttle_lock = threading.Lock()
         # An injectable client keeps this testable (MockTransport) without network.
         self._client = client if client is not None else httpx.Client(timeout=timeout)
 
@@ -68,9 +119,36 @@ class OpenAICompatProvider:
         tools: list[dict[str, Any]] | None = None,
         on_delta: DeltaObserver | None = None,
     ) -> ChatResult:
+        self._throttle()
         if on_delta is not None:
             return self._chat_stream(messages, tools, on_delta)
         return self._chat_once(messages, tools)
+
+    def _throttle(self) -> None:
+        """Enforce a minimum gap between requests when HALIA_MAX_RPM is set."""
+        if self._min_interval <= 0:
+            return
+        with self._throttle_lock:
+            now = time.monotonic()
+            wait = self._min_interval - (now - self._last_request_ts)
+            if wait > 0:
+                time.sleep(wait)
+            self._last_request_ts = time.monotonic()
+
+    def _backoff_delay(self, resp: httpx.Response, attempt: int) -> float:
+        """Delay before retry attempt `attempt`: honor Retry-After, else exponential + jitter."""
+        retry_after = resp.headers.get("retry-after")
+        if retry_after:
+            try:
+                seconds = float(retry_after)
+            except ValueError:
+                seconds = -1.0
+            if seconds > 0:
+                return seconds if seconds < self._retry_cap else self._retry_cap
+        base = self._retry_base * (2 ** (attempt - 1))
+        jitter = 1.0 + random.random() * 0.5
+        delay = base * jitter
+        return delay if delay < self._retry_cap else self._retry_cap
 
     def _chat_once(
         self, messages: list[Message], tools: list[dict[str, Any]] | None
@@ -80,12 +158,18 @@ class OpenAICompatProvider:
         if tools:
             payload["tools"] = tools
 
-        try:
-            resp = self._client.post(url, json=payload, headers=headers)
-        except httpx.HTTPError as exc:
-            raise ProviderError(f"request to {url} failed: {exc}") from exc
-
-        if resp.status_code != 200:
+        attempt = 0
+        while True:
+            try:
+                resp = self._client.post(url, json=payload, headers=headers)
+            except httpx.HTTPError as exc:
+                raise ProviderError(f"request to {url} failed: {exc}") from exc
+            if resp.status_code == 200:
+                break
+            if resp.status_code in _RETRYABLE_STATUSES and attempt < self._max_retries:
+                attempt += 1
+                time.sleep(self._backoff_delay(resp, attempt))
+                continue
             raise ProviderError(f"HTTP {resp.status_code} from {url}: {resp.text}")
 
         data = resp.json()
@@ -111,7 +195,7 @@ class OpenAICompatProvider:
         tools: list[dict[str, Any]] | None,
         on_delta: DeltaObserver,
     ) -> ChatResult:
-        """Stream Server-Sent-Events, emitting content deltas and assembling tool calls."""
+        """Stream Server-Sent-Events, retrying on a pre-first-byte 429/5xx."""
         url, headers = self._endpoint()
         payload: dict[str, Any] = {"model": self._model, "messages": messages, "stream": True}
         if tools:
@@ -119,6 +203,24 @@ class OpenAICompatProvider:
         # Request usage in the final streaming chunk (OpenAI, DeepSeek, OpenRouter support this).
         payload["stream_options"] = {"include_usage": True}
 
+        attempt = 0
+        while True:
+            try:
+                return self._chat_stream_attempt(url, payload, headers, on_delta)
+            except _RetryableResponse as exc:
+                if attempt >= self._max_retries:
+                    raise ProviderError(exc.message) from exc
+                attempt += 1
+                time.sleep(self._backoff_delay(exc.response, attempt))
+
+    def _chat_stream_attempt(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+        on_delta: DeltaObserver,
+    ) -> ChatResult:
+        """One streaming request; raises `_RetryableResponse` for a pre-first-byte 429/5xx."""
         content_parts: list[str] = []
         # tool-call deltas arrive fragmented, keyed by index → accumulate id/name/arguments.
         acc: dict[int, dict[str, str]] = {}
@@ -127,6 +229,10 @@ class OpenAICompatProvider:
             with self._client.stream("POST", url, json=payload, headers=headers) as resp:
                 if resp.status_code != 200:
                     body = resp.read().decode("utf-8", "replace")
+                    if resp.status_code in _RETRYABLE_STATUSES:
+                        raise _RetryableResponse(
+                            f"HTTP {resp.status_code} from {url}: {body}", resp
+                        )
                     raise ProviderError(f"HTTP {resp.status_code} from {url}: {body}")
                 for line in resp.iter_lines():
                     if not line.startswith("data:"):

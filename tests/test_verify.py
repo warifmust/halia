@@ -20,11 +20,26 @@ def test_grounded_figure_not_flagged() -> None:
     assert ungrounded_numbers("The total is 4.00.", steps) == []
 
 
-def test_ignores_dates_and_counts() -> None:
+def test_counts_are_flagged_when_not_grounded() -> None:
+    # A bare count claim ("3 rows") that never appeared in a tool output is fabrication.
     steps = [Step("read_csv", "{}", "date | amount 2026-07-01 | 100.00")]
     answer = "On 2026-07-01 there were 3 rows totaling 100.00."
-    # date + bare count are not checked; 100.00 is grounded
-    assert ungrounded_numbers(answer, steps) == []
+    out = ungrounded_numbers(answer, steps)
+    assert "3 rows" in out
+    assert "100.00" not in out  # date ignored, figure grounded
+
+
+def test_counts_grounded_when_read_from_tool() -> None:
+    # The count 6 appeared in a tool output, so the answer's "6 products" is grounded.
+    steps = [Step("browser_read", "{}", "6 products listed")]
+    assert ungrounded_numbers("There are 6 products in the cart.", steps) == []
+
+
+def test_counts_not_grounded_by_unrelated_integer() -> None:
+    # 7 appears in a tool output, but not as a count of products — a "5 products" claim
+    # is still ungrounded.
+    steps = [Step("read_csv", "{}", "7 rows")]
+    assert ungrounded_numbers("There are 5 products.", steps) == ["5 products"]
 
 
 def test_no_figures_is_empty() -> None:
