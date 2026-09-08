@@ -1087,15 +1087,13 @@ def _present_result(
 
         record = new_record(
             config.provider, config.model, prompt, result.answer, result.steps,
-            plan=result.plan, unverified=result.unverified, corrections=result.corrections,
+            plan=result.plan,
         )
         save_run(record)
         output = {
             "id": record.id,
             "answer": result.answer,
             "steps": [{"tool": s.tool, "arguments": s.arguments} for s in result.steps],
-            "unverified": result.unverified,
-            "corrections": result.corrections,
             "plan": result.plan,
             "paused": result.paused,
             "usage": {
@@ -1126,17 +1124,6 @@ def _present_result(
 
     console.print(result.answer)
 
-    if result.unverified:
-        figures = ", ".join(result.unverified)
-        console.print(
-            f"[yellow]⚠️ Unverified figures[/yellow] (not produced by a tool): {figures}"
-        )
-    elif result.corrections:
-        console.print(
-            f"[green]✓ regrounded[/green] [dim](conscience bounced back "
-            f"{result.corrections}× to recompute figures via tools)[/dim]"
-        )
-
     from halia.audit.record import new_record, save_run
 
     record = new_record(
@@ -1146,18 +1133,13 @@ def _present_result(
         result.answer,
         result.steps,
         plan=result.plan,
-        unverified=result.unverified,
-        corrections=result.corrections,
     )
     save_run(record)
     if not quiet:
         console.print(f"[dim](run {record.id} recorded)[/dim]")
 
     if notify:
-        tail = ""
-        if result.unverified:
-            tail = f"\n\n⚠️ unverified figures: {', '.join(result.unverified)}"
-        _notify_result(prompt, f"✅ done\n\n{result.answer}{tail}")
+        _notify_result(prompt, f"✅ done\n\n{result.answer}")
 
 
 def _notify_result(prompt: str, body: str) -> None:
@@ -1291,15 +1273,6 @@ def _register_preset_commands() -> None:
 
 
 _register_preset_commands()
-
-
-def _chat_footer(result: Any) -> None:
-    """Per-turn trust readout in chat (no run record here — the loop records the turn)."""
-    if result.unverified:
-        figures = ", ".join(result.unverified)
-        console.print(f"[yellow]⚠️ unverified:[/yellow] {figures}")
-    elif result.corrections:
-        console.print(f"[dim]✓ regrounded ×{result.corrections}[/dim]")
 
 
 def _resumed_age_note(updated_at: str) -> str:
@@ -1700,12 +1673,10 @@ def chat(
         total_usage = total_usage + result.usage
         persist()  # conversation survives a restart from here
         console.print(f"[bold]halia ›[/bold] {result.answer}")
-        _chat_footer(result)
         console.print()
 
         record = new_record(
             config.provider, config.model, user_input, result.answer, result.steps,
-            unverified=result.unverified, corrections=result.corrections,
         )
         save_run(record)
 
@@ -2273,31 +2244,18 @@ def sessions(
 @app.command()
 def runs(
     limit: Annotated[int, typer.Option(help="How many recent runs to show.")] = 20,
-    unverified: Annotated[
-        bool,
-        typer.Option(
-            "--unverified", help="Only runs that shipped a figure no tool verified (review set)."
-        ),
-    ] = False,
 ) -> None:
     """List recent runs — the durable audit trail."""
     from halia.audit.record import list_runs
 
-    records = list_runs(limit=limit, only_unverified=unverified)
+    records = list_runs(limit=limit)
     if not records:
-        if unverified:
-            console.print("[green]✓ no runs with unverified figures.[/green]")
-        else:
-            console.print("[dim]no runs recorded yet.[/dim]")
+        console.print("[dim]no runs recorded yet.[/dim]")
         return
     for r in records:
         tags = []
         if r.plan:
             tags.append("planned")
-        if r.corrections:
-            tags.append(f"regrounded×{r.corrections}")
-        if r.unverified:
-            tags.append(f"[yellow]⚠️{len(r.unverified)} unverified[/yellow]")
         tag_str = f" [dim]·[/dim] {' '.join(tags)}" if tags else ""
         console.print(
             f"[bold]{r.id}[/bold] [dim]{r.started_at}[/dim] "
@@ -2311,7 +2269,7 @@ def runs(
 def show(
     run_id: Annotated[str, typer.Argument(help="A run id (or unique prefix) from `halia runs`.")],
 ) -> None:
-    """Show one run's full receipts: plan, every step, and the conscience outcome."""
+    """Show one run's full receipts: plan, every step, and the answer."""
     from halia.audit.record import get_run
 
     record = get_run(run_id)
@@ -2334,19 +2292,6 @@ def show(
         console.print(f"     [dim]↳ {step.preview(300)}[/dim]")
 
     console.print(f"\n[green]answer[/green]\n{record.answer}")
-
-    if record.corrections:
-        console.print(
-            f"\n[green]✓ regrounded[/green] [dim]({record.corrections} corrective "
-            f"pass(es) to recompute figures via tools)[/dim]"
-        )
-    if record.unverified:
-        figures = ", ".join(record.unverified)
-        console.print(
-            f"\n[yellow]⚠️ unverified figures[/yellow] (not produced by a tool): {figures}"
-        )
-    elif not record.corrections:
-        console.print("\n[dim]✓ all figures grounded in tool output.[/dim]")
 
 
 @app.command()

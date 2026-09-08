@@ -26,7 +26,7 @@ def test_circuit_breaker_skips_after_consecutive_failures() -> None:
     ctx = _Ctx(
         provider=MagicMock(), config=MagicMock(), registry=registry,
         prompt="test", extra_system="", plan="", max_iters=8,
-        max_corrections=1, observer=None, approver=None,
+        observer=None, approver=None,
         pause_on_approval=False, max_tool_failures=3,
     )
     messages: list[dict[str, Any]] = []
@@ -63,7 +63,7 @@ def test_circuit_breaker_resets_on_success() -> None:
     ctx = _Ctx(
         provider=MagicMock(), config=MagicMock(), registry=registry,
         prompt="test", extra_system="", plan="", max_iters=8,
-        max_corrections=1, observer=None, approver=None,
+        observer=None, approver=None,
         pause_on_approval=False, max_tool_failures=3,
     )
     messages: list[dict[str, Any]] = []
@@ -96,7 +96,7 @@ def test_repetition_guard_blocks_identical_ui_action() -> None:
     ctx = _Ctx(
         provider=MagicMock(), config=MagicMock(), registry=registry,
         prompt="t", extra_system="", plan="", max_iters=8,
-        max_corrections=1, observer=None, approver=None,
+        observer=None, approver=None,
         pause_on_approval=False, max_tool_failures=3,
     )
     messages: list[dict[str, Any]] = []
@@ -132,7 +132,7 @@ def test_repetition_guard_allows_distinct_calls() -> None:
     ctx = _Ctx(
         provider=MagicMock(), config=MagicMock(), registry=registry,
         prompt="t", extra_system="", plan="", max_iters=8,
-        max_corrections=1, observer=None, approver=None,
+        observer=None, approver=None,
         pause_on_approval=False, max_tool_failures=3,
     )
     messages: list[dict[str, Any]] = []
@@ -190,7 +190,7 @@ def test_exploration_guard_blocks_pure_recon_loop() -> None:
     ctx = _Ctx(
         provider=MagicMock(), config=MagicMock(), registry=registry,
         prompt="t", extra_system="", plan="", max_iters=8,
-        max_corrections=1, observer=None, approver=None,
+        observer=None, approver=None,
         pause_on_approval=False, max_tool_failures=3,
         exploration_warn_at=4, exploration_block_at=8,
     )
@@ -232,7 +232,7 @@ def test_exploration_counter_resets_on_progress_tool() -> None:
     ctx = _Ctx(
         provider=MagicMock(), config=MagicMock(), registry=registry,
         prompt="t", extra_system="", plan="", max_iters=8,
-        max_corrections=1, observer=None, approver=None,
+        observer=None, approver=None,
         pause_on_approval=False, max_tool_failures=3,
         exploration_warn_at=2, exploration_block_at=4,
     )
@@ -291,7 +291,7 @@ def test_execute_batch_honors_check_read_for_read_tools() -> None:
         registry, skill = _registry()
         ctx = _Ctx(
             provider=MagicMock(), config=MagicMock(), registry=registry,
-            prompt="t", extra_system="", plan="", max_iters=8, max_corrections=1,
+            prompt="t", extra_system="", plan="", max_iters=8,
             observer=None, approver=approver, pause_on_approval=False, max_tool_failures=3,
         )
         messages: list[dict[str, Any]] = []
@@ -363,7 +363,7 @@ def test_execute_batch_emits_tool_call_events(tmp_path: Any) -> None:
     ctx = _Ctx(
         provider=MagicMock(), config=MagicMock(), registry=registry,
         prompt="t", extra_system="", plan="", max_iters=8,
-        max_corrections=1, observer=None, approver=None,
+        observer=None, approver=None,
         pause_on_approval=False, max_tool_failures=2,
     )
     messages: list[dict[str, Any]] = []

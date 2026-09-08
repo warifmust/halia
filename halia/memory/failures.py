@@ -2,9 +2,9 @@
 
 When a run ends in a HARD, objective failure (iteration cap, provider/tool error) it is recorded
 here with its cause. On a later, similar task the FTS5 index surfaces it as an ADVISORY — never
-as a learned fact. Objective events only (no self-assessment: a conscience correction or a
-flagged figure is the trust floor WORKING, not a failure). Inspectable and forgettable, so a
-stale lesson can be pruned; bounded in size.
+as a learned fact. Objective events only (no self-assessment — a soft signal or a tool
+result is not a failure). Inspectable and forgettable, so a stale lesson can be pruned;
+bounded in size.
 """
 
 from __future__ import annotations

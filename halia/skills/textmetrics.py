@@ -2,8 +2,8 @@
 
 The deterministic trust hook for the marketing vertical: "good copy" is subjective,
 but "this headline is 47 characters, over the 40-char limit" is a hard pass/fail. The
-counts are tool figures, so the number-grounding conscience verifies any length the
-answer claims.
+counts are measured tool figures, so any length the answer claims should trace to
+this skill's output.
 
 Well-known, relatively stable hard limits are built in; for anything authoritative pass
 an explicit `limit`, since platform rules change (and platforms may count URLs/emoji

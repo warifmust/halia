@@ -61,12 +61,14 @@ try:
         CuaClick,
         CuaDesktopState,
         CuaDoubleClick,
+        CuaDrag,
         CuaHotkey,
         CuaOpenUrl,
         CuaPressKey,
         CuaScreenshot,
         CuaScroll,
         CuaType,
+        CuaWindow,
     )
     _HAS_CUA = True
 except ImportError:
@@ -170,12 +172,14 @@ if _cua_on:
         "cua_screenshot": CuaScreenshot,
         "cua_click": CuaClick,
         "cua_double_click": CuaDoubleClick,
+        "cua_drag": CuaDrag,
         "cua_type": CuaType,
         "cua_scroll": CuaScroll,
         "cua_desktop": CuaDesktopState,
         "cua_open_url": CuaOpenUrl,
         "cua_press_key": CuaPressKey,
         "cua_hotkey": CuaHotkey,
+        "cua_window": CuaWindow,
     })
 
 # Always included, regardless of profile: deterministic compute is part of the

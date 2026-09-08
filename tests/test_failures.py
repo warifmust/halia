@@ -67,8 +67,8 @@ def test_store_is_bounded(tmp_path: Any) -> None:
 
 
 def test_soft_signals_are_not_failures() -> None:
-    # Documents the design call: only HARD/objective failures are recorded. A conscience
-    # correction is the trust floor working, not a failure — nothing in this module records it.
+    # Documents the design call: only HARD/objective failures are recorded. A soft signal
+    # or tool result is not a failure — nothing in this module records it.
     import halia.memory.failures as fm
 
     src = fm.__doc__ or ""

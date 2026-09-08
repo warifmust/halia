@@ -80,6 +80,24 @@ class ScrollInput:
     ) -> None: ...
 
 
+class DragInput:
+    def __init__(
+        self,
+        *,
+        from_x: float,
+        from_y: float,
+        to_x: float,
+        to_y: float,
+        target: Any = None,
+        scope: Any = DesktopScope.DESKTOP,
+        session: str | None = None,
+        duration_ms: int | None = None,
+        steps: int | None = None,
+        button: ClickButton | None = None,
+        modifier: list[str] | None = None,
+    ) -> None: ...
+
+
 class HotkeyInput:
     def __init__(
         self,
@@ -122,7 +140,9 @@ class CuaDriver:
 
     async def start_session(self, input: StartSessionInput) -> Any: ...
     async def get_desktop_state(self, input: GetDesktopStateInput) -> Any: ...
+    async def call_tool(self, name: str, arguments_json: str) -> Any: ...
     async def click(self, input: ClickInput) -> Any: ...
+    async def drag(self, input: DragInput) -> Any: ...
     async def type_text(self, input: TypeTextInput) -> Any: ...
     async def scroll(self, input: ScrollInput) -> Any: ...
     async def hotkey(self, input: HotkeyInput) -> Any: ...

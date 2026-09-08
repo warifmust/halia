@@ -142,3 +142,104 @@ def test_cua_prompt_scopes_cua_open_url_to_web_only(monkeypatch: Any) -> None:
     prompt = _get_system_prompt()
     assert "cua_open_url ONLY for http/https" in prompt
     assert "NEVER use it for local files" in prompt
+
+
+# ── cua_drag: drawing via mouse drag ──────────────────────────────────────
+
+
+def test_cua_drag_requires_coordinates(monkeypatch: Any) -> None:
+    from halia.skills.cua import CuaDrag
+
+    monkeypatch.setattr("halia.skills.cua._is_cua_enabled", lambda: True)
+    out = CuaDrag().run({})
+    assert out.startswith("error:")
+    assert "required" in out
+
+
+def test_cua_drag_scales_coordinates(monkeypatch: Any) -> None:
+    from halia.skills.cua import CuaDrag, CuaScreenshot
+
+    monkeypatch.setattr("halia.skills.cua._is_cua_enabled", lambda: True)
+    calls: dict[str, Any] = {}
+
+    class FakeCua:
+        def drag(self, *a: Any, **k: Any) -> str:
+            calls["args"] = a
+            calls["kwargs"] = k
+            return "Dragged"
+
+    monkeypatch.setattr("halia.skills.cua._get_cua", lambda: FakeCua())
+    # monkeypatch restores _scale after the test, so no cross-test pollution.
+    monkeypatch.setattr(CuaScreenshot, "_scale", 2.0)
+
+    out = CuaDrag().run({
+        "from_x": 100, "from_y": 50, "to_x": 300, "to_y": 250,
+        "duration_ms": 500, "steps": 20,
+    })
+    assert out == "Dragged [image 100,50 -> 300,250 -> screen 200,100 -> 600,500]"
+    assert calls["args"][:4] == (200.0, 100.0, 600.0, 500.0)
+    assert calls["kwargs"] == {"button": "left", "duration_ms": 500, "steps": 20}
+
+
+# ── cua_window: element positions from the accessibility tree ─────────────
+
+
+def test_cua_window_requires_pid_and_window_id(monkeypatch: Any) -> None:
+    from halia.skills.cua import CuaWindow
+
+    monkeypatch.setattr("halia.skills.cua._is_cua_enabled", lambda: True)
+    out = CuaWindow().run({})
+    assert out.startswith("error:")
+    assert "required" in out
+
+
+def test_cua_window_formats_elements_and_scales(monkeypatch: Any) -> None:
+    from halia.skills.cua import CuaScreenshot, CuaWindow
+
+    monkeypatch.setattr("halia.skills.cua._is_cua_enabled", lambda: True)
+
+    class FakeCua:
+        def window_state(
+            self, pid: int, window_id: int,
+            max_elements: Any = None, max_depth: Any = None,
+        ) -> str:
+            return (
+                '{"element_count": 2, "elements": ['
+                '{"element_index": 0, "role": "AXWindow", "label": "Win", '
+                '"frame": {"x": 0, "y": 30, "w": 1920, "h": 1050}},'
+                '{"element_index": 1, "role": "AXButton", '
+                '"frame": {"x": 10, "y": 39, "w": 16, "h": 16}}]}'
+            )
+
+    monkeypatch.setattr("halia.skills.cua._get_cua", lambda: FakeCua())
+    monkeypatch.setattr(CuaScreenshot, "_scale", 2.0)
+
+    out = CuaWindow().run({"pid": 123, "window_id": 456})
+    assert 'AXWindow "Win" -> click (480.0, 277.5)' in out
+    assert "AXButton -> click (9.0, 23.5)" in out
+    assert "of 2" in out
+
+
+def test_cua_window_passes_bounds_to_driver(monkeypatch: Any) -> None:
+    from halia.skills.cua import CuaWindow
+
+    monkeypatch.setattr("halia.skills.cua._is_cua_enabled", lambda: True)
+    calls: dict[str, Any] = {}
+
+    class FakeCua:
+        def window_state(
+            self, pid: int, window_id: int,
+            max_elements: Any = None, max_depth: Any = None,
+        ) -> str:
+            calls["pid"] = pid
+            calls["window_id"] = window_id
+            calls["max_elements"] = max_elements
+            calls["max_depth"] = max_depth
+            return '{"elements": []}'
+
+    monkeypatch.setattr("halia.skills.cua._get_cua", lambda: FakeCua())
+    CuaWindow().run({"pid": 12, "window_id": 34, "max_elements": 50, "max_depth": 6})
+    assert calls["pid"] == 12
+    assert calls["window_id"] == 34
+    assert calls["max_elements"] == 50
+    assert calls["max_depth"] == 6

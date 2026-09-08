@@ -76,7 +76,6 @@ def log_run_end(
     answer: str,
     steps_count: int,
     usage_total: int,
-    corrections: int,
     duration_ms: float,
 ) -> None:
     """Log the end of a run."""
@@ -86,7 +85,6 @@ def log_run_end(
         answer_preview=answer[:200],
         steps=steps_count,
         tokens=usage_total,
-        corrections=corrections,
         duration_ms=round(duration_ms, 1),
     )
 

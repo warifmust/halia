@@ -47,7 +47,7 @@ def test_checkpoint_roundtrip(tmp_path: Any) -> None:
         prompt="do it", provider="p", model="m", skills=["write_file"], extra_system="",
         plan="1. write", messages=[{"role": "user", "content": "hi"}], steps=[],
         pending=[ToolCall(id="1", name="write_file", arguments="{}")],
-        iters_used=1, corrections=0, reason="approval required: write_file",
+        iters_used=1, reason="approval required: write_file",
     )
     save_checkpoint(cp, db_path=db)
     loaded = get_checkpoint(cp.id, db_path=db)

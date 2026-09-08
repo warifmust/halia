@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -23,7 +23,7 @@ from halia.store.database import DB_PATH, connect
 
 @dataclass(frozen=True)
 class RunRecord:
-    """The persisted record of one run — including the trust receipts (plan + conscience)."""
+    """The persisted record of one run — including the plan receipt."""
 
     id: str
     started_at: str  # ISO 8601, UTC
@@ -33,8 +33,6 @@ class RunRecord:
     answer: str
     steps: list[Step]
     plan: str = ""  # the up-front plan, if planning was on
-    unverified: list[str] = field(default_factory=list)  # figures no tool produced
-    corrections: int = 0  # conscience self-heal passes triggered
 
 
 def new_record(
@@ -44,8 +42,6 @@ def new_record(
     answer: str,
     steps: list[Step],
     plan: str = "",
-    unverified: list[str] | None = None,
-    corrections: int = 0,
 ) -> RunRecord:
     """Build a RunRecord with a fresh id + timestamp."""
     return RunRecord(
@@ -57,8 +53,6 @@ def new_record(
         answer=answer,
         steps=list(steps),
         plan=plan,
-        unverified=list(unverified) if unverified is not None else [],
-        corrections=corrections,
     )
 
 
@@ -69,9 +63,8 @@ def save_run(record: RunRecord, db_path: Path = DB_PATH) -> None:
     try:
         conn.execute(
             "INSERT OR REPLACE INTO runs "
-            "(id, started_at, provider, model, prompt, answer, steps_json, "
-            "plan, unverified_json, corrections) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(id, started_at, provider, model, prompt, answer, steps_json, plan) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 record.id,
                 record.started_at,
@@ -81,8 +74,6 @@ def save_run(record: RunRecord, db_path: Path = DB_PATH) -> None:
                 record.answer,
                 steps_json,
                 record.plan,
-                json.dumps(record.unverified),
-                record.corrections,
             ),
         )
         conn.commit()
@@ -92,7 +83,6 @@ def save_run(record: RunRecord, db_path: Path = DB_PATH) -> None:
 
 def _row_to_record(row: Any) -> RunRecord:
     raw_steps: Any = json.loads(row[6])
-    raw_unverified: Any = json.loads(row[8])
     return RunRecord(
         id=row[0],
         started_at=row[1],
@@ -102,14 +92,11 @@ def _row_to_record(row: Any) -> RunRecord:
         answer=row[5],
         steps=[Step(**step) for step in raw_steps],
         plan=row[7],
-        unverified=list(raw_unverified),
-        corrections=row[9],
     )
 
 
 _COLUMNS = (
-    "id, started_at, provider, model, prompt, answer, steps_json, "
-    "plan, unverified_json, corrections"
+    "id, started_at, provider, model, prompt, answer, steps_json, plan"
 )
 
 
@@ -131,21 +118,15 @@ def get_run(run_id: str, db_path: Path = DB_PATH) -> RunRecord | None:
 
 
 def list_runs(
-    db_path: Path = DB_PATH, limit: int = 20, only_unverified: bool = False
+    db_path: Path = DB_PATH, limit: int = 20
 ) -> list[RunRecord]:
-    """Load the most recent run records (newest first).
-
-    `only_unverified` narrows to the trust-review set: runs whose final answer still
-    carried a figure no tool produced (self-corrected runs ended clean, so excluded).
-    """
+    """Load the most recent run records (newest first)."""
     if not db_path.exists():
         return []
-    # unverified_json is '[]' when every figure was grounded (incl. after self-heal).
-    where = "WHERE unverified_json != '[]' " if only_unverified else ""
     conn = connect(db_path)
     try:
         rows = conn.execute(
-            f"SELECT {_COLUMNS} FROM runs {where}ORDER BY started_at DESC LIMIT ?",
+            f"SELECT {_COLUMNS} FROM runs ORDER BY started_at DESC LIMIT ?",
             (limit,),
         ).fetchall()
     finally:

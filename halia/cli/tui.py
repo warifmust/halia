@@ -1015,13 +1015,9 @@ def run_tui(
         else:
             # No tokens streamed (e.g. an answer produced without content deltas) — print whole.
             console.print(f"[bold]halia ›[/bold] {escape(result.answer)}")
-        if result.unverified:
-            figures = ", ".join(result.unverified)
-            console.print(f"[yellow]⚠️ unverified figures:[/yellow] {figures}")
         console.print()
 
         record = new_record(
             config.provider, config.model, user_input, result.answer, result.steps,
-            unverified=result.unverified, corrections=result.corrections,
         )
         save_run(record)

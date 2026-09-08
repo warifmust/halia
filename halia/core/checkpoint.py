@@ -41,7 +41,6 @@ class Checkpoint:
     steps: list[Step]
     pending: list[ToolCall]  # the tool-call batch awaiting a decision
     iters_used: int  # iterations already spent (budget spans the pause)
-    corrections: int
     reason: str  # why it paused, e.g. "approval required: write_file"
 
 
@@ -56,7 +55,6 @@ def new_checkpoint(
     steps: list[Step],
     pending: list[ToolCall],
     iters_used: int,
-    corrections: int,
     reason: str,
 ) -> Checkpoint:
     """Build a Checkpoint with a fresh id + timestamp."""
@@ -73,14 +71,13 @@ def new_checkpoint(
         steps=list(steps),
         pending=list(pending),
         iters_used=iters_used,
-        corrections=corrections,
         reason=reason,
     )
 
 
 _COLUMNS = (
     "id, created_at, prompt, provider, model, skills_json, extra_system, plan, "
-    "messages_json, steps_json, pending_json, iters_used, corrections, reason"
+    "messages_json, steps_json, pending_json, iters_used, reason"
 )
 
 
@@ -90,7 +87,7 @@ def save_checkpoint(cp: Checkpoint, db_path: Path = DB_PATH) -> None:
     try:
         conn.execute(
             f"INSERT OR REPLACE INTO checkpoints ({_COLUMNS}) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 cp.id,
                 cp.created_at,
@@ -104,7 +101,6 @@ def save_checkpoint(cp: Checkpoint, db_path: Path = DB_PATH) -> None:
                 json.dumps([_step_dict(s) for s in cp.steps]),
                 json.dumps(cp.pending),
                 cp.iters_used,
-                cp.corrections,
                 cp.reason,
             ),
         )
@@ -133,8 +129,7 @@ def _row_to_checkpoint(row: Any) -> Checkpoint:
         steps=[Step(**s) for s in raw_steps],
         pending=list(raw_pending),
         iters_used=row[11],
-        corrections=row[12],
-        reason=row[13],
+        reason=row[12],
     )
 
 

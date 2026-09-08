@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import base64
+import json
 import sys
 import tempfile
 import threading
@@ -253,6 +254,52 @@ class CuaComputer:
         await self._with_session_retry(_op)
         return f"Scrolled {direction} at ({x}, {y})"
 
+    async def _drag_async(
+        self,
+        from_x: float,
+        from_y: float,
+        to_x: float,
+        to_y: float,
+        button: str = "left",
+        duration_ms: int | None = None,
+        steps: int | None = None,
+        modifier: list[str] | None = None,
+    ) -> str:
+        """Drag from (from_x, from_y) to (to_x, to_y) via cua-driver.
+
+        Presses the button at the start point, moves through `steps` intermediate
+        points over `duration_ms`, then releases — a continuous stroke. This is how
+        you DRAW: one drag = one line segment; chain several to sketch shapes.
+        """
+        from cua_driver import ClickButton, DesktopScope, DragInput
+
+        btn_map = {
+            "left": ClickButton.LEFT,
+            "right": ClickButton.RIGHT,
+            "middle": ClickButton.MIDDLE,
+        }
+        btn = btn_map.get(button, ClickButton.LEFT)
+
+        async def _op(driver: Any) -> Any:
+            return await driver.drag(
+                DragInput(
+                    from_x=from_x,
+                    from_y=from_y,
+                    to_x=to_x,
+                    to_y=to_y,
+                    target=None,
+                    scope=DesktopScope.DESKTOP,
+                    session=self._session_name,
+                    duration_ms=duration_ms,
+                    steps=steps,
+                    button=btn,
+                    modifier=modifier,
+                )
+            )
+
+        await self._with_session_retry(_op)
+        return f"Dragged from ({from_x}, {from_y}) to ({to_x}, {to_y})"
+
     async def _desktop_state_async(self) -> str:
         """Get full desktop state via cua-driver."""
         from cua_driver import GetDesktopStateInput
@@ -304,6 +351,49 @@ class CuaComputer:
         if not sections:
             return str(desktop)
         return "\n\n".join(sections)
+
+    async def _call_tool_async(self, name: str, arguments: dict[str, Any]) -> Any:
+        """Invoke a named cua-driver tool via the generic `call_tool` bridge.
+
+        The Python SDK exposes the core inputs (click, drag, …) directly, but the
+        accessibility tools (`get_accessibility_tree`, `get_window_state`) are only
+        reachable through the generic call_tool(name, arguments_json) channel.
+        """
+
+        async def _op(driver: Any) -> Any:
+            return await driver.call_tool(name, json.dumps(arguments))
+
+        return await self._with_session_retry(_op)
+
+    @staticmethod
+    def _tool_result_to_str(result: Any) -> str:
+        """Prefer the structured JSON of a tool result; fall back to its text."""
+        structured = getattr(result, "structured_json", None)
+        if structured:
+            return str(structured)
+        text = getattr(result, "text", None)
+        return str(text or "")
+
+    async def _accessibility_tree_async(self) -> str:
+        """Return the desktop's accessibility tree summary: apps + visible windows."""
+        result = await self._call_tool_async("get_accessibility_tree", {})
+        return self._tool_result_to_str(result)
+
+    async def _window_state_async(
+        self,
+        pid: int,
+        window_id: int,
+        max_elements: int | None = None,
+        max_depth: int | None = None,
+    ) -> str:
+        """Return a window's UI element tree (roles, labels, frames) as JSON."""
+        arguments: dict[str, Any] = {"pid": pid, "window_id": window_id}
+        if max_elements is not None:
+            arguments["max_elements"] = max_elements
+        if max_depth is not None:
+            arguments["max_depth"] = max_depth
+        result = await self._call_tool_async("get_window_state", arguments)
+        return self._tool_result_to_str(result)
 
     async def _hotkey_async(self, keys: list[str]) -> str:
         """Press a hotkey combination via cua-driver."""
@@ -369,6 +459,24 @@ class CuaComputer:
         """Scroll at coordinates (sync wrapper)."""
         return str(self._run_async(self._scroll_async(x, y, direction, amount)))
 
+    def drag(
+        self,
+        from_x: float,
+        from_y: float,
+        to_x: float,
+        to_y: float,
+        button: str = "left",
+        duration_ms: int | None = None,
+        steps: int | None = None,
+        modifier: list[str] | None = None,
+    ) -> str:
+        """Drag from one point to another (sync wrapper)."""
+        return str(self._run_async(
+            self._drag_async(
+                from_x, from_y, to_x, to_y, button, duration_ms, steps, modifier
+            )
+        ))
+
     def desktop_state(self) -> str:
         """Get desktop state (sync wrapper)."""
         return str(self._run_async(self._desktop_state_async()))
@@ -376,6 +484,22 @@ class CuaComputer:
     def desktop_state_json(self) -> str:
         """Get the raw desktop-state JSON (element tree) — sync wrapper."""
         return str(self._run_async(self._desktop_state_json_async()))
+
+    def accessibility_tree(self) -> str:
+        """Get the accessibility-tree summary (apps + visible windows) — sync wrapper."""
+        return str(self._run_async(self._accessibility_tree_async()))
+
+    def window_state(
+        self,
+        pid: int,
+        window_id: int,
+        max_elements: int | None = None,
+        max_depth: int | None = None,
+    ) -> str:
+        """Get a window's UI element tree as JSON — sync wrapper."""
+        return str(self._run_async(
+            self._window_state_async(pid, window_id, max_elements, max_depth)
+        ))
 
     def hotkey(self, keys: list[str]) -> str:
         """Press a hotkey combination (sync wrapper)."""

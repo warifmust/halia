@@ -33,45 +33,23 @@ def test_list_runs_empty(tmp_path: Any) -> None:
     assert list_runs(db_path=tmp_path / "nope.db") == []
 
 
-def test_trust_receipts_persist(tmp_path: Any) -> None:
+def test_plan_receipt_persists(tmp_path: Any) -> None:
     db = tmp_path / "halia.db"
     record = new_record(
         "p", "m", "reconcile", "done",
         [Step("reconcile_csv", "{}", "matched: 3")],
         plan="1. reconcile\n2. total",
-        unverified=["730.50"],
-        corrections=1,
     )
     save_run(record, db_path=db)
     loaded = list_runs(db_path=db)[0]
     assert loaded.plan == "1. reconcile\n2. total"
-    assert loaded.unverified == ["730.50"]
-    assert loaded.corrections == 1
 
 
-def test_receipts_default_to_empty(tmp_path: Any) -> None:
+def test_plan_receipt_defaults_to_empty(tmp_path: Any) -> None:
     db = tmp_path / "halia.db"
     save_run(new_record("p", "m", "q", "a", []), db_path=db)
     loaded = list_runs(db_path=db)[0]
     assert loaded.plan == ""
-    assert loaded.unverified == []
-    assert loaded.corrections == 0
-
-
-def test_list_runs_only_unverified(tmp_path: Any) -> None:
-    db = tmp_path / "halia.db"
-    save_run(new_record("p", "m", "clean", "a", []), db_path=db)  # grounded
-    save_run(
-        new_record("p", "m", "healed", "a", [], corrections=1),  # self-corrected → clean
-        db_path=db,
-    )
-    save_run(
-        new_record("p", "m", "flagged", "a", [], unverified=["730.50"]),  # needs review
-        db_path=db,
-    )
-    review = list_runs(db_path=db, only_unverified=True)
-    assert [r.prompt for r in review] == ["flagged"]  # only the still-flagged run
-    assert len(list_runs(db_path=db)) == 3  # unfiltered still sees all
 
 
 def test_get_run_by_full_id_and_prefix(tmp_path: Any) -> None:
@@ -116,7 +94,6 @@ def test_migration_adds_columns_to_old_db(tmp_path: Any) -> None:
     save_run(new_record("p", "m", "new", "a2", [], plan="do x"), db_path=db)
     loaded = {r.id: r for r in list_runs(db_path=db)}
     assert loaded["abc"].plan == ""  # backfilled default on the old row
-    assert loaded["abc"].corrections == 0
     assert [r for r in list_runs(db_path=db) if r.plan == "do x"]  # new row kept its plan
 
 

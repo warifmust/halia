@@ -83,8 +83,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"\n— {o.model} · {o.task}: {o.details}")
         for fab in o.fabrications:
             print(f"  ⚠ fabrication: {fab}")
-        if o.unverified:
-            print(f"  ⚠ unverified figures: {', '.join(o.unverified)}")
     return 0
 
 

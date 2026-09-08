@@ -15,6 +15,7 @@ filesystem guards (not applicable to desktop UI operations).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,65 @@ def _get_cua() -> Any:
             "HTTP requests instead."
         )
     return get_cua_computer()
+
+
+def _format_window_state(raw: str) -> str:
+    """Turn a get_window_state JSON payload into a clickable element listing.
+
+    Each element becomes `[index] role "label" -> click (cx, cy)` where the center
+    is given in the LAST cua_screenshot's pixel space (divided by CuaScreenshot._scale),
+    so the model can pass those numbers straight to cua_click.
+    """
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return raw  # not JSON — return the driver's text as-is
+
+    if not isinstance(data, dict):
+        return raw
+
+    total = data.get("element_count")
+    elements = data.get("elements")
+    if not isinstance(elements, list):
+        return raw
+
+    scale = CuaScreenshot._scale
+    lines: list[str] = []
+    for el in elements:
+        if not isinstance(el, dict):
+            continue
+        frame = el.get("frame")
+        if not isinstance(frame, dict):
+            continue
+        fx = frame.get("x")
+        fy = frame.get("y")
+        fw = frame.get("w", frame.get("width"))
+        fh = frame.get("h", frame.get("height"))
+        if fx is None or fy is None or fw is None or fh is None:
+            continue
+        try:
+            x = float(fx)
+            y = float(fy)
+            w = float(fw)
+            h = float(fh)
+        except (TypeError, ValueError):
+            continue
+        cx = round((x + w / 2) / scale, 1)
+        cy = round((y + h / 2) / scale, 1)
+        idx = el.get("element_index")
+        role = el.get("role") or "element"
+        label = el.get("label")
+        label_part = f' "{label}"' if label else ""
+        lines.append(f"[{idx}] {role}{label_part} -> click ({cx}, {cy})")
+
+    header = f"window elements: {len(lines)} returned"
+    if total is not None:
+        header += f" (of {total})"
+    if scale != 1.0:
+        header += f" — coords are in your last screenshot's pixel space (scale x{scale:.2f})"
+    if not lines:
+        return header + "\n(no elements with a frame)"
+    return header + "\n" + "\n".join(lines)
 
 
 def _overlay_grid(img: Any, step: int = 100) -> Any:
@@ -366,6 +426,87 @@ class CuaDoubleClick(Skill):
             return f"error: {exc}"
 
 
+class CuaDrag(Skill):
+    name = "cua_drag"
+    description = (
+        "Drag the mouse from one point to another while holding the button down. "
+        "Use this to DRAW strokes on a canvas (AutoDraw, Preview, any drawing app): "
+        "one drag draws one straight line segment, and you can chain several drags "
+        "to sketch shapes — a triangle is 3 drags, a rectangle is 4. Use "
+        "cua_screenshot first to see the start and end points, and give coordinates "
+        "in the SCREENSHOT image's pixel space (halia scales them to the real screen)."
+    )
+    dangerous = True
+    untrusted = False
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "from_x": {"type": "number", "description": "Start X coordinate."},
+            "from_y": {"type": "number", "description": "Start Y coordinate."},
+            "to_x": {"type": "number", "description": "End X coordinate."},
+            "to_y": {"type": "number", "description": "End Y coordinate."},
+            "button": {
+                "type": "string",
+                "enum": ["left", "right", "middle"],
+                "description": "Mouse button held during the drag (default: left).",
+            },
+            "duration_ms": {
+                "type": "integer",
+                "description": "How long the drag takes in milliseconds — larger "
+                "values draw slower, smoother strokes (optional).",
+            },
+            "steps": {
+                "type": "integer",
+                "description": "Intermediate points along the path — more steps make "
+                "the stroke smoother (optional).",
+            },
+        },
+        "required": ["from_x", "from_y", "to_x", "to_y"],
+    }
+
+    def run(self, args: dict[str, Any]) -> str:
+        if not _is_cua_enabled():
+            return "error: CUA backend not enabled. Run 'halia setup --cua' first."
+
+        from_x = args.get("from_x")
+        from_y = args.get("from_y")
+        to_x = args.get("to_x")
+        to_y = args.get("to_y")
+        button = args.get("button", "left")
+        duration_ms = args.get("duration_ms")
+        if duration_ms is not None:
+            duration_ms = int(duration_ms)
+        steps = args.get("steps")
+        if steps is not None:
+            steps = int(steps)
+
+        if from_x is None or from_y is None or to_x is None or to_y is None:
+            return "error: 'from_x', 'from_y', 'to_x' and 'to_y' are required"
+
+        try:
+            scale = CuaScreenshot._scale
+            rfx = float(from_x) * scale
+            rfy = float(from_y) * scale
+            rtx = float(to_x) * scale
+            rty = float(to_y) * scale
+            cua = _get_cua()
+            result = cua.drag(
+                rfx, rfy, rtx, rty,
+                button=button,
+                duration_ms=duration_ms,
+                steps=steps,
+            )
+            if scale != 1.0:
+                result += (
+                    f" [image {from_x},{from_y} -> {to_x},{to_y} -> "
+                    f"screen {rfx:.0f},{rfy:.0f} -> {rtx:.0f},{rty:.0f}]"
+                )
+            return str(result)
+        except Exception as exc:
+            return f"error: {exc}"
+
+
 class CuaPressKey(Skill):
     name = "cua_press_key"
     description = (
@@ -551,9 +692,10 @@ class CuaScroll(Skill):
 class CuaDesktopState(Skill):
     name = "cua_desktop"
     description = (
-        "Get the current desktop state via CUA driver. "
-        "Returns information about visible UI elements and text. "
-        "Use this to understand what's on screen before acting."
+        "Get the current desktop state: screen size, running apps, and visible "
+        "windows (each with its pid and window_id). Then use cua_window(pid, "
+        "window_id) to get a window's UI elements with clickable coordinates. "
+        "Use this for precise targeting when pixel-guessing keeps missing."
     )
     dangerous = False
     untrusted = False
@@ -569,6 +711,66 @@ class CuaDesktopState(Skill):
 
         try:
             cua = _get_cua()
-            return str(cua.desktop_state())
+            parts = [str(cua.desktop_state())]
+            tree = cua.accessibility_tree()
+            if tree:
+                parts.append(tree)
+            return "\n".join(parts)
+        except Exception as exc:
+            return f"error: {exc}"
+
+
+class CuaWindow(Skill):
+    name = "cua_window"
+    description = (
+        "Get a window's UI elements with their clickable coordinates (from the "
+        "macOS accessibility tree). Pass the pid and window_id returned by "
+        "cua_desktop. Each element lists its index, role, label, and click center "
+        "— in the same pixel space as the last cua_screenshot, so the centers can "
+        "be passed straight to cua_click. Use this instead of pixel-guessing."
+    )
+    dangerous = False
+    untrusted = False
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "pid": {"type": "integer", "description": "Process id of the window's app."},
+            "window_id": {"type": "integer", "description": "Window id from cua_desktop."},
+            "max_elements": {
+                "type": "integer",
+                "description": "Cap the number of elements returned (default 200).",
+            },
+            "max_depth": {
+                "type": "integer",
+                "description": "Cap the accessibility-tree depth (optional).",
+            },
+        },
+        "required": ["pid", "window_id"],
+    }
+
+    def run(self, args: dict[str, Any]) -> str:
+        if not _is_cua_enabled():
+            return "error: CUA backend not enabled. Run 'halia setup --cua' first."
+
+        pid = args.get("pid")
+        window_id = args.get("window_id")
+        if pid is None or window_id is None:
+            return "error: 'pid' and 'window_id' are required"
+
+        max_elements = args.get("max_elements")
+        if max_elements is not None:
+            max_elements = int(max_elements)
+        max_depth = args.get("max_depth")
+        if max_depth is not None:
+            max_depth = int(max_depth)
+
+        try:
+            cua = _get_cua()
+            raw = cua.window_state(
+                int(pid), int(window_id),
+                max_elements=max_elements, max_depth=max_depth,
+            )
+            return _format_window_state(raw)
         except Exception as exc:
             return f"error: {exc}"

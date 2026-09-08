@@ -65,7 +65,6 @@ class TaskOutcome:
     tool_errors: int
     guard_events: int
     fabrications: tuple[str, ...]
-    unverified: tuple[str, ...]
     duration_s: float
     answer: str
 
@@ -138,6 +137,5 @@ def run_task(task: Task, config: Config) -> TaskOutcome:
         task=task.name, model=config.model, passed=verdict.passed,
         details=verdict.details, actions=actions, tool_errors=errors,
         guard_events=guards, fabrications=verdict.fabrications,
-        unverified=tuple(result.unverified), duration_s=duration,
-        answer=result.answer,
+        duration_s=duration, answer=result.answer,
     )

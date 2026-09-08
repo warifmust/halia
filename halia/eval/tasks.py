@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from halia.core.agent import RunResult
 from halia.eval.harness import Task, Verdict
 from halia.skills.browser import (
@@ -34,13 +36,21 @@ def _cart_item_count() -> int:
         return 0
 
 
+_COUNT_NOUNS = (
+    r"products?|items?|rows?|columns?|entries?|records?|cases?|files?|links?|"
+    r"buttons?|elements?|tabs?|windows?|monitors?|results?|matches?|errors?|"
+    r"warnings?|tests?|steps?|endpoints?|tickets?|orders?|users?|accounts?|"
+    r"fields?|headers?|cells?"
+)
+_COUNT_RE = re.compile(rf"\b(\d{{1,3}})\s+({_COUNT_NOUNS})\b", re.IGNORECASE)
+
+
 def _count_claims(answer: str) -> list[tuple[int, str]]:
     """Count claims in the answer ('6 products', '5 items', …)."""
-    try:
-        from halia.conscience.verify import _extract_counts
-        return sorted(_extract_counts(answer))
-    except ImportError:
-        return []
+    found: set[tuple[int, str]] = set()
+    for match in _COUNT_RE.finditer(answer):
+        found.add((int(match.group(1)), match.group(2).lower()))
+    return sorted(found)
 
 
 def _fabrications(answer: str, actual: int) -> tuple[str, ...]:

@@ -3,8 +3,8 @@
 A deterministic trust hook for the education vertical: instead of *claiming* "this
 reads at a 3rd-grade level", the agent measures it. Uses the Flesch–Kincaid grade
 formula (standard, dependency-free — just word/sentence/syllable counts). The grade
-it returns is a tool figure, so the number-grounding conscience verifies any level
-the answer asserts.
+it returns is a measured tool figure, so any level the answer asserts should trace to
+this skill's output.
 """
 
 from __future__ import annotations

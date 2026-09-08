@@ -20,7 +20,6 @@ from typing import Any
 
 from halia.audit.trace import Step
 from halia.config.settings import Config
-from halia.conscience.verify import ungrounded_numbers
 from halia.core.checkpoint import Checkpoint
 from halia.core.planner import make_plan
 from halia.providers.base import ChatResult, DeltaObserver, Message, Provider, ToolCall, Usage
@@ -149,32 +148,52 @@ _BROWSER_PROMPT = (
 
 _CUA_PROMPT = (
     "DESKTOP AUTOMATION (CUA): When the user asks you to interact with a website or "
-    "any desktop application, use the CUA tools. Follow this workflow: "
+    "any desktop application, use the CUA tools. You MAY issue MULTIPLE tool calls "
+    "in a single response — always batch independent actions. Follow this workflow: "
     "1) OPEN A WEB PAGE: use cua_open_url ONLY for http/https web URLs (it opens the "
     "default browser). NEVER use it for local files, folders, or apps — to open those, "
     "navigate Finder/Explorer: cua_click to select, cua_double_click (or cua_press_key "
     "'return') to open, or cua_hotkey (['cmd','shift','g']) to go to a path. To launch "
     "an app, use Spotlight (['cmd','space']) or double-click its icon. "
-    "2) SCREENSHOT: take a cua_screenshot to see what's on screen. Use detail=\"high\" "
-    "whenever you need to locate something to CLICK (small buttons, icons, links) — "
-    "a high-detail image is far easier to aim at precisely. Reserve detail=\"low\" "
-    "for just confirming text or state. "
-    "3) CLICK: use cua_click at the coordinates you identified from the screenshot. "
-    "Give coordinates in the SCREENSHOT image's pixel space (the image may be "
-    "smaller than the real screen — halia scales them to the real screen for you). "
-    "4) TYPE: use cua_type to enter text into focused elements. If a field "
-    "already contains text you want to replace (re-filling, fixing a typo), "
-    "pass clear=true so the field is selected and cleared first — otherwise "
-    "your text appends to the existing content. "
-    "5) OPEN FILES/FOLDERS: a single cua_click only SELECTS on macOS/Windows. "
+    "2) SNAP: take ONE cua_screenshot with detail=\"high\" to see the current screen. "
+    "Always use detail=\"high\" — never switch to \"low\" (it changes the coordinate "
+    "space and makes precise targeting impossible). "
+    "3) CHECK: read that screenshot carefully and identify the coordinates of EVERY "
+    "element you will need (every field, radio, checkbox, button) BEFORE acting. "
+    "4) ACT: issue ALL the actions you derived from that ONE screenshot as multiple "
+    "tool calls in a single response — click a field then type into it, click the next "
+    "field and type, select every radio/checkbox, scroll, click the submit button — "
+    "without taking screenshots in between. Give every click using coordinates from "
+    "the SAME screenshot; if you scrolled first, re-screenshot before clicking. "
+    "5) SNAP AGAIN: end the batch with ONE cua_screenshot with detail=\"high\" to "
+    "verify the WHOLE batch at once. Screenshots are expensive — take one only at "
+    "the start of a task and at the end of each batch. "
+    "COORDINATES: give cua_click coordinates in the SCREENSHOT image's pixel space "
+    "(the image may be smaller than the real screen — halia scales them to the real "
+    "screen for you). "
+    "KEYBOARD-FIRST FORMS: click the FIRST field of a form, then type into it and "
+    "use Tab (cua_press_key) to move to the next field instead of re-clicking each "
+    "field. For radio/checkbox groups, click into the group once, then use arrow "
+    "keys (up/down) to select the option and space to toggle. "
+    "DRAWING: to draw a line or shape, use cua_drag from one point to another — "
+    "one drag draws one straight segment, and you chain several drags to sketch a "
+    "shape (a triangle is 3 drags, a rectangle is 4). Select the drawing tool first, "
+    "then batch the drags and end with one screenshot to check the result. "
+    "PRECISE TARGETING: when clicks keep missing, use cua_desktop to list the open "
+    "windows (pid + window_id), then cua_window(pid, window_id) to get each UI "
+    "element's role, label, and click center — pass those centers straight to "
+    "cua_click instead of guessing from pixels. "
+    "TYPE: use cua_type to enter text into focused elements. If a field already "
+    "contains text you want to replace (re-filling, fixing a typo), pass clear=true "
+    "so the field is selected and cleared first — otherwise your text appends to "
+    "the existing content. "
+    "OPEN FILES/FOLDERS: a single cua_click only SELECTS on macOS/Windows. "
     "Use cua_double_click to open, or cua_click to select then cua_press_key "
     "('return'). For keyboard shortcuts use cua_hotkey (e.g. ['cmd', 'o']) — "
     "never type key names with cua_type. "
-    "6) VERIFY: take ONE cua_screenshot with detail=\"low\" to confirm it worked. "
-    "IMPORTANT: screenshots are expensive — do NOT re-screenshot unless the screen "
-    "has changed. If a click misses the SAME target twice, stop clicking and either "
-    "navigate directly with cua_open_url (for a page) or use cua_hotkey with "
-    "Tab/Enter to focus and activate the element. "
+    "If a click misses the SAME target twice, stop clicking and either navigate "
+    "directly with cua_open_url (for a page) or use cua_hotkey with Tab/Enter to "
+    "focus and activate the element. "
     "Do NOT use browser_open or browser_* tools — they do NOT exist. Use cua_* tools only. "
 )
 
@@ -208,8 +227,10 @@ _CLOSING_PROMPT = (
 # "retry the same action until it works" failure mode.
 _LOOP_GUARD_PROMPT = (
     "ANTI-LOOP RULES (critical): "
-    "1) VERIFY after acting: an action only happened if a tool result confirmed it. "
-    "An error or timeout means it did NOT happen — never claim it did. "
+    "1) VERIFY after a BATCH, not after every action: batch every action you can "
+    "derive from one screenshot into a single response, then confirm the whole batch "
+    "with ONE screenshot. An action only happened if a tool result confirmed it — an "
+    "error or timeout means it did NOT happen; never claim it did. "
     "2) If the screen/page is UNCHANGED after your action (an identical screenshot, "
     "or a read returning the same content), the action had NO effect. Do NOT repeat "
     "it — diagnose why (wrong selector, wrong coordinates, element not in view) and "
@@ -492,24 +513,6 @@ def _maybe_compact(ctx: _Ctx, messages: list[Message]) -> None:
         ctx.on_compact(dropped)
 
 
-# How many times the conscience may bounce an answer back to reground flagged figures.
-DEFAULT_MAX_CORRECTIONS = 1
-
-# Injected when the number-grounding check finds figures no tool produced. The model
-# gets one chance to recompute them through tools (calculate/aggregate/reconcile) or
-# drop them — turning a warning into a grounded answer.
-_CORRECTION_TEMPLATE = (
-    "These figures in your answer were not produced by any tool: {figures}. "
-    "If they are arithmetic results (totals, averages, percentages), recompute them "
-    "using the tools (calculate, aggregate_csv, reconcile_csv, …). "
-    "If they are COUNTS (e.g. '6 products', '5 rows'), VERIFY them by reading the "
-    "page/tool output — never report a count you did not read from a tool result. "
-    "If they are other factual data (dates, names, identifiers) that cannot be "
-    "computed by a tool, keep them but note they are from general knowledge, not a "
-    "tool result. Do NOT remove valid factual information — only recompute things "
-    "that should have been calculated."
-)
-
 # Called with each Step as it happens (for live display); does not affect the run.
 Observer = Callable[[Step], None]
 
@@ -530,10 +533,6 @@ class RunResult:
 
     answer: str
     steps: list[Step] = field(default_factory=list)
-    # Figures in the answer that did NOT come from a tool (number-grounding check).
-    unverified: list[str] = field(default_factory=list)
-    # How many corrective passes the conscience triggered to reground flagged figures.
-    corrections: int = 0
     # The up-front plan, if planning was enabled (empty otherwise).
     plan: str = ""
     # Set when the run paused for approval instead of finishing (answer is empty then).
@@ -630,7 +629,6 @@ class _Ctx:
     extra_system: str
     plan: str
     max_iters: int
-    max_corrections: int
     observer: Observer | None
     approver: Approver | None
     pause_on_approval: bool
@@ -982,7 +980,6 @@ def _pause(
     steps: list[Step],
     pending: list[ToolCall],
     iters_used: int,
-    corrections: int,
 ) -> RunResult:
     """Freeze the loop into a checkpoint and return a paused result."""
     from halia.core.checkpoint import new_checkpoint, save_checkpoint
@@ -999,12 +996,11 @@ def _pause(
         steps=steps,
         pending=pending,
         iters_used=iters_used,
-        corrections=corrections,
         reason="approval required: " + ", ".join(dangerous),
     )
     save_checkpoint(cp, db_path=ctx.checkpoint_db)
     return RunResult(
-        answer="", steps=steps, corrections=corrections, plan=ctx.plan,
+        answer="", steps=steps, plan=ctx.plan,
         paused=True, checkpoint_id=cp.id, usage=ctx.total_usage,
     )
 
@@ -1013,7 +1009,6 @@ def _loop(
     ctx: _Ctx,
     messages: list[Message],
     steps: list[Step],
-    corrections: int,
     iters_used: int,
 ) -> RunResult:
     """The ReAct loop, shared by `run` and `resume`. Returns a final or paused result."""
@@ -1050,31 +1045,18 @@ def _loop(
             )
             return RunResult(
                 answer=answer or budget_msg, steps=steps,
-                corrections=corrections, plan=ctx.plan,
-                usage=ctx.total_usage,
+                plan=ctx.plan, usage=ctx.total_usage,
             )
 
         if not result.tool_calls:
             answer = (result.content or "").strip()
-            unverified = ungrounded_numbers(answer, steps)
-            if unverified and corrections < ctx.max_corrections:
-                corrections += 1
-                messages.append({"role": "assistant", "content": answer})
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": _CORRECTION_TEMPLATE.format(figures=", ".join(unverified)),
-                    }
-                )
-                continue
             elapsed = (_time.perf_counter() - run_start) * 1000
             log_run_end(
                 run_id, answer[:200], len(steps),
-                ctx.total_usage.total_tokens, corrections, elapsed,
+                ctx.total_usage.total_tokens, elapsed,
             )
             return RunResult(
-                answer=answer, steps=steps, unverified=unverified,
-                corrections=corrections, plan=ctx.plan, usage=ctx.total_usage,
+                answer=answer, steps=steps, plan=ctx.plan, usage=ctx.total_usage,
             )
 
         # A dangerous tool with pausing on ⇒ freeze here for a human decision.
@@ -1082,7 +1064,7 @@ def _loop(
             _is_dangerous(ctx.registry, tc["name"]) for tc in result.tool_calls
         ):
             messages.append(_assistant_tool_msg(result))
-            return _pause(ctx, messages, steps, result.tool_calls, iters_used, corrections)
+            return _pause(ctx, messages, steps, result.tool_calls, iters_used)
 
         messages.append(_assistant_tool_msg(result))
         # Show a thinking indicator while tools execute — bridges the gap between
@@ -1100,7 +1082,6 @@ def run(
     registry: SkillRegistry,
     provider: Provider | None = None,
     max_iters: int = DEFAULT_MAX_ITERS,
-    max_corrections: int = DEFAULT_MAX_CORRECTIONS,
     observer: Observer | None = None,
     approver: Approver | None = None,
     extra_system: str = "",
@@ -1114,10 +1095,9 @@ def run(
     """Run the tool-calling loop until a final answer, the iteration cap, or a pause.
 
     With `plan=True`, halia drafts a short plan first (one extra call) and follows it
-    as *guidance* — the loop still adapts. When a final answer contains figures no tool
-    produced, the conscience bounces it back (up to `max_corrections` times). With
-    `pause_on_approval=True`, a dangerous tool freezes the run into a checkpoint instead
-    of prompting — resume it later with `resume()`.
+    as *guidance* — the loop still adapts. With `pause_on_approval=True`, a dangerous
+    tool freezes the run into a checkpoint instead of prompting — resume it later with
+    `resume()`.
 
     With `compact=True`, older turns are auto-summarised when the context window nears
     its budget (no prompt — for headless/scheduled runs). Set HALIA_COMPACT_AUTO=true
@@ -1148,12 +1128,12 @@ def run(
     ctx = _Ctx(
         provider=provider, config=config, registry=registry, prompt=prompt,
         extra_system=extra_system, plan=plan_text, max_iters=max_iters,
-        max_corrections=max_corrections, observer=observer, approver=approver,
+        observer=observer, approver=approver,
         pause_on_approval=pause_on_approval, checkpoint_db=checkpoint_db,
         compact_approver=(lambda: True) if compact else None,
         on_compact=None, budget_tokens=budget_tokens,
     )
-    return _loop(ctx, messages, [], 0, 0)
+    return _loop(ctx, messages, [], 0)
 
 
 def resume(
@@ -1180,7 +1160,6 @@ def resume(
     ctx = _Ctx(
         provider=provider, config=config, registry=registry, prompt=checkpoint.prompt,
         extra_system=checkpoint.extra_system, plan=checkpoint.plan, max_iters=max_iters,
-        max_corrections=DEFAULT_MAX_CORRECTIONS,
         observer=observer,
         approver=lambda name, args: approve,  # the human's decision, applied to the batch
         pause_on_approval=pause_on_approval, checkpoint_db=checkpoint_db,
@@ -1190,7 +1169,7 @@ def resume(
     steps = list(checkpoint.steps)
     # Complete the frozen tool batch with the decision applied, then continue the loop.
     _execute_batch(ctx, checkpoint.pending, messages, steps)
-    return _loop(ctx, messages, steps, checkpoint.corrections, checkpoint.iters_used)
+    return _loop(ctx, messages, steps, checkpoint.iters_used)
 
 
 def converse(
@@ -1222,12 +1201,12 @@ def converse(
     ctx = _Ctx(
         provider=provider, config=config, registry=registry, prompt=prompt,
         extra_system="", plan="", max_iters=max_iters,
-        max_corrections=DEFAULT_MAX_CORRECTIONS, observer=observer, approver=approver,
+        observer=observer, approver=approver,
         pause_on_approval=False, history_budget=history_budget, on_delta=on_delta,
         on_activity=on_activity, compact_approver=compact_approver, on_compact=on_compact,
         turn_note=turn_note,
     )
-    return _loop(ctx, messages, [], 0, 0)
+    return _loop(ctx, messages, [], 0)
 
 
 _QUARANTINE_TEMPLATE = (
