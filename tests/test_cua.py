@@ -145,6 +145,52 @@ def test_cua_prompt_scopes_cua_open_url_to_web_only(monkeypatch: Any) -> None:
     assert "NEVER use it for local files" in prompt
 
 
+# ── cua_screenshot: fixed coordinate space ────────────────────────────────
+
+
+def test_cua_screenshot_detail_does_not_change_coordinate_space(
+    monkeypatch: Any, tmp_path: Any,
+) -> None:
+    """high vs low detail produce the SAME width, so click coordinates stay valid."""
+    from halia.skills.cua import CuaScreenshot
+
+    monkeypatch.setattr("halia.skills.cua._is_cua_enabled", lambda: True)
+
+    img_path = tmp_path / "screen.png"
+    Image.new("RGB", (3024, 1964), (255, 255, 255)).save(img_path)
+
+    class FakeCua:
+        def screenshot(self, path: str | None = None) -> str:
+            return str(img_path)
+
+    monkeypatch.setattr("halia.skills.cua._get_cua", lambda: FakeCua())
+
+    try:
+        CuaScreenshot().run({"detail": "high"})
+        high_scale = CuaScreenshot._scale
+        high_img = CuaScreenshot._pending_image
+
+        CuaScreenshot().run({"detail": "low"})
+        low_scale = CuaScreenshot._scale
+        low_img = CuaScreenshot._pending_image
+
+        # Same coordinate space regardless of detail — this is the invariant that
+        # keeps cua_click/cua_drag/cua_scroll targets valid between screenshots.
+        assert high_scale == low_scale
+        assert high_scale == 3024 / 1600  # resized from 3024px to the fixed 1600px
+
+        def width_of(b64: str) -> int:
+            buf = io.BytesIO(base64.b64decode(b64))
+            return Image.open(buf).size[0]
+
+        assert width_of(high_img) == 1600
+        assert width_of(low_img) == 1600
+    finally:
+        CuaScreenshot._scale = 1.0
+        CuaScreenshot._pending_image = None
+        CuaScreenshot._pending_detail = None
+
+
 # ── cua_drag: drawing via mouse drag ──────────────────────────────────────
 
 
