@@ -34,28 +34,7 @@ from halia.skills.textmetrics import CountText
 from halia.skills.web import FetchUrl, WebSearch
 from halia.skills.word import ReadDocx
 
-# Browser automation (optional — requires playwright)
-try:
-    from halia.skills.browser import (
-        BrowserClick,
-        BrowserClose,
-        BrowserEnsure,
-        BrowserExtract,
-        BrowserNavigate,
-        BrowserNewTab,
-        BrowserOpen,
-        BrowserRead,
-        BrowserScreenshot,
-        BrowserScroll,
-        BrowserSwitchTab,
-        BrowserType,
-        BrowserWait,
-    )
-    _HAS_BROWSER = True
-except ImportError:
-    _HAS_BROWSER = False
-
-# CUA (Computer Use Agent) — optional, requires cua-driver
+# CUA (Computer Use Agent) — the only computer backend, requires cua-driver.
 try:
     from halia.skills.cua import (
         CuaClick,
@@ -117,57 +96,12 @@ _SKILL_FACTORIES: dict[str, type] = {
     "teach_history": TeachHistory,
 }
 
-# Computer backends are BLENDED by default: browser (Playwright) and CUA (desktop)
-# are both registered when available, and the model picks per task. `computer_backend`
-# can force one backend: "auto" (default), "browser", or "cua".
-def _get_computer_backend() -> str:
-    """Get the configured computer backend: 'auto', 'browser', or 'cua'."""
-    try:
-        from halia.config.settings import read_config
-        backend = str(read_config().get("computer_backend", "auto"))
-        # Legacy: "halia" was the old name for the built-in browser backend.
-        if backend == "halia":
-            backend = "browser"
-        # Unknown values must not silently disable computer automation.
-        if backend not in ("auto", "browser", "cua"):
-            backend = "auto"
-        return backend
-    except Exception:
-        return "auto"
-
-_backend = _get_computer_backend()
-
-# CUA drives a real desktop; on headless systems cua-driver cannot run. Treat
-# it as unavailable and keep browser skills as the fallback instead of hiding
-# them behind a broken CUA backend.
+# CUA drives a real desktop; on headless systems cua-driver cannot run, so treat
+# it as unavailable there. CUA is the ONLY computer backend — browser automation
+# (Playwright) has been removed to keep one code path.
 _cua_usable = _HAS_CUA and cua_available()
 
-# Browser skills: blended, browser-forced, or cua-forced-but-unrunnable (fallback).
-_browser_on = _HAS_BROWSER and (
-    _backend in ("auto", "browser") or (_backend == "cua" and not _cua_usable)
-)
-# CUA skills: blended or cua-forced, and only when a display actually exists.
-_cua_on = _cua_usable and _backend in ("auto", "cua")
-
-if _browser_on:
-    _SKILL_FACTORIES.update({
-        "browser_open": BrowserOpen,
-        "browser_navigate": BrowserNavigate,
-        "browser_new_tab": BrowserNewTab,
-        "browser_click": BrowserClick,
-        "browser_type": BrowserType,
-        "browser_screenshot": BrowserScreenshot,
-        "browser_read": BrowserRead,
-        "browser_extract": BrowserExtract,
-        "browser_scroll": BrowserScroll,
-        "browser_switch_tab": BrowserSwitchTab,
-        "browser_wait": BrowserWait,
-        "browser_ensure": BrowserEnsure,
-        "browser_close": BrowserClose,
-    })
-
-# CUA skills — blended or forced, and only when they can actually run.
-if _cua_on:
+if _cua_usable:
     _SKILL_FACTORIES.update({
         "cua_screenshot": CuaScreenshot,
         "cua_click": CuaClick,
@@ -194,13 +128,10 @@ DEFAULT_SKILLS = [name for name in _SKILL_FACTORIES if name != "run_command"]
 
 
 def available_backends() -> set[str]:
-    """Computer backends currently registered: subset of {'browser', 'cua'}."""
-    backends: set[str] = set()
-    if any(name.startswith("browser_") for name in _SKILL_FACTORIES):
-        backends.add("browser")
+    """Computer backends currently registered: {'cua'} when CUA is available."""
     if any(name.startswith("cua_") for name in _SKILL_FACTORIES):
-        backends.add("cua")
-    return backends
+        return {"cua"}
+    return set()
 
 
 def available_skills() -> list[str]:

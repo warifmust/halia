@@ -87,9 +87,9 @@ def test_repetition_guard_blocks_identical_ui_action() -> None:
 
     registry = MagicMock()
     skill = MagicMock()
-    skill.name = "browser_click"
+    skill.name = "cua_click"
     skill.dangerous = False
-    skill.run.return_value = "Clicked element: #login"
+    skill.run.return_value = "Clicked left"
     registry.get.return_value = skill
     registry.tool_schemas.return_value = []
 
@@ -101,7 +101,7 @@ def test_repetition_guard_blocks_identical_ui_action() -> None:
     )
     messages: list[dict[str, Any]] = []
     steps: list[Step] = []
-    call = {"name": "browser_click", "arguments": '{"selector": "#login"}'}
+    call = {"name": "cua_click", "arguments": '{"x": 1, "y": 1}'}
     calls = [
         {"id": "c1", **call},
         {"id": "c2", **call},
@@ -117,15 +117,15 @@ def test_repetition_guard_blocks_identical_ui_action() -> None:
 
 
 def test_repetition_guard_allows_distinct_calls() -> None:
-    """Different arguments (e.g. 6 distinct add-to-cart selectors) are NOT blocked."""
+    """Different arguments (e.g. 6 distinct click coordinates) are NOT blocked."""
     from halia.audit.trace import Step
     from halia.core.agent import _Ctx, _execute_batch
 
     registry = MagicMock()
     skill = MagicMock()
-    skill.name = "browser_click"
+    skill.name = "cua_click"
     skill.dangerous = False
-    skill.run.return_value = "Clicked element"
+    skill.run.return_value = "Clicked left"
     registry.get.return_value = skill
     registry.tool_schemas.return_value = []
 
@@ -137,10 +137,10 @@ def test_repetition_guard_allows_distinct_calls() -> None:
     )
     messages: list[dict[str, Any]] = []
     steps: list[Step] = []
-    selectors = ["#a", "#b", "#c", "#d", "#e", "#f"]
+    coords = [(i * 100, i * 100) for i in range(6)]
     calls = [
-        {"id": f"c{i}", "name": "browser_click", "arguments": json.dumps({"selector": s})}
-        for i, s in enumerate(selectors)
+        {"id": f"c{i}", "name": "cua_click", "arguments": json.dumps({"x": x, "y": y})}
+        for i, (x, y) in enumerate(coords)
     ]
 
     _execute_batch(ctx, calls, messages, steps)  # type: ignore[arg-type]

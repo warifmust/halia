@@ -219,7 +219,7 @@ def doctor() -> None:
 @app.command()
 def setup(
     computer: Annotated[
-        bool, typer.Option("--computer", help="Enable browser automation (Playwright).")
+        bool, typer.Option("--computer", help="Enable desktop automation (CUA).")
     ] = False,
     cua: Annotated[
         bool, typer.Option("--cua", help="Install CUA driver for full desktop automation.")
@@ -250,7 +250,7 @@ def config(
 
     Examples:
         halia config                           # show all config
-        halia config computer_backend          # show current value
+        halia config model                     # show current value
         halia config screenshot_dir ~/path     # set value
     """
     from halia.config.settings import read_config, write_config
@@ -266,8 +266,6 @@ def config(
             elif key == "computer_enabled":
                 icon = "[green]✓[/green]" if val else "[red]✗[/red]"
                 console.print(f"  [cyan]computer[/cyan]: {icon} {'enabled' if val else 'disabled'}")
-            elif key == "computer_backend":
-                console.print(f"  [cyan]backend[/cyan]: {val}")
             elif key == "trusted_dirs":
                 console.print(f"  [cyan]{key}[/cyan]: {len(val)} dir(s)")
             else:
@@ -729,8 +727,6 @@ def _make_approver() -> Any:
     trusted_tools: set[str] = set()
     approved_read_dirs: set[str] = set()  # directories approved for reading
     cua_batch_prompted = False  # only ask for full CUA control once per session
-    browser_batch_prompted = False  # only ask for full browser control once per session
-    browser_consented = False  # cached answer for the browser consent gate
 
     # Names of CUA desktop-automation tools. When the user grants full CUA control,
     # all of these are added to trusted_tools so the agent can drive the desktop
@@ -779,50 +775,6 @@ def _make_approver() -> Any:
             return True
         console.print("  [dim]falling back to per-action CUA approval[/dim]\n")
         return False
-
-    def _prompt_browser_batch() -> bool:
-        """Ask once for full-session browser control. Returns True if granted."""
-        console.print()
-        console.print(
-            "[bold white on cyan] 🌐 FULL BROWSER CONTROL [/bold white on cyan] "
-            "[bold]halia wants to drive a real web browser[/bold]"
-        )
-        console.print(
-            "  It can navigate, read, extract, click, and type into pages.",
-            style="white",
-        )
-        console.print(
-            "  Destructive actions (shell commands, file deletes) still ask first.",
-            style="dim",
-        )
-        from halia.cli.input import pick
-
-        options = [
-            "yes — grant full browser control for this session",
-            "no — don't run browser automation",
-        ]
-        choice = pick("Select:", options, default=0)
-        if choice.startswith("yes"):
-            console.print("  [dim]granted full browser control for this session[/dim]\n")
-            return True
-        console.print("  [dim]browser automation declined[/dim]\n")
-        return False
-
-    def check_consent(name: str) -> bool:
-        """One-time consent gate for browser automation.
-
-        Browser tools are not marked dangerous — the consent covers the whole
-        family — so they never reach `approve`. This hook asks once on the first
-        browser action and caches the answer for the session.
-        """
-        if not name.startswith("browser_"):
-            return True
-        nonlocal browser_batch_prompted, browser_consented
-        if browser_batch_prompted:
-            return browser_consented
-        browser_batch_prompted = True
-        browser_consented = _prompt_browser_batch()
-        return browser_consented
 
     def approve(name: str, arguments: str) -> bool:
         if name in trusted_tools:
@@ -921,7 +873,6 @@ def _make_approver() -> Any:
         return True
 
     approve.check_read = check_read  # type: ignore[attr-defined]
-    approve.check_consent = check_consent  # type: ignore[attr-defined]
     return approve
 
 
@@ -933,10 +884,10 @@ def _prepare_context(
     Exits with an error message on config/profile problems.
     """
     # Rebuild the skill catalogue after setup/config: on a fresh install the
-    # setup wizard (run before this) may have installed playwright/cua-driver
-    # and set the backend AFTER halia.skills was first imported, so its
-    # browser/CUA registration was computed against a stale config. Re-executing
-    # the module re-reads config and installed packages now.
+    # setup wizard (run before this) may have installed cua-driver and set the
+    # backend AFTER halia.skills was first imported, so its CUA registration was
+    # computed against a stale config. Re-executing the module re-reads config
+    # and installed packages now.
     import importlib
     from dataclasses import replace
 

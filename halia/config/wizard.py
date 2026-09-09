@@ -38,7 +38,7 @@ def run_setup(console: Console) -> None:
     # Step 2: Provider + model + API key
     _setup_provider(console)
 
-    # Step 3: Halia computer — browser automation
+    # Step 3: Halia computer — desktop automation
     _setup_computer(console)
 
     console.print('\nTry it: [bold]halia ask "hello"[/bold]')
@@ -139,7 +139,7 @@ def _resolve_api_key(console: Console, provider: str) -> str:
 
 
 def _setup_computer(console: Console) -> None:
-    """Offer to enable halia computer (browser + desktop automation)."""
+    """Offer to enable halia computer (CUA desktop automation)."""
     from halia.config.settings import read_config, write_config
 
     config = read_config()
@@ -148,38 +148,28 @@ def _setup_computer(console: Console) -> None:
         return
 
     console.print(
-        "\n[bold]halia computer[/bold] — browser + desktop automation\n"
+        "\n[bold]halia computer[/bold] — desktop automation\n"
         "\n"
-        "halia can control a web browser (Playwright) and your desktop (CUA):\n"
-        "  • Fill forms, click buttons, navigate websites\n"
+        "halia can control your desktop (CUA):\n"
+        "  • Fill forms, click buttons, navigate apps and websites\n"
         "  • Drive apps you're already signed into (Sheets, Excel, …)\n"
         "  • Take screenshots for visual verification\n"
-        "  • Run automated tests on web applications\n"
+        "  • Run automated tests on desktop and web applications\n"
         "\n"
-        "This installs Playwright (browser engine) and the CUA driver.\n"
+        "This installs the CUA driver.\n"
     )
 
     choice = pick(
         "Enable halia computer?",
-        ["Yes — install Playwright and CUA (~400MB)", "No — skip for now (can add later)"],
+        ["Yes — install CUA driver", "No — skip for now (can add later)"],
         default=0,
     )
 
     if choice.startswith("Yes"):
-        console.print("\n[dim]Installing Playwright...[/dim]")
-        if not _install_playwright(console):
-            console.print("[yellow]⚠️[/yellow] Playwright installation failed")
-            console.print("[dim]  You can try later with: halia setup --computer[/dim]")
-            return
-        # CUA is best-effort: browser automation still works without it.
         _install_cua_driver(console)
         config["computer_enabled"] = True
-        config["computer_backend"] = "auto"  # blended: halia picks per task
         write_config(config)
-        console.print("[green]✓[/green] halia computer enabled (blended browser + desktop)")
-        console.print(
-            "[dim]  Force one backend: halia config computer_backend browser|auto[/dim]"
-        )
+        console.print("[green]✓[/green] halia computer enabled (CUA desktop automation)")
     else:
         config["computer_enabled"] = False
         write_config(config)
@@ -220,79 +210,6 @@ def _install_python_package(
         console.print(f"[red]  Failed to install {package}: {result.stderr}[/red]")
         return False
     return True
-
-
-def _install_playwright(console: Console) -> bool:
-    """Install Playwright into halia's environment, then install Chromium."""
-    if not _install_python_package(
-        console, "playwright", message="Installing playwright", timeout=180
-    ):
-        return False
-
-    # ── Step 2: install Chromium with progress ──
-    _run_with_chromium_progress(console)
-    return True
-
-
-def _run_with_chromium_progress(console: Console) -> None:
-    """Run `playwright install chromium` with a live progress line."""
-    import re
-    import subprocess
-    import sys
-
-    # Use `python -m playwright` so the CLI resolves even when playwright was
-    # installed into halia's own environment (e.g. a uv tool venv) and its
-    # bin/ is not on PATH.
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "playwright", "install", "chromium"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-
-    percent_re = re.compile(r"(\d{1,3})%")
-    last_pct = -1
-    line = ""
-
-    while True:
-        ch = proc.stdout.read(1)  # type: ignore[union-attr]
-        if ch == "" and proc.poll() is not None:
-            break
-        if ch in ("\r", "\n"):
-            stripped = line.strip()
-            if not stripped:
-                line = ""
-                continue
-            # extract percentage if present
-            m = percent_re.search(stripped)
-            if m:
-                pct = int(m.group(1))
-                if pct != last_pct:
-                    last_pct = pct
-                    # build a compact progress line
-                    filled = pct // 5  # 20 chars total
-                    bar = "█" * filled + "░" * (20 - filled)
-                    sys.stdout.write(f"\r  \033[36m⬇\033[0m [{bar}] {pct:3d}%")
-                    sys.stdout.flush()
-            else:
-                # non-progress line — just show it
-                sys.stdout.write(f"\r  \033[36m⬇\033[0m {stripped[:60]}\n")
-                sys.stdout.flush()
-            line = ""
-        else:
-            line += ch
-
-    proc.wait()
-
-    if last_pct >= 0:
-        # clear the progress line and show done
-        sys.stdout.write("\r" + " " * 50 + "\r")
-        sys.stdout.flush()
-    if proc.returncode != 0:
-        console.print("[yellow]  ⚠ Chromium install returned non-zero exit code[/yellow]")
-    else:
-        console.print("[green]✓[/green] Chromium browser installed")
 
 
 class _Spinner:
@@ -377,14 +294,12 @@ def _install_cua_driver(console: Console) -> bool:
         console.print("[dim]  You can try later with: halia setup --cua[/dim]")
         return False
 
-    # Update config — blended by default (halia picks browser vs desktop per task).
     from halia.config.settings import read_config, write_config
     config = read_config()
     config["computer_enabled"] = True
-    config["computer_backend"] = "auto"
     write_config(config)
 
-    console.print("[green]✓[/green] CUA driver installed and enabled (blended)")
+    console.print("[green]✓[/green] CUA driver installed and enabled")
 
     # On headless systems the driver cannot run — warn before the user relies on it.
     from halia.computer.cua_backend import cua_available
@@ -437,6 +352,6 @@ def _install_cua_driver(console: Console) -> bool:
             )
 
     console.print(
-        "[dim]  Halia uses the browser for web tasks and CUA for desktop/logged-in apps.[/dim]"
+        "[dim]  Halia uses CUA for all desktop and web tasks.[/dim]"
     )
     return True

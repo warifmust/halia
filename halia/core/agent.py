@@ -123,29 +123,6 @@ SYSTEM_PROMPT = (
     "columns, short text), PDF is fine. "
 )
 
-# Browser/desktop automation section — added dynamically based on backend
-_BROWSER_PROMPT = (
-    "BROWSER AUTOMATION: When the user asks you to interact with a website, use the "
-    "browser tools. Follow this workflow: "
-    "1) OPEN the page with browser_open. It opens a visible window on desktop by "
-    "default; pass headless=true only when the user wants it to run in the background. "
-    "2) WAIT for elements with browser_wait if the page loads slowly. "
-    "3) READ the page with browser_read to understand what's on it. "
-    "4) EXTRACT structured data (links, table rows, attributes) with browser_extract "
-    "by CSS selector instead of re-reading the whole page. "
-    "5) INTERACT: use browser_click, browser_type, browser_scroll to fill forms, "
-    "click buttons, navigate. Use CSS selectors when possible, fall back to text. "
-    "6) TABS: open a page in a new tab with browser_new_tab; list, switch, or "
-    "close tabs with browser_switch_tab. Other browser tools act on the active tab. "
-    "7) VERIFY: after each action, read or screenshot to confirm it worked. "
-    "8) CLOSE with browser_close when done. "
-    "ERROR RECOVERY: If browser_open or any action fails with 'Target page closed' "
-    "or 'browser has been closed', call browser_ensure to restart, then retry. "
-    "Do not give up on the first failure. "
-    "VISION: browser_screenshot saves the page to a file AND shows it to you as an "
-    "image you can analyze visually (when the model supports images). "
-)
-
 _CUA_PROMPT = (
     "DESKTOP AUTOMATION (CUA): interact with websites or any desktop app using the "
     "cua_* tools. Work in BATCHES: take ONE cua_screenshot, derive EVERY action you "
@@ -182,28 +159,11 @@ _CUA_PROMPT = (
     "If a click misses the SAME target twice, stop clicking and either navigate "
     "directly with cua_open_url (for a page) or use cua_hotkey with Tab/Enter to "
     "focus and activate the element. "
-    "Do NOT use browser_open or browser_* tools — they do NOT exist. Use cua_* tools only. "
-)
-
-_BLENDED_PROMPT = (
-    "COMPUTER AUTOMATION: two backends are available — a browser (browser_*) and "
-    "desktop control (cua_*). Choose per step.\n"
-    "PREFER browser_* for FRESH, ANONYMOUS web work: public pages, research, "
-    "filling forms, clicking, extracting, screenshots, tabs. DOM selectors are "
-    "precise. BUT browser_* opens its OWN isolated browser — no cookies, no logins, "
-    "no profile — anything behind an auth gate will appear logged out.\n"
-    "USE cua_* when:\n"
-    "1) You need an EXISTING logged-in session — Google Sheets/Docs/Gmail, any site "
-    "or app the user is already signed into, or the user's own desktop apps. cua_* "
-    "drives the user's real, already-open windows, so it stays inside the auth gate "
-    "and never touches the user's credentials.\n"
-    "2) The target is a native desktop app (terminal, file manager, Excel, etc.).\n"
-    "3) The browser can't reach it: canvas/WebGL, cross-origin iframes, native file "
-    "open/save dialogs, OS permission prompts, browser chrome.\n"
-    "4) browser_* failed with an unrecoverable error — escalate to cua_*.\n"
-    "If the user says 'go to the browser' or references something they can already "
-    "see / are logged into, default to cua_*. Don't hop between backends mid-task "
-    "without reason. "
+    "MONITORS: the screenshot shows the FULL desktop — on a multi-monitor setup the "
+    "monitors appear side-by-side in one wide image, and click coordinates still map "
+    "correctly across them. Identify the target app/window visually and work there; "
+    "do NOT click into the terminal where halia is running. If it's unclear which "
+    "monitor or window to use, ask the user. "
 )
 
 _CLOSING_PROMPT = (
@@ -227,24 +187,19 @@ _LOOP_GUARD_PROMPT = (
     "URL, same open/close) more than twice. After two attempts with no progress, "
     "STOP and choose a different strategy or ask the user. "
     "4) The circuit breaker disables a failing tool for the rest of the run — "
-    "restarting the browser does NOT reset it. "
+    "restarting the app or driver does NOT reset it. "
     "5) Never report a count of items/rows/products from memory or assumption — "
     "read it from the page or a tool result. "
 )
 
 
 def _get_system_prompt() -> str:
-    """Build the system prompt with the right automation section for the backend."""
+    """Build the system prompt with the CUA automation section when available."""
     from halia.skills import available_backends
 
-    backends = available_backends()
-    if "browser" in backends and "cua" in backends:
-        return SYSTEM_PROMPT + _BLENDED_PROMPT + _LOOP_GUARD_PROMPT + _CLOSING_PROMPT
-    if "cua" in backends:
+    if "cua" in available_backends():
         return SYSTEM_PROMPT + _CUA_PROMPT + _LOOP_GUARD_PROMPT + _CLOSING_PROMPT
-    if "browser" in backends:
-        return SYSTEM_PROMPT + _BROWSER_PROMPT + _LOOP_GUARD_PROMPT + _CLOSING_PROMPT
-    # No computer backend available — don't advertise tools that aren't registered.
+    # No desktop available — don't advertise tools that aren't registered.
     return SYSTEM_PROMPT + _CLOSING_PROMPT
 
 DEFAULT_MAX_ITERS = 8
@@ -749,8 +704,7 @@ _READ_TOOLS = frozenset({
 # these specifically — reads and screenshots are excluded because their no-progress
 # (unchanged result) is detected separately.
 _REPEAT_GUARD_TOOLS = frozenset({
-    "browser_click", "browser_type", "browser_open", "browser_navigate",
-    "browser_close", "cua_click", "cua_double_click", "cua_type", "cua_open_url",
+    "cua_click", "cua_double_click", "cua_type", "cua_open_url",
 })
 
 # Recon tools that don't advance the task on their own: screenshots, scrolls, waits,
@@ -758,7 +712,6 @@ _REPEAT_GUARD_TOOLS = frozenset({
 # (the model scrolling/screenshotting the same page forever). Reads, clicks, and types
 # reset the counter because they extract data or change state.
 _EXPLORATION_TOOLS = frozenset({
-    "browser_screenshot", "browser_scroll", "browser_wait",
     "cua_screenshot", "cua_scroll", "cua_hotkey", "cua_desktop",
 })
 
@@ -777,19 +730,18 @@ def _call_signature(name: str, arguments: str) -> str:
 # Coordinate-click tools: the repetition guard additionally treats a click within
 # `repeat_radius` pixels of a recent click on the SAME tool as a repeat — models
 # dodge the exact-match guard by nudging coordinates ±1px while stuck on one target.
-_COORD_CLICK_TOOLS = frozenset({"cua_click", "cua_double_click", "browser_click"})
+_COORD_CLICK_TOOLS = frozenset({"cua_click", "cua_double_click"})
 
 # Screenshots dominate context cost; a run that screenshots after every click is a
 # no-progress loop in disguise, so count them separately from the consecutive
 # exploration guard (which clicks reset).
-_SCREENSHOT_TOOLS = frozenset({"cua_screenshot", "browser_screenshot"})
+_SCREENSHOT_TOOLS = frozenset({"cua_screenshot"})
 
 _SCREENSHOT_NUDGE = (
     "\n\n⚠️ You have taken {count} screenshots this run. Screenshots are the largest "
     "token cost — each one is expensive and slows the run down. Stop screenshotting "
-    "after every action: batch your actions, use cua_window/cua_desktop (or "
-    "browser_read/browser_extract) for element positions, and screenshot only once "
-    "to verify a finished batch."
+    "after every action: batch your actions, use cua_window/cua_desktop for element "
+    "positions, and screenshot only once to verify a finished batch."
 )
 
 
@@ -850,7 +802,7 @@ def _execute_batch(
             observation = (
                 f"circuit breaker: '{name}' has failed {ctx.max_tool_failures} times "
                 f"consecutively and is now DISABLED for the rest of this run. It will "
-                f"NOT recover by restarting the browser or retrying — do NOT call "
+                f"NOT recover by restarting the app or retrying — do NOT call "
                 f"'{name}' again. Use a different tool or ask the user how to proceed."
             )
             log_tool_call(name, tc["arguments"], 0.0, "skipped")
@@ -869,8 +821,8 @@ def _execute_batch(
             observation = (
                 f"exploration guard: {ctx._exploration_steps} consecutive "
                 f"screenshots/scrolls/app-switches without any other progress. "
-                f"STOP exploring. Report your findings now, or use a different tool "
-                f"(browser_read / browser_extract to read the page as text)."
+                f"STOP exploring. Report your findings now, or use cua_window / "
+                f"cua_desktop to target elements directly."
             )
             log_tool_call(name, tc["arguments"], 0.0, "skipped")
             step = Step(tool=name, arguments=tc["arguments"], observation=observation)
@@ -888,8 +840,7 @@ def _execute_batch(
             observation = (
                 f"screenshot budget exceeded: {ctx._screenshots} screenshots this run. "
                 f"STOP screenshotting. Use cua_window/cua_desktop for element "
-                f"positions (or browser_read/browser_extract), then finish and "
-                f"report your result, or ask the user."
+                f"positions, then finish and report your result, or ask the user."
             )
             log_tool_call(name, tc["arguments"], 0.0, "skipped")
             step = Step(tool=name, arguments=tc["arguments"], observation=observation)
@@ -936,23 +887,6 @@ def _execute_batch(
         check_read = getattr(ctx.approver, "check_read", None)
         if name in _READ_TOOLS and check_read is not None and not check_read(name, tc["arguments"]):
             observation = "denied by user: reading from this directory was not approved"
-            log_tool_call(name, tc["arguments"], 0.0, "denied")
-            step = Step(tool=name, arguments=tc["arguments"], observation=observation)
-            steps.append(step)
-            if ctx.observer is not None:
-                ctx.observer(step)
-            messages.append({"role": "tool", "tool_call_id": tc["id"], "content": observation})
-            continue
-        # Browser consent gate: one-time "full browser control" prompt before the
-        # first browser action. Browser tools aren't dangerous (consent covers the
-        # family), so this hook is the only place the gate can fire. On decline we
-        # return the denial so the agent can ask the user how they'd like to proceed.
-        check_consent = getattr(ctx.approver, "check_consent", None)
-        if check_consent is not None and not check_consent(name):
-            observation = (
-                "denied by user: browser automation consent was declined — "
-                "ask the user how they'd like to proceed"
-            )
             log_tool_call(name, tc["arguments"], 0.0, "denied")
             step = Step(tool=name, arguments=tc["arguments"], observation=observation)
             steps.append(step)
@@ -1064,13 +998,12 @@ def _execute_batch(
 
 
 def _take_pending_image(name: str) -> tuple[str | None, str, bool]:
-    """Consume a staged screenshot image from a screenshot skill.
+    """Consume a staged screenshot image from the screenshot skill.
 
-    Screenshot skills (cua_screenshot, browser_screenshot) stash a base64 JPEG
-    on the skill class; the agent loop pulls it here to inject as a visual
-    observation. Returns (image_b64, detail, unchanged) — `unchanged` is True when
-    this screenshot is byte-identical to the previous one from the same backend,
-    i.e. the screen did not change since the last screenshot.
+    The cua_screenshot skill stashes a base64 JPEG on the skill class; the agent
+    loop pulls it here to inject as a visual observation. Returns
+    (image_b64, detail, unchanged) — `unchanged` is True when this screenshot is
+    byte-identical to the previous one, i.e. the screen did not change.
     """
     try:
         if name == "cua_screenshot":
@@ -1085,19 +1018,6 @@ def _take_pending_image(name: str) -> tuple[str | None, str, bool]:
             digest = hashlib.sha256(img.encode("ascii")).hexdigest()
             unchanged = CuaScreenshot._last_hash == digest
             CuaScreenshot._last_hash = digest
-            return img, detail, unchanged
-        if name == "browser_screenshot":
-            from halia.skills.browser import BrowserScreenshot
-
-            img = BrowserScreenshot._pending_image
-            detail = BrowserScreenshot._pending_detail or "low"
-            BrowserScreenshot._pending_image = None  # consume it
-            BrowserScreenshot._pending_detail = None
-            if img is None:
-                return None, "low", False
-            digest = hashlib.sha256(img.encode("ascii")).hexdigest()
-            unchanged = BrowserScreenshot._last_hash == digest
-            BrowserScreenshot._last_hash = digest
             return img, detail, unchanged
     except ImportError:
         return None, "low", False

@@ -1,7 +1,7 @@
 """Deterministic computer-use eval harness.
 
 Runs a task through halia's real agent loop against a chosen model, then checks the
-OUTCOME mechanically (browser DOM state or tool-call provenance) — no LLM-as-a-judge.
+OUTCOME mechanically (tool-call provenance or desktop state) — no LLM-as-a-judge.
 
 The scorecard keeps two things separate:
 - MODEL verdict (`passed`) — did the task's deterministic check succeed.
@@ -34,12 +34,9 @@ except ValueError:
 
 
 class AutoApprove:
-    """Approve every gate for unattended eval runs (consent, dangerous tools, reads)."""
+    """Approve every gate for unattended eval runs (dangerous tools, reads)."""
 
     def __call__(self, name: str, arguments: str) -> bool:
-        return True
-
-    def check_consent(self, name: str) -> bool:
         return True
 
     def check_read(self, name: str, arguments: str) -> bool:

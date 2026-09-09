@@ -9,7 +9,7 @@ from halia.eval.harness import (
     harness_note,
     score_steps,
 )
-from halia.eval.tasks import _count_claims, _fabrications
+from halia.eval.tasks import make_api_trigger_task
 
 
 def test_classify_observation() -> None:
@@ -80,19 +80,26 @@ def test_cua_drawing_verify_requires_screenshot_and_drag() -> None:
 def test_auto_approve_grants_every_gate() -> None:
     approver = AutoApprove()
     assert approver("run_command", "{}") is True
-    assert approver.check_consent("browser_open") is True
     assert approver.check_read("read_file", "{}") is True
 
 
-def test_count_claims_extracts_number_noun_pairs() -> None:
-    assert (6, "products") in _count_claims("We added 6 products, 1 each.")
+def test_make_api_trigger_task_detects_attempt() -> None:
+    from halia.core.agent import RunResult
 
+    task = make_api_trigger_task("my_trigger", "https://api.example.com/docs", "change-number")
 
-def test_fabrications_flags_count_claims_mismatching_reality() -> None:
-    assert _fabrications("There are 5 items in the cart.", 6) == (
-        "answer claimed '5 items' but the cart has 6",
+    hit = RunResult(
+        answer="",
+        steps=[Step("http_request", '{"url": "https://api.example.com/change-number"}', "401")],
     )
-    assert _fabrications("All 6 products are in the cart.", 6) == ()
+    assert task.verify(hit).passed is True
+
+    miss = RunResult(
+        answer="",
+        steps=[Step("cua_screenshot", "{}", "Screenshot captured (1600x1039).")],
+    )
+    assert task.verify(miss).passed is False
+    assert "no trigger attempt" in task.verify(miss).details
 
 
 def test_parse_models_splits_commas() -> None:

@@ -1,8 +1,6 @@
 """Computer backends — abstract interface for desktop automation.
 
-Supports two backends:
-- "halia" — Playwright-based browser automation (default)
-- "cua" — cua-driver desktop automation
+CUA (cua-driver desktop automation) is halia's only computer backend.
 """
 
 import os

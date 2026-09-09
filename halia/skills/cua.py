@@ -1,11 +1,11 @@
 """CUA (Computer Use Agent) skills — desktop automation via cua-driver.
 
-Provides desktop-level automation skills that use the cua-driver SDK.
-Available in blended mode (computer_backend "auto") or forced ("cua"),
-provided a graphical display exists.
+Provides desktop-level automation skills that use the cua-driver SDK. CUA is
+halia's only computer backend (browser automation has been removed), available
+whenever a graphical display exists.
 
-Unlike browser skills (Playwright), CUA skills can:
-- Control any desktop application (not just browser)
+CUA skills can:
+- Control any desktop application (not just a browser)
 - Work in background without stealing focus
 - Interact with native OS elements
 
@@ -23,10 +23,8 @@ from halia.skills.base import Skill
 
 
 def _is_cua_enabled() -> bool:
-    """Check if the CUA backend is enabled (blended "auto" or forced "cua")."""
-    from halia.config.settings import read_config
-    config = read_config()
-    return config.get("computer_backend", "auto") in ("auto", "cua")
+    """CUA is halia's only computer backend, so the tools are always enabled."""
+    return True
 
 
 def _get_cua() -> Any:
@@ -36,8 +34,7 @@ def _get_cua() -> Any:
         raise RuntimeError(
             "CUA desktop automation requires a graphical desktop "
             "(X11/Wayland on Linux, or a logged-in macOS/Windows session). "
-            "This environment looks headless — use browser automation or "
-            "HTTP requests instead."
+            "This environment looks headless — use HTTP requests instead."
         )
     return get_cua_computer()
 
