@@ -123,12 +123,13 @@ SWAGGER_CMN_TRIGGER = Task(
 )
 
 
-def autodraw_rocket_verify(result: RunResult) -> Verdict:
-    """PASS if the run executed the drawing workflow (screenshot + drag strokes).
+def cua_drawing_verify(result: RunResult) -> Verdict:
+    """PASS if the run executed the CUA drawing workflow (screenshot + drag strokes).
 
-    Visual correctness can't be checked deterministically without vision, so this
-    verifies TOOL PROVENANCE: the model saw the canvas and drew with cua_drag.
-    Guard discipline is scored separately by the harness, not by this verdict.
+    Drawing is done with the existing cua_drag tool — there is no separate draw
+    tool, so nothing is renamed or duplicated. This verifies TOOL PROVENANCE: the
+    model looked at the canvas and drew strokes with cua_drag. Guard discipline is
+    scored separately by the harness, not by this verdict.
     """
     screenshot = any(s.tool == "cua_screenshot" for s in result.steps)
     drags = sum(1 for s in result.steps if s.tool == "cua_drag")
@@ -145,17 +146,17 @@ def autodraw_rocket_verify(result: RunResult) -> Verdict:
     return Verdict(passed=False, details="missing: " + ", ".join(missing))
 
 
-AUTODRAW_ROCKET = Task(
-    name="autodraw_rocket",
+CUA_DRAWING = Task(
+    name="cua_drawing",
     prompt=(
-        "The AutoDraw canvas is open in the browser. Draw a simple rocket: a white "
-        "body, a yellow rounded window, a red pointy head, and 2 red wings. Use the "
-        "CUA tools: cua_screenshot to see the canvas, then cua_drag for each stroke. "
-        "Batch the drags and end with one screenshot to verify."
+        "A drawing canvas is open in the browser. Draw a simple shape (e.g. a "
+        "square or triangle): take one cua_screenshot to see the canvas, then draw "
+        "each stroke with cua_drag, batching the strokes, and end with one "
+        "cua_screenshot to verify."
     ),
-    verify=autodraw_rocket_verify,
+    verify=cua_drawing_verify,
     requires_cua=True,
     max_iters=40,
 )
 
-ALL_TASKS = (SAUCEDEMO_ADD_6, SWAGGER_CMN_TRIGGER, AUTODRAW_ROCKET)
+ALL_TASKS = (SAUCEDEMO_ADD_6, SWAGGER_CMN_TRIGGER, CUA_DRAWING)

@@ -1668,7 +1668,7 @@ def chat(
             console.print(f"[red]error:[/red] {exc}\n")
             cid = getattr(exc, "checkpoint_id", "")
             if cid:
-                console.print(f"[dim]resume with: halia resume {cid}[/dim]\n")
+                console.print(f"[dim]resume with: /resume {cid}[/dim]\n")
             messages.pop()  # drop the failed user turn so history stays clean
             continue
         except KeyboardInterrupt:

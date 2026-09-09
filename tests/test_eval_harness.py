@@ -59,20 +59,20 @@ def test_harness_note_flags_high_guard_rate() -> None:
     assert "50%" in harness_note(10, 5)  # 50% guards → flagged for investigation
 
 
-def test_autodraw_rocket_verify_requires_screenshot_and_drag() -> None:
+def test_cua_drawing_verify_requires_screenshot_and_drag() -> None:
     from halia.core.agent import RunResult
-    from halia.eval.tasks import autodraw_rocket_verify
+    from halia.eval.tasks import cua_drawing_verify
 
     screenshot = Step("cua_screenshot", "{}", "Screenshot captured (1600x1039).")
     drag = Step(
         "cua_drag", '{"from_x": 1, "from_y": 2, "to_x": 3, "to_y": 4}', "Dragged"
     )
 
-    assert autodraw_rocket_verify(
+    assert cua_drawing_verify(
         RunResult(answer="", steps=[screenshot, drag])
     ).passed is True
 
-    missing_drag = autodraw_rocket_verify(RunResult(answer="", steps=[screenshot]))
+    missing_drag = cua_drawing_verify(RunResult(answer="", steps=[screenshot]))
     assert missing_drag.passed is False
     assert "no cua_drag" in missing_drag.details
 
