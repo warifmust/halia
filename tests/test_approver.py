@@ -68,6 +68,8 @@ def test_cua_batch_grant_trusts_all_cua_tools(monkeypatch: Any) -> None:
     # Subsequent CUA actions are auto-approved without re-prompting.
     assert approve("cua_click", '{"x": 100, "y": 200}') is True
     assert approve("cua_type", '{"text": "hello"}') is True
+    assert approve("cua_drag", '{"from_x": 1, "from_y": 2, "to_x": 3, "to_y": 4}') is True
+    assert approve("cua_window", '{"pid": 1, "window_id": 2}') is True
     assert approve("cua_screenshot", "{}") is True
     assert len(prompts) == 1
 

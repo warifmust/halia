@@ -11,6 +11,7 @@ def test_classify_observation() -> None:
     assert classify_observation("circuit breaker: 'x' has failed 3 times") == "guard"
     assert classify_observation("repetition guard: 'x' tried 2 times") == "guard"
     assert classify_observation("exploration guard: 16 consecutive screenshots") == "guard"
+    assert classify_observation("screenshot budget exceeded: 24 screenshots this run") == "guard"
     assert classify_observation("Clicked element: #login") == "ok"
 
 

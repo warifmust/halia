@@ -101,6 +101,58 @@ def _format_window_state(raw: str) -> str:
     return header + "\n" + "\n".join(lines)
 
 
+def _summarize_desktop_tree(tree: str, max_chars: int = 1200) -> str:
+    """Compact the get_accessibility_tree payload into app/window name+id lines.
+
+    The raw tree lists every running app (and its windows) as JSON — large and
+    mostly redundant. Keep the parts the model needs (app name, pid, window_id)
+    and drop the bulk, so cua_desktop stays cheap enough to call repeatedly.
+    """
+    def _trunc(raw: str) -> str:
+        return raw if len(raw) <= max_chars else raw[:max_chars].rstrip() + "…"
+
+    try:
+        data = json.loads(tree)
+    except (ValueError, TypeError):
+        return _trunc(tree)
+    if not isinstance(data, dict):
+        return _trunc(tree)
+    apps = data.get("apps")
+    if not isinstance(apps, list):
+        return _trunc(tree)
+
+    lines: list[str] = []
+    for app in apps:
+        if not isinstance(app, dict):
+            continue
+        name = app.get("name") or app.get("bundle_id") or "app"
+        head = str(name)
+        pid = app.get("pid")
+        if pid is not None:
+            head += f" (pid {pid})"
+        windows = app.get("windows")
+        if isinstance(windows, list):
+            wins: list[str] = []
+            for w in windows:
+                if not isinstance(w, dict):
+                    continue
+                wid = w.get("window_id")
+                if wid is None:
+                    wid = w.get("id")
+                title = w.get("title") or ""
+                if wid is not None:
+                    wins.append(f"win {wid} {title}".strip())
+                elif title:
+                    wins.append(str(title))
+            if wins:
+                head += ": " + ", ".join(wins[:8])
+        lines.append(head)
+        if sum(len(line) + 1 for line in lines) > max_chars:
+            break
+    body = "\n".join(lines)
+    return f"running apps ({len(apps)}):\n{_trunc(body)}"
+
+
 def _overlay_grid(img: Any, step: int = 100) -> Any:
     """Draw a faint coordinate grid + axis labels for precise click targeting."""
     from PIL import Image, ImageDraw, ImageFont
@@ -223,18 +275,21 @@ class CuaScreenshot(Skill):
     _pending_detail: str | None = None
     # Hash of the last staged screenshot — used to detect an UNCHANGED screen.
     _last_hash: str | None = None
-    # Scale factor from the (resized) image the model sees back to real
-    # screen pixels. Set on every screenshot; read by CuaClick/CuaScroll so
-    # the model can give coordinates in image-space and we map them to the
-    # real screen. Defaults to 1.0 (no scaling) until a screenshot is taken.
+    # Scale factor from the (fixed-width) image the model sees back to real
+    # screen pixels. Set on every screenshot; read by the coordinate tools
+    # (click/scroll/drag/window) so the model can give coordinates in
+    # image-space and we map them to the real screen. Because every screenshot
+    # is the same width, this only changes when the actual screen size changes.
     _scale: float = 1.0
-    # Keep the screenshot large enough to click precisely without exploding
-    # image tokens. Native screens are usually 1920px wide.
+    # Screenshots are ALWAYS resized to this fixed width so the image the model
+    # sees has a stable coordinate space. The scale factor (real screen px →
+    # image px) is therefore constant for a given screen size, which keeps click
+    # coordinates valid regardless of how many screenshots are taken or in what
+    # order. Native screens are usually 1920px wide.
     _MAX_WIDTH = 1600
     _JPEG_QUALITY = 90
-    _GRID_STEP = 100
-    _LOW_MAX_WIDTH = 800
     _LOW_JPEG_QUALITY = 70
+    _GRID_STEP = 100
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,
@@ -247,9 +302,9 @@ class CuaScreenshot(Skill):
             "detail": {
                 "type": "string",
                 "enum": ["high", "low"],
-                "description": "Resolution. 'high' (1600px) for precise "
-                "targeting; 'low' (800px, smaller) for quick verification. "
-                "Default: high.",
+                "description": "Image quality. Screenshots are always 1600px "
+                "wide (the coordinate space never changes); 'low' only uses "
+                "heavier JPEG compression for a smaller file. Default: high.",
             },
         },
     }
@@ -277,12 +332,15 @@ class CuaScreenshot(Skill):
 
             img: Image.Image = Image.open(path)
             real_w, real_h = img.size
-            if detail == "low":
-                max_width = CuaScreenshot._LOW_MAX_WIDTH
-                quality = CuaScreenshot._LOW_JPEG_QUALITY
-            else:
-                max_width = CuaScreenshot._MAX_WIDTH
-                quality = CuaScreenshot._JPEG_QUALITY
+            # One fixed width for every screenshot: the coordinate space the model
+            # sees must not change between calls, or click coordinates break.
+            # `detail` only trades JPEG quality (file size), never resolution.
+            max_width = CuaScreenshot._MAX_WIDTH
+            quality = (
+                CuaScreenshot._JPEG_QUALITY
+                if detail == "high"
+                else CuaScreenshot._LOW_JPEG_QUALITY
+            )
             if real_w > max_width:
                 ratio = max_width / real_w
                 img = img.resize(
@@ -714,7 +772,7 @@ class CuaDesktopState(Skill):
             parts = [str(cua.desktop_state())]
             tree = cua.accessibility_tree()
             if tree:
-                parts.append(tree)
+                parts.append(_summarize_desktop_tree(tree))
             return "\n".join(parts)
         except Exception as exc:
             return f"error: {exc}"

@@ -257,6 +257,85 @@ def test_exploration_counter_resets_on_progress_tool() -> None:
     assert not any("exploration guard" in m["content"] for m in messages)
 
 
+def test_repetition_guard_blocks_near_identical_clicks() -> None:
+    """Near-identical click coordinates (±1px nudges) trip the repetition guard."""
+    from halia.audit.trace import Step
+    from halia.core.agent import _Ctx, _execute_batch
+
+    registry = MagicMock()
+    skill = MagicMock()
+    skill.name = "cua_click"
+    skill.dangerous = False
+    skill.run.return_value = "Clicked left"
+    registry.get.return_value = skill
+    registry.tool_schemas.return_value = []
+
+    ctx = _Ctx(
+        provider=MagicMock(), config=MagicMock(), registry=registry,
+        prompt="t", extra_system="", plan="", max_iters=8,
+        observer=None, approver=None,
+        pause_on_approval=False, max_tool_failures=3,
+    )
+    messages: list[dict[str, Any]] = []
+    steps: list[Step] = []
+    coords = [(660, 582), (661, 583), (660, 584), (662, 583)]
+    calls = [
+        {"id": f"c{i}", "name": "cua_click", "arguments": json.dumps({"x": x, "y": y})}
+        for i, (x, y) in enumerate(coords)
+    ]
+
+    _execute_batch(ctx, calls, messages, steps)  # type: ignore[arg-type]
+
+    assert skill.run.call_count == 2  # first two run; 3rd + 4th are blocked
+    assert any("repetition guard" in m["content"] for m in messages)
+
+
+def test_screenshot_budget_blocks_run_of_too_many_screenshots() -> None:
+    """Screenshots interleaved with clicks still count toward the budget."""
+    from halia.audit.trace import Step
+    from halia.core.agent import _Ctx, _execute_batch
+
+    registry = MagicMock()
+    screenshot = MagicMock()
+    screenshot.name = "cua_screenshot"
+    screenshot.dangerous = False
+    screenshot.run.return_value = "Screenshot captured (1600x1039)."
+    click = MagicMock()
+    click.name = "cua_click"
+    click.dangerous = False
+    click.run.return_value = "Clicked left"
+    registry.get.side_effect = lambda name: {
+        "cua_screenshot": screenshot, "cua_click": click,
+    }[name]
+    registry.tool_schemas.return_value = []
+
+    ctx = _Ctx(
+        provider=MagicMock(), config=MagicMock(), registry=registry,
+        prompt="t", extra_system="", plan="", max_iters=50,
+        observer=None, approver=None,
+        pause_on_approval=False, max_tool_failures=3,
+        screenshot_warn_at=2, screenshot_block_at=4,
+    )
+    messages: list[dict[str, Any]] = []
+    steps: list[Step] = []
+    calls: list[dict[str, Any]] = []
+    for i in range(5):
+        calls.append({"id": f"s{i}", "name": "cua_screenshot", "arguments": "{}"})
+        # Far-apart click targets so the proximity guard doesn't interfere.
+        calls.append(
+            {"id": f"c{i}", "name": "cua_click",
+             "arguments": json.dumps({"x": i * 100, "y": i * 100})}
+        )
+
+    _execute_batch(ctx, calls, messages, steps)  # type: ignore[arg-type]
+
+    # Screenshots run up to the block threshold (4); the 5th is budget-blocked.
+    assert screenshot.run.call_count == 4
+    assert any("screenshot budget exceeded" in m["content"] for m in messages)
+    # Clicks still ran — they don't reset the screenshot counter.
+    assert click.run.call_count == 5
+
+
 # --- Structured logging ---
 
 

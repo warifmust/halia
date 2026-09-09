@@ -78,6 +78,7 @@ def classify_observation(observation: str) -> str:
         "repetition guard" in text
         or "circuit breaker" in text
         or "exploration guard" in text
+        or "screenshot budget" in text
     ):
         return "guard"
     return "ok"

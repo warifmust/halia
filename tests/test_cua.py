@@ -2,6 +2,7 @@
 
 import base64
 import io
+import json
 import sys
 import types
 from pathlib import Path
@@ -243,3 +244,33 @@ def test_cua_window_passes_bounds_to_driver(monkeypatch: Any) -> None:
     assert calls["window_id"] == 34
     assert calls["max_elements"] == 50
     assert calls["max_depth"] == 6
+
+
+# ── cua_desktop: compact accessibility-tree summary ──────────────────────
+
+
+def test_summarize_desktop_tree_keeps_app_names_and_window_ids() -> None:
+    from halia.skills.cua import _summarize_desktop_tree
+
+    tree = json.dumps({
+        "apps": [
+            {"name": "Slack", "pid": 2104,
+             "windows": [{"window_id": 1, "title": "Slack"}]},
+            {"name": "Arc", "pid": 999,
+             "windows": [{"window_id": 2, "title": "AutoDraw"}]},
+        ]
+    })
+    out = _summarize_desktop_tree(tree)
+    assert "Slack" in out
+    assert "Arc" in out
+    assert "pid 2104" in out
+    assert "win 2 AutoDraw" in out
+
+
+def test_summarize_desktop_tree_truncates_unparseable_tree() -> None:
+    from halia.skills.cua import _summarize_desktop_tree
+
+    raw = "x" * 5000
+    out = _summarize_desktop_tree(raw)
+    assert len(out) <= 1300
+    assert out.endswith("…")

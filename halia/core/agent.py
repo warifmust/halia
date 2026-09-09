@@ -147,50 +147,38 @@ _BROWSER_PROMPT = (
 )
 
 _CUA_PROMPT = (
-    "DESKTOP AUTOMATION (CUA): When the user asks you to interact with a website or "
-    "any desktop application, use the CUA tools. You MAY issue MULTIPLE tool calls "
-    "in a single response — always batch independent actions. Follow this workflow: "
-    "1) OPEN A WEB PAGE: use cua_open_url ONLY for http/https web URLs (it opens the "
+    "DESKTOP AUTOMATION (CUA): interact with websites or any desktop app using the "
+    "cua_* tools. Work in BATCHES: take ONE cua_screenshot, derive EVERY action you "
+    "need from it, issue all of them as multiple tool calls in a single response, "
+    "then take ONE more screenshot to verify the whole batch. Screenshots are "
+    "expensive — never take one between actions in the same batch. "
+    "OPEN A WEB PAGE: use cua_open_url ONLY for http/https web URLs (it opens the "
     "default browser). NEVER use it for local files, folders, or apps — to open those, "
-    "navigate Finder/Explorer: cua_click to select, cua_double_click (or cua_press_key "
-    "'return') to open, or cua_hotkey (['cmd','shift','g']) to go to a path. To launch "
-    "an app, use Spotlight (['cmd','space']) or double-click its icon. "
-    "2) SNAP: take ONE cua_screenshot with detail=\"high\" to see the current screen. "
-    "Always use detail=\"high\" — never switch to \"low\" (it changes the coordinate "
-    "space and makes precise targeting impossible). "
-    "3) CHECK: read that screenshot carefully and identify the coordinates of EVERY "
-    "element you will need (every field, radio, checkbox, button) BEFORE acting. "
-    "4) ACT: issue ALL the actions you derived from that ONE screenshot as multiple "
-    "tool calls in a single response — click a field then type into it, click the next "
-    "field and type, select every radio/checkbox, scroll, click the submit button — "
-    "without taking screenshots in between. Give every click using coordinates from "
-    "the SAME screenshot; if you scrolled first, re-screenshot before clicking. "
-    "5) SNAP AGAIN: end the batch with ONE cua_screenshot with detail=\"high\" to "
-    "verify the WHOLE batch at once. Screenshots are expensive — take one only at "
-    "the start of a task and at the end of each batch. "
-    "COORDINATES: give cua_click coordinates in the SCREENSHOT image's pixel space "
-    "(the image may be smaller than the real screen — halia scales them to the real "
-    "screen for you). "
-    "KEYBOARD-FIRST FORMS: click the FIRST field of a form, then type into it and "
-    "use Tab (cua_press_key) to move to the next field instead of re-clicking each "
-    "field. For radio/checkbox groups, click into the group once, then use arrow "
-    "keys (up/down) to select the option and space to toggle. "
-    "DRAWING: to draw a line or shape, use cua_drag from one point to another — "
-    "one drag draws one straight segment, and you chain several drags to sketch a "
-    "shape (a triangle is 3 drags, a rectangle is 4). Select the drawing tool first, "
-    "then batch the drags and end with one screenshot to check the result. "
-    "PRECISE TARGETING: when clicks keep missing, use cua_desktop to list the open "
-    "windows (pid + window_id), then cua_window(pid, window_id) to get each UI "
-    "element's role, label, and click center — pass those centers straight to "
-    "cua_click instead of guessing from pixels. "
-    "TYPE: use cua_type to enter text into focused elements. If a field already "
-    "contains text you want to replace (re-filling, fixing a typo), pass clear=true "
-    "so the field is selected and cleared first — otherwise your text appends to "
-    "the existing content. "
+    "navigate Finder/Explorer: cua_click to select, then cua_double_click (or "
+    "cua_press_key 'return') to open; cua_hotkey (['cmd','shift','g']) goes to a path; "
+    "Spotlight (['cmd','space']) launches an app. "
+    "COORDINATES: screenshots are 1600px wide and the coordinate grid is drawn on "
+    "them — give cua_click/cua_scroll/cua_drag coordinates in that screenshot's pixel "
+    "space (halia maps them to the real screen). Re-derive coordinates from the latest "
+    "screenshot whenever you've scrolled or the screen changed. "
+    "KEYBOARD-FIRST FORMS: click the FIRST field, type into it, then Tab (cua_press_key) "
+    "to move between fields instead of re-clicking each one. For radio/checkbox groups, "
+    "click the group once, then use arrow keys + space to select. "
+    "DRAWING: to draw a line or shape, use cua_drag from one point to another — one "
+    "drag is one straight segment; chain drags to sketch (triangle = 3, rectangle = 4). "
+    "Select the drawing tool, batch the drags, then one screenshot to check. "
+    "PRECISE TARGETING: if clicks keep missing, use cua_desktop to list open windows "
+    "(pid + window_id), then cua_window(pid, window_id) for each element's role, label, "
+    "and click center — pass those centers straight to cua_click instead of guessing. "
+    "TYPE: use cua_type into the focused element. Pass clear=true to replace existing "
+    "text (select-all + delete first) rather than appending to it. "
     "OPEN FILES/FOLDERS: a single cua_click only SELECTS on macOS/Windows. "
-    "Use cua_double_click to open, or cua_click to select then cua_press_key "
-    "('return'). For keyboard shortcuts use cua_hotkey (e.g. ['cmd', 'o']) — "
-    "never type key names with cua_type. "
+    "Use cua_double_click to open, or cua_click to select then cua_press_key ('return'). "
+    "For shortcuts use cua_hotkey (e.g. ['cmd', 'o']) — never type key names with cua_type. "
+    "SYSTEM DIALOGS: if a macOS/Windows system prompt appears (password, Touch ID, "
+    "admin authorization, permission request, software update, keychain), STOP "
+    "immediately and ask the user. NEVER click into it, dismiss it, or type any "
+    "credentials — security dialogs are for the user, not for halia. "
     "If a click misses the SAME target twice, stop clicking and either navigate "
     "directly with cua_open_url (for a page) or use cua_hotkey with Tab/Enter to "
     "focus and activate the element. "
@@ -654,6 +642,16 @@ class _Ctx:
     _recent_calls: list[str] = field(default_factory=list)
     # Identical UI action may be attempted this many times before the guard blocks it.
     repeat_warn_at: int = 2
+    # Recent coordinate clicks (name, x, y) — for proximity repeat detection, since
+    # models dodge the exact-match guard by nudging coordinates by a pixel or two.
+    _recent_clicks: list[tuple[str, float, float]] = field(default_factory=list)
+    # A click within this many pixels of a recent click on the same tool counts as a repeat.
+    repeat_radius: float = 8.0
+    # Screenshot budget: screenshots dominate context cost, so warn then block a run
+    # that takes too many (even when interleaved with clicks).
+    _screenshots: int = 0
+    screenshot_warn_at: int = 8
+    screenshot_block_at: int = 24
     # Exploration guard: consecutive recon steps (screenshots/scrolls/app-switches)
     # since the last progress-producing tool. Long runs of pure recon are no-progress
     # loops; warn, then hard-block, once the budget is exhausted.
@@ -720,6 +718,42 @@ def _call_signature(name: str, arguments: str) -> str:
     return f"{name}:{arguments.strip()}"
 
 
+# Coordinate-click tools: the repetition guard additionally treats a click within
+# `repeat_radius` pixels of a recent click on the SAME tool as a repeat — models
+# dodge the exact-match guard by nudging coordinates ±1px while stuck on one target.
+_COORD_CLICK_TOOLS = frozenset({"cua_click", "cua_double_click", "browser_click"})
+
+# Screenshots dominate context cost; a run that screenshots after every click is a
+# no-progress loop in disguise, so count them separately from the consecutive
+# exploration guard (which clicks reset).
+_SCREENSHOT_TOOLS = frozenset({"cua_screenshot", "browser_screenshot"})
+
+_SCREENSHOT_NUDGE = (
+    "\n\n⚠️ You have taken {count} screenshots this run. Screenshots are the largest "
+    "token cost — each one is expensive and slows the run down. Stop screenshotting "
+    "after every action: batch your actions, use cua_window/cua_desktop (or "
+    "browser_read/browser_extract) for element positions, and screenshot only once "
+    "to verify a finished batch."
+)
+
+
+def _click_coords(name: str, arguments: str) -> tuple[float, float] | None:
+    """Extract an (x, y) target from a coordinate-click tool call, if present."""
+    try:
+        parsed = json.loads(arguments) if arguments.strip() else {}
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    x, y = parsed.get("x"), parsed.get("y")
+    if x is None or y is None:
+        return None
+    try:
+        return float(x), float(y)
+    except (TypeError, ValueError):
+        return None
+
+
 def _execute_batch(
     ctx: _Ctx, calls: list[ToolCall], messages: list[Message], steps: list[Step]
 ) -> None:
@@ -733,7 +767,19 @@ def _execute_batch(
         name = tc["name"]
         sig = _call_signature(name, tc["arguments"])
         guard_tool = name in _REPEAT_GUARD_TOOLS
-        repeats = ctx._recent_calls.count(sig) if guard_tool else 0
+        coords = _click_coords(name, tc["arguments"]) if name in _COORD_CLICK_TOOLS else None
+        repeats = 0
+        if guard_tool:
+            repeats = ctx._recent_calls.count(sig)
+            if coords is not None:
+                near = sum(
+                    1
+                    for _n, _x, _y in ctx._recent_clicks
+                    if _n == name
+                    and (_x - coords[0]) ** 2 + (_y - coords[1]) ** 2
+                    <= ctx.repeat_radius ** 2
+                )
+                repeats = max(repeats, near)
         # Circuit breaker: skip tools that have failed too many times consecutively.
         if ctx._tool_failures.get(name, 0) >= ctx.max_tool_failures:
             observation = (
@@ -769,15 +815,33 @@ def _execute_batch(
             messages.append({"role": "tool", "tool_call_id": tc["id"], "content": observation})
             circuit_notes.append(name)
             continue
+        # Screenshot budget guard (hard block): screenshots are the largest context
+        # cost, and a model that screenshots after every click burns tokens without
+        # progress. Force it to finish or switch to structural tools.
+        if name in _SCREENSHOT_TOOLS and ctx._screenshots >= ctx.screenshot_block_at:
+            observation = (
+                f"screenshot budget exceeded: {ctx._screenshots} screenshots this run. "
+                f"STOP screenshotting. Use cua_window/cua_desktop for element "
+                f"positions (or browser_read/browser_extract), then finish and "
+                f"report your result, or ask the user."
+            )
+            log_tool_call(name, tc["arguments"], 0.0, "skipped")
+            step = Step(tool=name, arguments=tc["arguments"], observation=observation)
+            steps.append(step)
+            if ctx.observer is not None:
+                ctx.observer(step)
+            messages.append({"role": "tool", "tool_call_id": tc["id"], "content": observation})
+            circuit_notes.append(name)
+            continue
         # Repetition guard: an IDENTICAL UI action attempted again and again is a
         # no-progress loop — these calls usually "succeed" (no error), so the circuit
         # breaker never sees them. Block before the tool runs again.
         if guard_tool and repeats >= ctx.repeat_warn_at:
             observation = (
-                f"repetition guard: '{name}' with the same arguments has already been "
-                f"tried {repeats} times this run without progress. Do NOT retry it — "
-                f"change approach (different selector, coordinates, URL, or strategy) "
-                f"or ask the user."
+                f"repetition guard: '{name}' with the same (or near-identical) arguments "
+                f"has already been tried {repeats} times this run without progress. "
+                f"Do NOT retry it — change approach (different selector, coordinates, "
+                f"URL, or strategy) or ask the user."
             )
             log_tool_call(name, tc["arguments"], 0.0, "skipped")
             step = Step(tool=name, arguments=tc["arguments"], observation=observation)
@@ -787,11 +851,17 @@ def _execute_batch(
             messages.append({"role": "tool", "tool_call_id": tc["id"], "content": observation})
             circuit_notes.append(name)
             ctx._recent_calls.append(sig)
+            if coords is not None:
+                ctx._recent_clicks.append((name, coords[0], coords[1]))
             continue
         if guard_tool:
             ctx._recent_calls.append(sig)
+            if coords is not None:
+                ctx._recent_clicks.append((name, coords[0], coords[1]))
             if len(ctx._recent_calls) > 40:
                 ctx._recent_calls = ctx._recent_calls[-20:]
+            if len(ctx._recent_clicks) > 40:
+                ctx._recent_clicks = ctx._recent_clicks[-20:]
         if ctx.on_activity is not None:
             ctx.on_activity(name)
         # Read approval: check if this read tool's directory is approved.
@@ -827,6 +897,12 @@ def _execute_batch(
         _duration_ms = (_perf() - _t0) * 1000
         # Check for pending image from a screenshot skill (side-channel)
         _pending_img, _pending_detail, _unchanged = _take_pending_image(name)
+        # Screenshot budget (soft nudge): warn periodically so the model scales back
+        # before the hard block fires.
+        if name in _SCREENSHOT_TOOLS:
+            ctx._screenshots += 1
+            if ctx.screenshot_warn_at > 0 and ctx._screenshots % ctx.screenshot_warn_at == 0:
+                observation += _SCREENSHOT_NUDGE.format(count=ctx._screenshots)
         # Exploration guard (soft nudge): count consecutive recon steps; a long run of
         # screenshots/scrolls/app-switches with nothing else in between is a no-progress
         # loop, so warn before it escalates to a hard block.
