@@ -336,6 +336,44 @@ def test_screenshot_budget_blocks_run_of_too_many_screenshots() -> None:
     assert click.run.call_count == 5
 
 
+def test_stuck_increments_on_blocked_repeat_and_resets_on_progress() -> None:
+    """Blocked UI repeats count toward STUCK; a successful different action resets it."""
+    from halia.audit.trace import Step
+    from halia.core.agent import _Ctx, _execute_batch
+
+    registry = MagicMock()
+    skill = MagicMock()
+    skill.name = "cua_click"
+    skill.dangerous = False
+    skill.run.return_value = "Clicked left"
+    registry.get.return_value = skill
+    registry.tool_schemas.return_value = []
+
+    ctx = _Ctx(
+        provider=MagicMock(), config=MagicMock(), registry=registry,
+        prompt="t", extra_system="", plan="", max_iters=8,
+        observer=None, approver=None,
+        pause_on_approval=False, max_tool_failures=3,
+    )
+    messages: list[dict[str, Any]] = []
+    steps: list[Step] = []
+
+    def _click(cid: str, x: int, y: int) -> dict[str, Any]:
+        return {"id": cid, "name": "cua_click", "arguments": json.dumps({"x": x, "y": y})}
+
+    # Three identical clicks: 1st + 2nd run, 3rd is blocked → one no-progress signal.
+    _execute_batch(
+        ctx,
+        [_click("a1", 10, 10), _click("a2", 10, 10), _click("a3", 10, 10)],
+        messages, steps,
+    )  # type: ignore[arg-type]
+    assert ctx._stuck == 1
+
+    # A genuinely different click (far away) runs and resets the counter.
+    _execute_batch(ctx, [_click("b1", 500, 500)], messages, steps)  # type: ignore[arg-type]
+    assert ctx._stuck == 0
+
+
 # --- Structured logging ---
 
 

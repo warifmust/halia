@@ -978,6 +978,9 @@ def run_tui(
                 f"[dim]raise the budget with /iters {budget * 2} and say 'continue', "
                 "or narrow the task.[/dim]\n"
             )
+            cid = getattr(exc, "checkpoint_id", "")
+            if cid:
+                console.print(f"[dim]resume with: /resume {cid}[/dim]")
             # The loop stopped between whole batches, so messages are balanced (every
             # assistant tool_calls has its tool responses) — KEEP them and persist, so
             # 'continue' resumes with full context instead of 400-ing on a dangling call.

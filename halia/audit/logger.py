@@ -66,9 +66,22 @@ def log_event(event: str, level: str = "info", **data: Any) -> None:
         pass  # never let logging break the run
 
 
-def log_run_start(run_id: str, prompt: str, provider: str, model: str) -> None:
-    """Log the start of a run."""
-    log_event("run_start", run_id=run_id, prompt=prompt[:200], provider=provider, model=model)
+def log_run_start(
+    run_id: str,
+    prompt: str,
+    provider: str,
+    model: str,
+    guard_settings: dict[str, Any] | None = None,
+) -> None:
+    """Log the start of a run, including the effective loop-guard thresholds."""
+    log_event(
+        "run_start",
+        run_id=run_id,
+        prompt=prompt[:200],
+        provider=provider,
+        model=model,
+        **(guard_settings or {}),
+    )
 
 
 def log_run_end(

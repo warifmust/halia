@@ -264,6 +264,46 @@ try:
 except ValueError:
     DEFAULT_HISTORY_BUDGET_CHARS = 400000
 
+# Loop-guard tunables. Exposed via env so operators can raise/lower thresholds
+# without a code change; the effective values are recorded in the run-start log.
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, ""))
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, ""))
+    except ValueError:
+        return default
+
+
+DEFAULT_MAX_TOOL_FAILURES = _env_int("HALIA_MAX_TOOL_FAILURES", 3)
+DEFAULT_REPEAT_WARN_AT = _env_int("HALIA_REPEAT_WARN_AT", 2)
+DEFAULT_REPEAT_RADIUS = _env_float("HALIA_REPEAT_RADIUS", 8.0)
+DEFAULT_SCREENSHOT_WARN_AT = _env_int("HALIA_SCREENSHOT_WARN_AT", 8)
+DEFAULT_SCREENSHOT_BLOCK_AT = _env_int("HALIA_SCREENSHOT_BLOCK_AT", 24)
+DEFAULT_EXPLORATION_WARN_AT = _env_int("HALIA_EXPLORATION_WARN_AT", 8)
+DEFAULT_EXPLORATION_BLOCK_AT = _env_int("HALIA_EXPLORATION_BLOCK_AT", 16)
+DEFAULT_STUCK_AT = _env_int("HALIA_STUCK_AT", 2)
+CHECKPOINT_ON_CAP = os.environ.get("HALIA_CHECKPOINT_ON_CAP", "").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+
+# Injected into the request window (as a system note) once the loop detects it is
+# STUCK — the model's recent actions were repeats or produced no visible change.
+# This is the re-plan path: a strong, system-level signal instead of a buried tool
+# result the model can ignore.
+_STUCK_NOTE = (
+    "⚠️ STUCK: your recent actions made no progress — they repeated an earlier "
+    "action (same or near-same target) or the screen did not change. STOP retrying. "
+    "Look at the latest screenshot, identify what actually changed, and pick a "
+    "COMPLETELY different approach, or ask the user what to do. Do NOT repeat any "
+    "action you already tried."
+)
+
 # Injected in place of dropped turns when the history is trimmed — so the model KNOWS
 # earlier work happened and doesn't gaslight the user with "this is a fresh session".
 _TRUNCATION_NOTE: Message = {
@@ -531,7 +571,16 @@ class RunResult:
 
 
 class RunLimitError(RuntimeError):
-    """Raised when the loop hits its iteration cap without a final answer."""
+    """Raised when the loop hits its iteration cap without a final answer.
+
+    When auto-checkpointing is enabled, the run state is frozen first and
+    `checkpoint_id` is set so the caller can offer a `resume` path instead of
+    silently losing the work.
+    """
+
+    def __init__(self, message: str, checkpoint_id: str = "") -> None:
+        super().__init__(message)
+        self.checkpoint_id = checkpoint_id
 
 
 def build_provider(config: Config) -> Provider:
@@ -636,30 +685,37 @@ class _Ctx:
     # Circuit breaker: per-tool consecutive failure count. Resets on success.
     _tool_failures: dict[str, int] = field(default_factory=dict)
     # Max consecutive failures before a tool is marked unavailable.
-    max_tool_failures: int = 3
+    max_tool_failures: int = DEFAULT_MAX_TOOL_FAILURES
     # Repetition guard: recent UI tool-call signatures, to stop no-progress loops
     # where the model retries the exact same action expecting a different result.
     _recent_calls: list[str] = field(default_factory=list)
     # Identical UI action may be attempted this many times before the guard blocks it.
-    repeat_warn_at: int = 2
+    repeat_warn_at: int = DEFAULT_REPEAT_WARN_AT
     # Recent coordinate clicks (name, x, y) — for proximity repeat detection, since
     # models dodge the exact-match guard by nudging coordinates by a pixel or two.
     _recent_clicks: list[tuple[str, float, float]] = field(default_factory=list)
     # A click within this many pixels of a recent click on the same tool counts as a repeat.
-    repeat_radius: float = 8.0
+    repeat_radius: float = DEFAULT_REPEAT_RADIUS
     # Screenshot budget: screenshots dominate context cost, so warn then block a run
     # that takes too many (even when interleaved with clicks).
     _screenshots: int = 0
-    screenshot_warn_at: int = 8
-    screenshot_block_at: int = 24
+    screenshot_warn_at: int = DEFAULT_SCREENSHOT_WARN_AT
+    screenshot_block_at: int = DEFAULT_SCREENSHOT_BLOCK_AT
     # Exploration guard: consecutive recon steps (screenshots/scrolls/app-switches)
     # since the last progress-producing tool. Long runs of pure recon are no-progress
     # loops; warn, then hard-block, once the budget is exhausted.
     _exploration_steps: int = 0
     # Consecutive recon steps before a soft "stop exploring" nudge is appended.
-    exploration_warn_at: int = 8
+    exploration_warn_at: int = DEFAULT_EXPLORATION_WARN_AT
     # Consecutive recon steps before recon tools are hard-blocked.
-    exploration_block_at: int = 16
+    exploration_block_at: int = DEFAULT_EXPLORATION_BLOCK_AT
+    # Stuck detection: consecutive no-progress signals (blocked repeats, unchanged
+    # screenshots). After `stuck_at` of them the loop injects the STUCK note so the
+    # model is forced to re-plan instead of retrying.
+    _stuck: int = 0
+    stuck_at: int = DEFAULT_STUCK_AT
+    # Freeze a checkpoint when the iteration cap is hit (instead of just raising).
+    checkpoint_on_cap: bool = CHECKPOINT_ON_CAP
 
 
 def _is_dangerous(registry: SkillRegistry, name: str) -> bool:
@@ -814,6 +870,7 @@ def _execute_batch(
                 ctx.observer(step)
             messages.append({"role": "tool", "tool_call_id": tc["id"], "content": observation})
             circuit_notes.append(name)
+            ctx._stuck += 1
             continue
         # Screenshot budget guard (hard block): screenshots are the largest context
         # cost, and a model that screenshots after every click burns tokens without
@@ -832,6 +889,7 @@ def _execute_batch(
                 ctx.observer(step)
             messages.append({"role": "tool", "tool_call_id": tc["id"], "content": observation})
             circuit_notes.append(name)
+            ctx._stuck += 1
             continue
         # Repetition guard: an IDENTICAL UI action attempted again and again is a
         # no-progress loop — these calls usually "succeed" (no error), so the circuit
@@ -853,6 +911,7 @@ def _execute_batch(
             ctx._recent_calls.append(sig)
             if coords is not None:
                 ctx._recent_clicks.append((name, coords[0], coords[1]))
+            ctx._stuck += 1
             continue
         if guard_tool:
             ctx._recent_calls.append(sig)
@@ -937,6 +996,12 @@ def _execute_batch(
             ctx._tool_failures[name] = ctx._tool_failures.get(name, 0) + 1
         else:
             ctx._tool_failures.pop(name, None)  # success resets the counter
+        # Stuck tracking: an UNCHANGED screenshot is a no-progress signal; a tool
+        # that ran successfully (non-error) is progress and resets the counter.
+        if _unchanged:
+            ctx._stuck += 1
+        elif not is_tool_error:
+            ctx._stuck = 0
         log_tool_call(name, tc["arguments"], _duration_ms, "error" if is_tool_error else "ok")
         step = Step(tool=name, arguments=tc["arguments"], observation=observation)
         steps.append(step)
@@ -1095,7 +1160,22 @@ def _loop(
     run_start = _time.perf_counter()
     # A unique id per run so two runs with the same prompt prefix don't collide in logs.
     run_id = uuid.uuid4().hex[:12]
-    log_run_start(run_id, ctx.prompt[:200], ctx.config.provider, ctx.config.model)
+    log_run_start(
+        run_id,
+        ctx.prompt[:200],
+        ctx.config.provider,
+        ctx.config.model,
+        guard_settings={
+            "max_tool_failures": ctx.max_tool_failures,
+            "repeat_warn_at": ctx.repeat_warn_at,
+            "repeat_radius": ctx.repeat_radius,
+            "screenshot_warn_at": ctx.screenshot_warn_at,
+            "screenshot_block_at": ctx.screenshot_block_at,
+            "exploration_warn_at": ctx.exploration_warn_at,
+            "exploration_block_at": ctx.exploration_block_at,
+            "stuck_at": ctx.stuck_at,
+        },
+    )
 
     tools = ctx.registry.tool_schemas() or None
     while iters_used < ctx.max_iters:
@@ -1105,7 +1185,10 @@ def _loop(
         if ctx.on_activity is not None:
             ctx.on_activity("")  # about to call the model (thinking)
         # Send a bounded window of history (full transcript stays in `messages`).
-        window = _with_turn_note(_window(messages, ctx.history_budget), ctx.turn_note)
+        note = ctx.turn_note
+        if ctx._stuck >= ctx.stuck_at:
+            note = _STUCK_NOTE if not note else note + "\n\n" + _STUCK_NOTE
+        window = _with_turn_note(_window(messages, ctx.history_budget), note)
         if ctx.on_delta is not None:
             result = ctx.provider.chat(window, tools=tools, on_delta=ctx.on_delta)
         else:
@@ -1149,6 +1232,28 @@ def _loop(
             ctx.on_activity("")
         _execute_batch(ctx, result.tool_calls, messages, steps)
 
+    if ctx.checkpoint_on_cap:
+        from halia.core.checkpoint import new_checkpoint, save_checkpoint
+
+        cp = new_checkpoint(
+            prompt=ctx.prompt,
+            provider=ctx.config.provider,
+            model=ctx.config.model,
+            skills=[s.name for s in ctx.registry.all()],
+            extra_system=ctx.extra_system,
+            plan=ctx.plan,
+            messages=messages,
+            steps=steps,
+            pending=[],  # nothing awaiting approval — resume just continues the loop
+            iters_used=iters_used,
+            reason=f"iteration cap ({ctx.max_iters}) reached",
+        )
+        save_checkpoint(cp, db_path=ctx.checkpoint_db)
+        raise RunLimitError(
+            f"hit iteration cap ({ctx.max_iters}) without a final answer — "
+            f"checkpoint {cp.id} saved; resume with `halia resume {cp.id}`",
+            checkpoint_id=cp.id,
+        )
     raise RunLimitError(f"hit iteration cap ({ctx.max_iters}) without a final answer")
 
 
@@ -1167,6 +1272,7 @@ def run(
     checkpoint_db: Path = DB_PATH,
     compact: bool = False,
     budget_tokens: int = 0,
+    checkpoint_on_cap: bool = CHECKPOINT_ON_CAP,
 ) -> RunResult:
     """Run the tool-calling loop until a final answer, the iteration cap, or a pause.
 
@@ -1208,6 +1314,7 @@ def run(
         pause_on_approval=pause_on_approval, checkpoint_db=checkpoint_db,
         compact_approver=(lambda: True) if compact else None,
         on_compact=None, budget_tokens=budget_tokens,
+        checkpoint_on_cap=checkpoint_on_cap,
     )
     return _loop(ctx, messages, [], 0)
 
@@ -1222,6 +1329,7 @@ def resume(
     max_iters: int = DEFAULT_MAX_ITERS,
     pause_on_approval: bool = True,
     checkpoint_db: Path = DB_PATH,
+    checkpoint_on_cap: bool = CHECKPOINT_ON_CAP,
 ) -> RunResult:
     """Resume a paused run: apply the approve/deny decision to the pending batch, continue.
 
@@ -1239,6 +1347,7 @@ def resume(
         observer=observer,
         approver=lambda name, args: approve,  # the human's decision, applied to the batch
         pause_on_approval=pause_on_approval, checkpoint_db=checkpoint_db,
+        checkpoint_on_cap=checkpoint_on_cap,
     )
 
     messages = list(checkpoint.messages)
@@ -1262,6 +1371,7 @@ def converse(
     compact_approver: CompactApprover | None = None,
     on_compact: CompactArchiver | None = None,
     turn_note: str = "",
+    checkpoint_on_cap: bool = CHECKPOINT_ON_CAP,
 ) -> RunResult:
     """Run one chat turn over an existing conversation (the multi-turn / chat primitive).
 
@@ -1281,6 +1391,7 @@ def converse(
         pause_on_approval=False, history_budget=history_budget, on_delta=on_delta,
         on_activity=on_activity, compact_approver=compact_approver, on_compact=on_compact,
         turn_note=turn_note,
+        checkpoint_on_cap=checkpoint_on_cap,
     )
     return _loop(ctx, messages, [], 0)
 

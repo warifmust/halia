@@ -1060,6 +1060,9 @@ def _execute_run(
 
         record_failure(prompt, str(exc), profile or "")  # objective failure → advisory next time
         console.print(f"[red]error:[/red] {exc}")
+        cid = getattr(exc, "checkpoint_id", "")
+        if cid:
+            console.print(f"[dim]resume with: halia resume {cid}[/dim]")
         raise typer.Exit(1) from exc
 
     _present_result(config, prompt, result, quiet, notify, json_output=json_output)
@@ -1663,6 +1666,9 @@ def chat(
 
             record_failure(user_input, str(exc), profile or "")
             console.print(f"[red]error:[/red] {exc}\n")
+            cid = getattr(exc, "checkpoint_id", "")
+            if cid:
+                console.print(f"[dim]resume with: halia resume {cid}[/dim]\n")
             messages.pop()  # drop the failed user turn so history stays clean
             continue
         except KeyboardInterrupt:
@@ -2361,6 +2367,9 @@ def resume(
         )
     except (ProviderError, RunLimitError) as exc:
         console.print(f"[red]error:[/red] {exc}")
+        cid = getattr(exc, "checkpoint_id", "")
+        if cid:
+            console.print(f"[dim]resume with: halia resume {cid}[/dim]")
         raise typer.Exit(1) from exc
 
     _present_result(config, cp.prompt, result, quiet)

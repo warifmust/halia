@@ -298,3 +298,88 @@ def test_run_does_not_double_apply_persona_overlay(monkeypatch: Any) -> None:
 
     run("hi", _CFG, default_registry(), provider=Recorder(), extra_system="[PERSONA_MARKER]")
     assert captured["system"].count("[PERSONA_MARKER]") == 1  # once (from extra_system), not twice
+
+
+def _cua_click_registry() -> Any:
+    """A registry exposing only a non-dangerous cua_click skill (no CUA backend needed)."""
+    from halia.skills.registry import SkillRegistry
+
+    reg = SkillRegistry()
+
+    class _Click:
+        name = "cua_click"
+        description = "Click at x,y on the desktop."
+        parameters = {
+            "type": "object",
+            "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
+            "required": ["x", "y"],
+        }
+        dangerous = False
+        untrusted = False
+
+        def run(self, args: Any) -> str:
+            return "Clicked left"
+
+    reg.register(_Click())
+    return reg
+
+
+def test_stuck_note_injected_after_repeated_blocks() -> None:
+    """Repeated blocked actions escalate into a system-level STUCK note (re-plan path)."""
+    windows: list[list[Message]] = []
+
+    class RecordingProvider:
+        def chat(
+            self, messages: list[Message], tools: Any = None, on_delta: Any = None
+        ) -> ChatResult:
+            windows.append(messages)
+            return ChatResult(
+                content=None,
+                tool_calls=[ToolCall(id="1", name="cua_click", arguments='{"x": 100, "y": 100}')],
+            )
+
+    with pytest.raises(RunLimitError):
+        run("click it", _CFG, _cua_click_registry(), provider=RecordingProvider(), max_iters=6)
+
+    def has_stuck(messages: list[Message]) -> bool:
+        return any(
+            m.get("role") == "system" and "STUCK" in str(m.get("content", ""))
+            for m in messages
+        )
+
+    assert not has_stuck(windows[0])  # not stuck at the start
+    assert any(has_stuck(w) for w in windows)  # escalated once repeats were blocked
+
+
+def test_checkpoint_on_cap_saves_checkpoint(tmp_path: Any) -> None:
+    """With checkpoint_on_cap, hitting the iteration cap freezes a resumable checkpoint."""
+    looping = ChatResult(
+        content=None, tool_calls=[ToolCall(id="1", name="list_files", arguments="{}")]
+    )
+
+    class ScriptedProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def chat(
+            self, messages: list[Message], tools: Any = None, on_delta: Any = None
+        ) -> ChatResult:
+            self.calls += 1
+            return looping
+
+    db = tmp_path / "checkpoints.db"
+    with pytest.raises(RunLimitError) as excinfo:
+        run(
+            "loop", _CFG, default_registry(), provider=ScriptedProvider(),
+            max_iters=3, checkpoint_on_cap=True, checkpoint_db=db,
+        )
+    assert excinfo.value.checkpoint_id
+
+    from halia.store.database import connect
+
+    conn = connect(db)
+    row = conn.execute("SELECT id, reason FROM checkpoints").fetchone()
+    conn.close()
+    assert row is not None
+    assert row[0] == excinfo.value.checkpoint_id
+    assert "iteration cap" in row[1]
