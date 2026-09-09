@@ -25,14 +25,14 @@ def _parse_models(raw: Sequence[str]) -> list[str]:
 def _render_report(outcomes: list[TaskOutcome]) -> str:
     if not outcomes:
         return "(no outcomes)"
-    header = ("model", "task", "pass", "acts", "errs", "guards", "fabs", "secs")
+    header = ("model", "task", "result", "acts", "errs", "guards", "guard_rate", "fabs", "secs")
     rows: list[tuple[str, ...]] = [header]
     for o in outcomes:
+        result = "SKIP" if o.skipped else ("PASS" if o.passed else "FAIL")
         rows.append((
-            o.model, o.task,
-            "PASS" if o.passed else "FAIL",
+            o.model, o.task, result,
             str(o.actions), str(o.tool_errors), str(o.guard_events),
-            str(len(o.fabrications)), f"{o.duration_s:.1f}",
+            f"{o.guard_rate:.0%}", str(len(o.fabrications)), f"{o.duration_s:.1f}",
         ))
     widths = [max(len(r[i]) for r in rows) for i in range(len(header))]
     lines = [
@@ -80,7 +80,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     print()
     print(_render_report(outcomes))
     for o in outcomes:
+        if o.skipped:
+            print(f"\n— {o.model} · {o.task}: SKIPPED ({o.details})")
+            continue
         print(f"\n— {o.model} · {o.task}: {o.details}")
+        if o.guard_breakdown:
+            parts = ", ".join(
+                f"{kind}={count}" for kind, count in sorted(o.guard_breakdown.items())
+            )
+            print(f"  guard events: {o.guard_events} ({parts})")
+        if o.harness_note:
+            print(f"  ⚠ {o.harness_note}")
         for fab in o.fabrications:
             print(f"  ⚠ fabrication: {fab}")
     return 0

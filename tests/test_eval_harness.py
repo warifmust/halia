@@ -1,7 +1,14 @@
 """Tests for the deterministic parts of the computer-use eval harness."""
 
 from halia.audit.trace import Step
-from halia.eval.harness import AutoApprove, classify_observation, score_steps
+from halia.eval.harness import (
+    AutoApprove,
+    classify_guard,
+    classify_observation,
+    guard_breakdown,
+    harness_note,
+    score_steps,
+)
 from halia.eval.tasks import _count_claims, _fabrications
 
 
@@ -26,6 +33,48 @@ def test_score_steps_counts_errors_and_guards() -> None:
     assert actions == 4
     assert errors == 1
     assert guards == 2
+
+
+def test_classify_guard_kinds() -> None:
+    assert classify_guard("repetition guard: 'x' tried 2 times") == "repetition"
+    assert classify_guard("circuit breaker: 'x' has failed 3 times") == "circuit_breaker"
+    assert classify_guard("exploration guard: 16 consecutive screenshots") == "exploration"
+    assert classify_guard("screenshot budget exceeded: 24 screenshots") == "screenshot_budget"
+    assert classify_guard("Clicked element: #login") is None
+
+
+def test_guard_breakdown_counts_kinds() -> None:
+    steps = [
+        Step("a", "{}", "repetition guard: x tried 2 times"),
+        Step("b", "{}", "repetition guard: y tried 2 times"),
+        Step("c", "{}", "circuit breaker: z failed 3 times"),
+        Step("d", "{}", "ok"),
+    ]
+    assert guard_breakdown(steps) == {"repetition": 2, "circuit_breaker": 1}
+
+
+def test_harness_note_flags_high_guard_rate() -> None:
+    assert harness_note(0, 0) == ""  # no actions → nothing to flag
+    assert harness_note(10, 1) == ""  # 10% guards → healthy
+    assert "50%" in harness_note(10, 5)  # 50% guards → flagged for investigation
+
+
+def test_autodraw_rocket_verify_requires_screenshot_and_drag() -> None:
+    from halia.core.agent import RunResult
+    from halia.eval.tasks import autodraw_rocket_verify
+
+    screenshot = Step("cua_screenshot", "{}", "Screenshot captured (1600x1039).")
+    drag = Step(
+        "cua_drag", '{"from_x": 1, "from_y": 2, "to_x": 3, "to_y": 4}', "Dragged"
+    )
+
+    assert autodraw_rocket_verify(
+        RunResult(answer="", steps=[screenshot, drag])
+    ).passed is True
+
+    missing_drag = autodraw_rocket_verify(RunResult(answer="", steps=[screenshot]))
+    assert missing_drag.passed is False
+    assert "no cua_drag" in missing_drag.details
 
 
 def test_auto_approve_grants_every_gate() -> None:

@@ -122,4 +122,40 @@ SWAGGER_CMN_TRIGGER = Task(
     verify=swagger_cmn_verify,
 )
 
-ALL_TASKS = (SAUCEDEMO_ADD_6, SWAGGER_CMN_TRIGGER)
+
+def autodraw_rocket_verify(result: RunResult) -> Verdict:
+    """PASS if the run executed the drawing workflow (screenshot + drag strokes).
+
+    Visual correctness can't be checked deterministically without vision, so this
+    verifies TOOL PROVENANCE: the model saw the canvas and drew with cua_drag.
+    Guard discipline is scored separately by the harness, not by this verdict.
+    """
+    screenshot = any(s.tool == "cua_screenshot" for s in result.steps)
+    drags = sum(1 for s in result.steps if s.tool == "cua_drag")
+    if screenshot and drags >= 1:
+        return Verdict(
+            passed=True,
+            details=f"drawing workflow executed ({drags} drag stroke(s))",
+        )
+    missing: list[str] = []
+    if not screenshot:
+        missing.append("no cua_screenshot")
+    if drags == 0:
+        missing.append("no cua_drag")
+    return Verdict(passed=False, details="missing: " + ", ".join(missing))
+
+
+AUTODRAW_ROCKET = Task(
+    name="autodraw_rocket",
+    prompt=(
+        "The AutoDraw canvas is open in the browser. Draw a simple rocket: a white "
+        "body, a yellow rounded window, a red pointy head, and 2 red wings. Use the "
+        "CUA tools: cua_screenshot to see the canvas, then cua_drag for each stroke. "
+        "Batch the drags and end with one screenshot to verify."
+    ),
+    verify=autodraw_rocket_verify,
+    requires_cua=True,
+    max_iters=40,
+)
+
+ALL_TASKS = (SAUCEDEMO_ADD_6, SWAGGER_CMN_TRIGGER, AUTODRAW_ROCKET)
