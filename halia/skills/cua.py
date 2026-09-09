@@ -153,6 +153,60 @@ def _summarize_desktop_tree(tree: str, max_chars: int = 1200) -> str:
     return f"running apps ({len(apps)}):\n{_trunc(body)}"
 
 
+# Known names of OS security dialogs (credential / permission / elevation prompts)
+# in the accessibility tree. High-signal only — never arbitrary page text, which
+# would false-positive on login forms.
+_SECURITY_DIALOG_MARKERS = (
+    "securityagent",  # macOS authorization / password prompts
+    "touch id",
+    "keychain",
+    "consent.exe",  # Windows UAC elevation prompt
+)
+
+
+def _security_dialog_hint(tree: str) -> str | None:
+    """Flag a likely OS security dialog from the accessibility-tree payload.
+
+    Scans app/window NAMES (never arbitrary page text) for known security-dialog
+    markers. Returns a warning string if one is found, else None. Best-effort:
+    it never blocks — it just makes the model pause instead of clicking into a
+    credential / permission dialog it must not touch.
+    """
+    try:
+        data = json.loads(tree)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    apps = data.get("apps")
+    if not isinstance(apps, list):
+        return None
+
+    for app in apps:
+        if not isinstance(app, dict):
+            continue
+        candidates = [
+            str(app.get("name") or ""),
+            str(app.get("bundle_id") or ""),
+        ]
+        windows = app.get("windows")
+        if isinstance(windows, list):
+            for w in windows:
+                if isinstance(w, dict):
+                    candidates.append(str(w.get("title") or ""))
+        for candidate in candidates:
+            lowered = candidate.lower()
+            for marker in _SECURITY_DIALOG_MARKERS:
+                if marker in lowered:
+                    return (
+                        "⚠️ SECURITY DIALOG DETECTED: a system credential/permission "
+                        f"prompt may be open ('{candidate[:60]}'). STOP — do NOT click "
+                        "into it, dismiss it, or type anything. Ask the user to "
+                        "handle it."
+                    )
+    return None
+
+
 def _overlay_grid(img: Any, step: int = 100) -> Any:
     """Draw a faint coordinate grid + axis labels for precise click targeting."""
     from PIL import Image, ImageDraw, ImageFont
@@ -773,6 +827,9 @@ class CuaDesktopState(Skill):
             tree = cua.accessibility_tree()
             if tree:
                 parts.append(_summarize_desktop_tree(tree))
+                hint = _security_dialog_hint(tree)
+                if hint:
+                    parts.append(hint)
             return "\n".join(parts)
         except Exception as exc:
             return f"error: {exc}"

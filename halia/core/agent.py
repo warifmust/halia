@@ -810,6 +810,15 @@ def _click_coords(name: str, arguments: str) -> tuple[float, float] | None:
         return None
 
 
+# Guard layering (reassessed now that the STUCK re-plan path exists):
+#   circuit breaker  — a tool that keeps erroring is disabled (per-tool).
+#   exploration      — a long run of ONLY recon tools is hard-blocked.
+#   screenshot budget— too many screenshots across the run is hard-blocked.
+#   repetition       — identical/near-identical UI actions are blocked early.
+#   STUCK            — two consecutive no-progress signals escalate into a
+#                      system-level re-plan note (the last line of defense).
+# All of these are backstops. The primary loop control is the UNCHANGED-screenshot
+# signal plus the model's own re-planning — not guard shouting.
 def _execute_batch(
     ctx: _Ctx, calls: list[ToolCall], messages: list[Message], steps: list[Step]
 ) -> None:

@@ -320,3 +320,24 @@ def test_summarize_desktop_tree_truncates_unparseable_tree() -> None:
     out = _summarize_desktop_tree(raw)
     assert len(out) <= 1300
     assert out.endswith("…")
+
+
+def test_security_dialog_hint_detects_system_prompts() -> None:
+    from halia.skills.cua import _security_dialog_hint
+
+    security_agent = json.dumps({
+        "apps": [
+            {"name": "SecurityAgent", "bundle_id": "com.apple.SecurityAgent", "windows": []},
+            {"name": "Slack", "bundle_id": "com.tinyspeck.slackmacgap", "windows": []},
+        ]
+    })
+    assert "SECURITY DIALOG" in (_security_dialog_hint(security_agent) or "")
+
+    benign = json.dumps({
+        "apps": [
+            {"name": "Slack", "bundle_id": "com.tinyspeck.slackmacgap",
+             "windows": [{"window_id": 1, "title": "Slack"}]},
+        ]
+    })
+    assert _security_dialog_hint(benign) is None
+    assert _security_dialog_hint("not json") is None
