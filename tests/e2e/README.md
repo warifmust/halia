@@ -776,22 +776,23 @@ printf 'a\n' | halia data 'The file /tmp/raw_sales.csv is messy. Use clean_csv t
 
 **Goal:** pick a computer-use model on evidence, not leaderboards. A deterministic harness
 (no LLM-as-a-judge) that runs a task through the real agent loop and checks the OUTCOME
-mechanically — browser DOM state or tool-call provenance.
+mechanically — tool-call provenance or desktop state.
 
 ```bash
 python -m halia.eval --provider openrouter --model qwen3.8-max --model claude-sonnet-5 \
-  --task saucedemo_add_6 --task swagger_cmn_trigger
+  --task cua_drawing
 # or one model, all tasks:
 python -m halia.eval --provider anthropic --model claude-sonnet-5
 ```
 
-- **Tasks:** `saucedemo_add_6` (add every product, count 6 in the cart — PASS only if the
-  DOM really has 6 and the answer's claimed count matches) and `swagger_cmn_trigger`
-  (attempt-only: the trigger endpoint is auth-gated, so PASS = a concrete attempt in the
-  tool provenance, no invented response).
-- **Scorecard per model × task:** goal reached, action count, tool errors, loop-guard
-  events (repetition guard + circuit breaker), count-claim fabrications, and the
-  conscience's unverified figures. Browser runs headless; `ask_user` is excluded so an
-  unattended run can't block on a human.
+- **Tasks are GENERAL and parameterized** — no hardcoded user URLs or credentials. Built-ins:
+  `cua_drawing` (provenance-verified: the run used `cua_screenshot` + `cua_drag`), plus the
+  `make_api_trigger_task(name, docs_url, trigger_keyword)` factory for any docs site.
+- **Scorecard per model × task:** goal reached (`passed`), action count, tool errors, and
+  HARNESS-health guard metrics (`guard_breakdown`, `guard_rate`, `harness_note`) kept
+  separate from the pass/fail verdict — a guard-heavy run is an attribution signal, not a
+  model failure. `ask_user` is excluded so an unattended run can't block on a human.
+- **CUA-only:** computer tasks drive the real desktop via `cua_*`; `requires_cua` tasks are
+  SKIPPED on headless machines. There is no browser backend.
 - **Scoring logic unit-tested** in `tests/test_eval_harness.py` (classification, step
-  scoring, count-claim fabrication, approver).
+  scoring, guard breakdown, approver, task factories).

@@ -33,14 +33,16 @@ uv tool install --editable .
 
 ```
 halia/
-  cli/          # typer entrypoint: setup, help, run/chat
-  core/         # the agent loop + orchestrator
-  executor/     # command/PTY exec, file edit-patch, sandbox
-  providers/    # LLM (OpenAI-compat) + OCR/STT abstractions
-  skills/       # horizontal skill library
-  conscience/   # verification, citations, validation, audit hooks
-  permissions/  # allow/restrict, dangerous-action gate
+  cli/          # typer entrypoint: setup, config, chat/run, slash commands
+  core/         # the agent loop, loop guards, checkpoint/resume, planner
+  computer/     # CUA backend (cua-driver) — the only computer backend
+  cua/          # CUA vision helpers
+  skills/       # horizontal skill library (fs, data, web, cua, …)
+  eval/         # deterministic computer-use eval harness
+  providers/    # LLM providers (OpenAI-compat, Anthropic)
+  permissions/  # allow/restrict, egress floor, dangerous-action gate
   audit/        # provenance / audit trail
-  memory/       # working + domain knowledge
+  memory/       # user-controlled facts + failures
   config/       # config store + setup wizard
+  store/        # SQLite persistence
 ```
