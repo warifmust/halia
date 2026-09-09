@@ -18,6 +18,7 @@ from typing import Any
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
+from prompt_toolkit.cursor_shapes import CursorShape
 from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.input import ansi_escape_sequences as _aes
@@ -37,14 +38,25 @@ from halia.providers.base import Message, Usage
 for _seq in ("\x1b[13;2u", "\x1b[27;2;13~"):
     _aes.ANSI_SEQUENCES[_seq] = Keys.ControlJ
 
-# Block-letter "HALIA" (ANSI-Shadow style).
-HALIA_BANNER = r"""
-██   ██  █████  ██      ██  █████
-██   ██ ██   ██ ██      ██ ██   ██
-███████ ███████ ██      ██ ███████
-██   ██ ██   ██ ██      ██ ██   ██
-██   ██ ██   ██ ███████ ██ ██   ██
-"""
+def _banner_text() -> str:
+    """The boxed HALIA banner — version in the top border, title centered."""
+    from halia import __version__
+
+    label = f"v{__version__}"
+    edge = "-" * 17
+    title = "H A L I A"
+    width = len(edge) * 2 + len(label)
+    inner = width - 2
+    pad = inner - len(title)
+    left = pad // 2
+    right = pad - left
+    return "\n".join([
+        edge + label + edge,
+        "|" + " " * inner + "|",
+        "|" + " " * left + title + " " * right + "|",
+        "|" + " " * inner + "|",
+        "-" * width,
+    ])
 
 _console = Console()
 PROMPT = HTML("<b><ansigreen>❯</ansigreen></b> ")  # bold green chevron — clear "your turn"
@@ -218,10 +230,10 @@ class _Footer:
 def render_banner(console: Console | None = None) -> None:
     """Print the HALIA banner + a one-line hint."""
     con = console or _console
-    con.print(Text(HALIA_BANNER, style="bold yellow"))
+    con.print(Text(_banner_text(), style="bold yellow"))
     con.print(
-        "[dim]trust-first agent · Enter to send · Option+Enter for a newline · "
-        "/help for commands[/dim]\n"
+        "[dim]a general, highly capable agent · Enter to send · "
+        "Option+Enter for a newline · /help for commands[/dim]\n"
     )
 
 
@@ -310,7 +322,6 @@ def run_tui(
         _chat_undo,
         _make_approver,
         _prepare_context,
-        _profile_hint,
         _resumed_age_note,
         _show_step,
         console,
@@ -417,8 +428,6 @@ def run_tui(
     turn_secs = [0.0]  # last turn's wall time (list so the toolbar closure sees updates)
     total_usage = Usage()  # accumulated token usage across the session
     show_tokens = bool(read_config().get("show_tokens", False))  # /token toggles this (persisted)
-    if run_profile is None:  # nudge toward a vertical when in the general profile (suppressible)
-        _profile_hint()
     footer = _Footer(console)  # live 'working' line during a turn
     streaming = {"on": False}  # is an answer currently streaming to the screen this turn?
     compact_always = {"on": False}  # remembers an "always compact" choice for the session
@@ -692,7 +701,7 @@ def run_tui(
     while True:
         console.print(status_line(), style="reverse", highlight=False)
         try:
-            user_input = session.prompt(PROMPT).strip()
+            user_input = session.prompt(PROMPT, cursor=CursorShape.BLINKING_BLOCK).strip()
         except (EOFError, KeyboardInterrupt):
             console.print()
             farewell()

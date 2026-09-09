@@ -3,7 +3,7 @@
 from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-from halia.cli.tui import HALIA_BANNER, build_key_bindings, build_session
+from halia.cli.tui import build_key_bindings, build_session
 
 
 def _prompt(text: str) -> str:
@@ -49,7 +49,11 @@ def test_option_left_is_word_navigation_not_jargon() -> None:
 
 
 def test_banner_is_present() -> None:
-    assert "█" in HALIA_BANNER  # block-letter art rendered
+    from halia.cli.tui import _banner_text
+
+    banner = _banner_text()
+    assert "H A L I A" in banner  # title centered in the box
+    assert "v" in banner  # version in the top border
 
 
 def test_word_nav_bindings_registered() -> None:
