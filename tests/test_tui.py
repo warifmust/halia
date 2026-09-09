@@ -52,8 +52,9 @@ def test_banner_is_present() -> None:
     from halia.cli.tui import _banner_text
 
     banner = _banner_text()
-    assert "H A L I A" in banner  # title centered in the box
+    assert "█" in banner  # block-letter art rendered
     assert "v" in banner  # version in the top border
+    assert "a general, highly capable agent" in banner  # tagline inside the box
 
 
 def test_word_nav_bindings_registered() -> None:

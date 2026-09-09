@@ -38,28 +38,51 @@ from halia.providers.base import Message, Usage
 for _seq in ("\x1b[13;2u", "\x1b[27;2;13~"):
     _aes.ANSI_SEQUENCES[_seq] = Keys.ControlJ
 
+# Block-letter "HALIA" (ANSI-Shadow style).
+_BLOCK_LETTERS = (
+    "██   ██  █████  ██      ██  █████",
+    "██   ██ ██   ██ ██      ██ ██   ██",
+    "███████ ███████ ██      ██ ███████",
+    "██   ██ ██   ██ ██      ██ ██   ██",
+    "██   ██ ██   ██ ███████ ██ ██   ██",
+)
+
+
 def _banner_text() -> str:
-    """The boxed HALIA banner — version in the top border, title centered."""
+    """Boxed banner: block-letter HALIA + a two-line tagline, wide as the status bar."""
     from halia import __version__
 
+    desc = "a general, highly capable agent"
+    hints = "Enter to send · Option+Enter for a newline · /help for commands"
     label = f"v{__version__}"
-    edge = "-" * 17
-    title = "H A L I A"
-    width = len(edge) * 2 + len(label)
+    art_width = max(len(row.rstrip()) for row in _BLOCK_LETTERS)
+    art = [row.rstrip().ljust(art_width) for row in _BLOCK_LETTERS]
+
+    width = 100  # matches the status-bar line
     inner = width - 2
-    pad = inner - len(title)
-    left = pad // 2
-    right = pad - left
-    return "\n".join([
-        edge + label + edge,
-        "|" + " " * inner + "|",
-        "|" + " " * left + title + " " * right + "|",
-        "|" + " " * inner + "|",
-        "-" * width,
-    ])
+    tl, tr, bl, br = "┌", "┐", "└", "┘"
+    h_bar, v_bar = "─", "│"
+
+    def centered(text: str) -> str:
+        pad = inner - len(text)
+        left = pad // 2
+        return v_bar + " " * left + text + " " * (pad - left) + v_bar
+
+    half = (inner - len(label)) // 2
+    top = tl + h_bar * half + label + h_bar * (inner - len(label) - half) + tr
+    blank = v_bar + " " * inner + v_bar
+    bottom = bl + h_bar * inner + br
+
+    lines = [top]
+    lines.extend(centered(row) for row in art)
+    lines.append(blank)  # one blank line between the title and the tagline
+    lines.append(centered(desc))
+    lines.append(centered(hints))
+    lines.append(bottom)
+    return "\n".join(lines)
 
 _console = Console()
-PROMPT = HTML("<b><ansigreen>❯</ansigreen></b> ")  # bold green chevron — clear "your turn"
+PROMPT = HTML("<b><ansiyellow>❯</ansiyellow></b> ")  # bold yellow chevron
 
 # Slash commands: (command, description). Drives both /help and the completion dropdown.
 _SLASH_COMMANDS: list[tuple[str, str]] = [
@@ -228,13 +251,9 @@ class _Footer:
 
 
 def render_banner(console: Console | None = None) -> None:
-    """Print the HALIA banner + a one-line hint."""
+    """Print the HALIA banner (boxed title + tagline)."""
     con = console or _console
     con.print(Text(_banner_text(), style="bold yellow"))
-    con.print(
-        "[dim]a general, highly capable agent · Enter to send · "
-        "Option+Enter for a newline · /help for commands[/dim]\n"
-    )
 
 
 def build_key_bindings() -> KeyBindings:
