@@ -738,6 +738,7 @@ def _make_approver() -> Any:
         "cua_double_click",
         "cua_drag",
         "cua_draw_path",
+        "cua_fill_path",
         "cua_type",
         "cua_undo",
         "cua_scroll",

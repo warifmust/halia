@@ -393,7 +393,9 @@ class CuaScreenshot(Skill):
         "The screenshot is returned as an image the model can analyze visually, "
         "with a faint coordinate grid overlay so elements can be targeted "
         "precisely. The full-resolution PNG is also saved to the screenshots "
-        "directory. Use this to see what's on screen before clicking or typing."
+        "directory. Use this to see what's on screen before clicking or typing. "
+        "Use detail:'low' (1024px) for fast, shallow checks like navigation; "
+        "use detail:'high' (1600px) when you need precise visual detail."
     )
     dangerous = False
     untrusted = False  # screenshots are read-only
@@ -416,6 +418,7 @@ class CuaScreenshot(Skill):
     # coordinates valid regardless of how many screenshots are taken or in what
     # order. Native screens are usually 1920px wide.
     _MAX_WIDTH = 1600
+    _LOW_MAX_WIDTH = 1024
     _JPEG_QUALITY = 90
     _LOW_JPEG_QUALITY = 70
     _GRID_STEP = 100
@@ -431,9 +434,11 @@ class CuaScreenshot(Skill):
             "detail": {
                 "type": "string",
                 "enum": ["high", "low"],
-                "description": "Image quality. Screenshots are always 1600px "
-                "wide (the coordinate space never changes); 'low' only uses "
-                "heavier JPEG compression for a smaller file. Default: high.",
+                "description": "Resolution + quality. 'high' = 1600px wide "
+                "(precise, slower); 'low' = 1024px wide (faster, fewer image "
+                "tokens). Coordinates are given in the image's own pixel space "
+                "either way and are scaled to the real screen automatically. "
+                "Default: high.",
             },
         },
     }
@@ -463,10 +468,16 @@ class CuaScreenshot(Skill):
 
             img: Image.Image = Image.open(path)
             real_w, real_h = img.size
-            # One fixed width for every screenshot: the coordinate space the model
-            # sees must not change between calls, or click coordinates break.
-            # `detail` only trades JPEG quality (file size), never resolution.
-            max_width = CuaScreenshot._MAX_WIDTH
+            # `detail` trades resolution (and JPEG quality): 'high' keeps the full
+            # 1600px image for precise visual work, 'low' shrinks to 1024px so
+            # routine navigation uses fewer image tokens and encodes faster. The
+            # scale factor is recomputed per screenshot, so click coordinates are
+            # mapped from whichever image the model saw back to the real screen.
+            max_width = (
+                CuaScreenshot._MAX_WIDTH
+                if detail == "high"
+                else CuaScreenshot._LOW_MAX_WIDTH
+            )
             quality = (
                 CuaScreenshot._JPEG_QUALITY
                 if detail == "high"
@@ -841,6 +852,177 @@ class CuaDrawPath(Skill):
             f"Drew a stroke through {len(points)} points ({seg_count} segments) "
             f"[image {first[0]},{first[1]} -> {last[0]},{last[1]} -> screen "
             f"{real[0][0]:.0f},{real[0][1]:.0f} -> {real[-1][0]:.0f},{real[-1][1]:.0f}]"
+        )
+
+
+def _fill_spans(
+    pts: list[tuple[float, float]],
+    spacing: float,
+    direction: str,
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    """Rasterize a closed polygon into parallel fill strokes (even-odd rule).
+
+    Returns a list of ``((x1, y1), (x2, y2))`` drag spans in the SAME coordinate
+    space as `pts` (callers pass real-screen points). `direction` is 'horizontal'
+    (scan y, fill along x) or 'vertical' (scan x, fill along y). The outline is
+    implicitly closed with a last→first edge.
+    """
+    n = len(pts)
+    if n < 3:
+        return []
+
+    spans: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    if direction == "horizontal":
+        lo = min(p[1] for p in pts)
+        hi = max(p[1] for p in pts)
+        s = lo
+        while s <= hi + 1e-9:
+            xs: list[float] = []
+            for i in range(n):
+                (x1, y1), (x2, y2) = pts[i], pts[(i + 1) % n]
+                ylo, yhi = min(y1, y2), max(y1, y2)
+                if yhi - ylo < 1e-12:
+                    continue  # horizontal edge — never crosses
+                if s < ylo or s >= yhi:
+                    continue  # half-open [ylo, yhi)
+                xs.append(x1 + (s - y1) / (y2 - y1) * (x2 - x1))
+            xs.sort()
+            for k in range(0, len(xs) - 1, 2):
+                if xs[k + 1] - xs[k] >= 1e-9:
+                    spans.append(((xs[k], s), (xs[k + 1], s)))
+            s += spacing
+    else:  # vertical
+        lo = min(p[0] for p in pts)
+        hi = max(p[0] for p in pts)
+        s = lo
+        while s <= hi + 1e-9:
+            ys: list[float] = []
+            for i in range(n):
+                (x1, y1), (x2, y2) = pts[i], pts[(i + 1) % n]
+                xlo, xhi = min(x1, x2), max(x1, x2)
+                if xhi - xlo < 1e-12:
+                    continue  # vertical edge — never crosses
+                if s < xlo or s >= xhi:
+                    continue  # half-open [xlo, xhi)
+                ys.append(y1 + (s - x1) / (x2 - x1) * (y2 - y1))
+            ys.sort()
+            for k in range(0, len(ys) - 1, 2):
+                if ys[k + 1] - ys[k] >= 1e-9:
+                    spans.append(((s, ys[k]), (s, ys[k + 1])))
+            s += spacing
+    return spans
+
+
+class CuaFillPath(Skill):
+    name = "cua_fill_path"
+    description = (
+        "Fill a CLOSED shape with the currently selected color by dragging the "
+        "pointer back and forth inside it (parallel scanlines). Give the outline "
+        "as the list of [x, y] corner points (>= 3) in the screenshot's pixel "
+        "space. A thicker brush fills faster and more solidly — set `spacing` to "
+        "the brush width or less so the strokes overlap. Select the color first, "
+        "then call this with the shape's outline. Use cua_screenshot before and "
+        "after to check the result."
+    )
+    dangerous = True
+    untrusted = False
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "points": {
+                "type": "array",
+                "minItems": 3,
+                "items": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "items": {"type": "number"},
+                },
+                "description": "The closed outline as a list of [x, y] corner "
+                "points, in the screenshot's pixel space.",
+            },
+            "spacing": {
+                "type": "number",
+                "description": "Distance between fill strokes in pixels "
+                "(default 5). Set to the brush width or less for a solid fill.",
+            },
+            "direction": {
+                "type": "string",
+                "enum": ["horizontal", "vertical"],
+                "description": "Direction of the fill strokes (default: horizontal).",
+            },
+            "button": {
+                "type": "string",
+                "enum": ["left", "right", "middle"],
+                "description": "Mouse button held during the fill (default: left).",
+            },
+            "duration_ms": {
+                "type": "integer",
+                "description": "Per-stroke duration in milliseconds (optional).",
+            },
+        },
+        "required": ["points"],
+    }
+
+    def run(self, args: dict[str, Any]) -> str:
+        if not _is_cua_enabled():
+            return "error: CUA backend not enabled. Run 'halia setup --cua' first."
+
+        raw_points = args.get("points")
+        if not isinstance(raw_points, list) or len(raw_points) < 3:
+            return "error: 'points' (a closed outline, >= 3 [x, y] pairs) is required"
+
+        pts: list[tuple[float, float]] = []
+        for p in raw_points:
+            if not isinstance(p, (list, tuple)) or len(p) != 2:
+                return "error: each point must be an [x, y] pair"
+            try:
+                pts.append((float(p[0]), float(p[1])))
+            except (TypeError, ValueError):
+                return "error: point coordinates must be numbers"
+
+        spacing = float(args.get("spacing", 5.0))
+        spacing = max(1.0, spacing)
+        direction = args.get("direction", "horizontal")
+        if direction not in ("horizontal", "vertical"):
+            direction = "horizontal"
+        button = args.get("button", "left")
+        duration_ms = args.get("duration_ms")
+        if duration_ms is not None:
+            duration_ms = int(duration_ms)
+
+        scale = CuaScreenshot._scale
+        real = [(x * scale, y * scale) for x, y in pts]
+        spans = _fill_spans(real, spacing, direction)
+        if not spans:
+            return "error: could not rasterize the shape — is the outline degenerate?"
+
+        # Cap runaway fills (very large region + tiny spacing).
+        max_strokes = 600
+        if len(spans) > max_strokes:
+            return (
+                f"error: fill would need {len(spans)} strokes (>{max_strokes}). "
+                f"Increase 'spacing' (or use a thicker brush) and retry."
+            )
+
+        try:
+            cua = _get_cua()
+            for (x1, y1), (x2, y2) in spans:
+                cua.drag(
+                    x1, y1, x2, y2,
+                    button=button,
+                    duration_ms=duration_ms,
+                    steps=1,
+                )
+        except Exception as exc:
+            return f"error: {exc}"
+
+        xmin = min(p[0] for p in pts)
+        ymin = min(p[1] for p in pts)
+        return (
+            f"Filled the shape with {len(spans)} {direction} strokes "
+            f"(spacing {spacing:.1f}px) near image ({xmin:.0f},{ymin:.0f})."
         )
 
 

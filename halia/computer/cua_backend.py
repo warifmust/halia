@@ -61,17 +61,18 @@ def _cua_capture_scope() -> Any | None:
 
 
 def _cua_cursor_theme() -> Any | None:
-    """Resolve the CUA agent-cursor theme from env/config; None → driver default.
+    """Resolve the CUA agent-cursor theme from env/config; default → `cua.default`.
 
     The driver renders its own cursor overlay; `theme_id` selects its appearance
-    (so it can be visually distinct from the user's real pointer). Set
-    HALIA_CUA_CURSOR_THEME or config `cua_cursor_theme`.
+    (so it can be visually distinct from the user's real pointer). The only
+    built-in theme is `cua.default` — the blue CUA cursor. Set HALIA_CUA_CURSOR_THEME
+    or config `cua_cursor_theme` to select an installed custom theme instead.
     """
     from halia.config.settings import read_config
 
     theme_id = os.environ.get("HALIA_CUA_CURSOR_THEME") or read_config().get("cua_cursor_theme")
     if not theme_id:
-        return None
+        theme_id = "cua.default"
     from cua_driver import CursorReducedMotion, CursorThemeSelection
 
     return CursorThemeSelection(
@@ -155,7 +156,26 @@ class CuaComputer:
             )
         )
         self._session_started = True
+        await self._enable_agent_cursor(driver)
         return driver
+
+    async def _enable_agent_cursor(self, driver: Any) -> None:
+        """Make the driver's agent-cursor overlay visible for this session.
+
+        The overlay is the distinct blue CUA cursor that lets the user keep
+        working alongside halia while it drives the desktop. The driver enables
+        it by default, but the embedded host can differ — turn it on explicitly.
+        Never fatal: an unsupported driver or a host without an overlay event
+        loop must not break the whole session.
+        """
+        try:
+            from cua_driver import SetAgentCursorEnabledInput
+
+            await driver.set_agent_cursor_enabled(
+                SetAgentCursorEnabledInput(session=self._session_name, enabled=True)
+            )
+        except Exception:  # noqa: BLE001 — cosmetic; never fail a session over it
+            pass
 
     async def _with_session_retry(self, op: Any) -> Any:
         """Run a driver operation, restarting the session once if it has ended.

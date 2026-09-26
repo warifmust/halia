@@ -338,8 +338,13 @@ def test_stuck_note_injected_after_repeated_blocks() -> None:
                 tool_calls=[ToolCall(id="1", name="cua_click", arguments='{"x": 100, "y": 100}')],
             )
 
+    # The repetition guard is opt-in now (default off). Enable it here so two
+    # blocked repeats accumulate into a STUCK note, exercising the re-plan path.
     with pytest.raises(RunLimitError):
-        run("click it", _CFG, _cua_click_registry(), provider=RecordingProvider(), max_iters=6)
+        run(
+            "click it", _CFG, _cua_click_registry(),
+            provider=RecordingProvider(), max_iters=8, repeat_warn_at=2,
+        )
 
     def has_stuck(messages: list[Message]) -> bool:
         return any(

@@ -51,6 +51,10 @@ def persona_overlay() -> str:
 SYSTEM_PROMPT = (
     "You are halia, a careful, trustworthy assistant. "
     "Be concise and accurate; if you are unsure, say so rather than guessing. "
+    "GREETING: when a conversation starts, keep your opening brief — a simple "
+    "hello and a short offer to help. Do NOT introduce yourself with a list of "
+    "capabilities, bullet points of example tasks, or a role description (like "
+    "'your QA assistant') unless the user explicitly asks what you can do. "
     "The conversation history you are given is your memory of this session — rely on "
     "it, and refer back to earlier messages naturally. Do NOT claim you have no memory "
     "or that 'each session starts fresh' when earlier turns are present in the "
@@ -134,10 +138,20 @@ _CUA_PROMPT = (
     "navigate Finder/Explorer: cua_click to select, then cua_double_click (or "
     "cua_press_key 'return') to open; cua_hotkey (['cmd','shift','g']) goes to a path; "
     "Spotlight (['cmd','space']) launches an app. "
-    "COORDINATES: screenshots are 1600px wide and the coordinate grid is drawn on "
-    "them — give cua_click/cua_scroll/cua_drag coordinates in that screenshot's pixel "
-    "space (halia maps them to the real screen). Re-derive coordinates from the latest "
+    "OPENING BROWSERS/APPS: NEVER open a browser, app, or web page by typing into "
+    "the terminal — no 'open' / 'open -a' / 'xdg-open' / 'start' commands, and never "
+    "type a URL or launcher command into a shell. Open web pages with cua_open_url; "
+    "launch apps with Spotlight (['cmd','space']) or Finder. The terminal is where "
+    "halia runs, not a way to drive the desktop. "
+    "COORDINATES: the coordinate grid is drawn on each screenshot — give cua_click/"
+    "cua_scroll/cua_drag coordinates in THAT screenshot's own pixel space (halia maps "
+    "them to the real screen automatically). Re-derive coordinates from the latest "
     "screenshot whenever you've scrolled or the screen changed. "
+    "ADAPTIVE DEPTH: choose how carefully to look. For routine navigation (opening a "
+    "page, clicking a link/button, filling a form, logging in) use cua_screenshot("
+    "detail:'low') and batch tightly — do NOT screenshot after every action, and do "
+    "NOT narrate each step. For precise visual work (drawing, pixel-perfect clicks, "
+    "design/color inspection) use detail:'high' and verify at phase boundaries only. "
     "KEYBOARD-FIRST FORMS: click the FIRST field, type into it, then Tab (cua_press_key) "
     "to move between fields instead of re-clicking each one. For radio/checkbox groups, "
     "click the group once, then use arrow keys + space to select. "
@@ -146,9 +160,24 @@ _CUA_PROMPT = (
     "Use cua_drag for a single straight segment. Select the drawing tool, then take "
     "one screenshot to check. Use sample_colors on the reference image to get exact "
     "hex/rgb values before drawing. "
+    "TOOL vs COLOR: in drawing apps the tool icon only SELECTS the tool; color and "
+    "thickness are SEPARATE controls (a color swatch/circle and a weight/size slider). "
+    "Click the swatch to open the color picker and the slider to change thickness — "
+    "do NOT keep clicking the tool icon expecting a color menu. "
+    "FILL: to fill a closed shape solid, first INCREASE the brush/pen thickness — in "
+    "Canva Draw use the marker's Weight control, in other apps the size/thickness "
+    "setting — to the widest setting, then call cua_fill_path with the outline's "
+    "corner points and spacing = the brush width or less. A thick brush fills with "
+    "far fewer strokes, so always widen it before filling. "
     "PRECISE TARGETING: if clicks keep missing, use cua_desktop to list open windows "
     "(pid + window_id), then cua_window(pid, window_id) for each element's role, label, "
     "and click center — pass those centers straight to cua_click instead of guessing. "
+    "MAP BEFORE CLICKING: on an unfamiliar app, read the WHOLE panel from one screenshot "
+    "first and identify each control (tool icons, color swatch, sliders, canvas) before "
+    "clicking. If a click doesn't open what you expected after TWO tries, STOP clicking "
+    "that element — re-read the screenshot and click a DIFFERENT control. Never single-"
+    "click then double-click then right-click the same icon to hunt for options "
+    "(right-click opens a browser context menu, not app controls). "
     "TYPE: use cua_type into the focused element. Pass clear=true to replace existing "
     "text (select-all + delete first) rather than appending to it. "
     "OPEN FILES/FOLDERS: a single cua_click only SELECTS on macOS/Windows. "
@@ -158,13 +187,15 @@ _CUA_PROMPT = (
     "admin authorization, permission request, software update, keychain), STOP "
     "immediately and ask the user. NEVER click into it, dismiss it, or type any "
     "credentials — security dialogs are for the user, not for halia. "
-    "If a click misses the SAME target twice, stop clicking and either navigate "
-    "directly with cua_open_url (for a page) or use cua_hotkey with Tab/Enter to "
-    "focus and activate the element. "
+    "If a click keeps MISSING (the screen doesn't change after it), retry with a "
+    "slightly adjusted coordinate a few times — drawing and UI probing need this. "
+    "Only when it still won't land, switch approach: use cua_window for the element's "
+    "exact center, or navigate directly with cua_open_url (for a page). "
     "MONITORS: the screenshot shows the FULL desktop — on a multi-monitor setup the "
     "monitors appear side-by-side in one wide image, and click coordinates still map "
     "correctly across them. Identify the target app/window visually and work there; "
-    "do NOT click into the terminal where halia is running. If it's unclear which "
+    "do NOT click into the terminal where halia is running, and NEVER type commands "
+    "into it to open apps or browsers. If it's unclear which "
     "monitor or window to use, ask the user. "
 )
 
@@ -185,9 +216,10 @@ _LOOP_GUARD_PROMPT = (
     "or a read returning the same content), the action had NO effect. Do NOT repeat "
     "it — diagnose why (wrong selector, wrong coordinates, element not in view) and "
     "switch approach. "
-    "3) Never repeat the SAME action (same click coordinates, same selector, same "
-    "URL, same open/close) more than twice. After two attempts with no progress, "
-    "STOP and choose a different strategy or ask the user. "
+    "3) Repeating an action is fine while you make progress (drawing strokes, "
+    "retrying a UI element at an adjusted coordinate). Only switch approach when "
+    "an action returns an ERROR or the screen stays UNCHANGED after it — then "
+    "diagnose why and change strategy. "
     "4) The circuit breaker disables a failing tool for the rest of the run — "
     "restarting the app or driver does NOT reset it. "
     "5) Never report a count of items/rows/products from memory or assumption — "
@@ -238,8 +270,12 @@ def _env_float(name: str, default: float) -> float:
 
 
 DEFAULT_MAX_TOOL_FAILURES = _env_int("HALIA_MAX_TOOL_FAILURES", 3)
-DEFAULT_REPEAT_WARN_AT = _env_int("HALIA_REPEAT_WARN_AT", 2)
-DEFAULT_REPEAT_RADIUS = _env_float("HALIA_REPEAT_RADIUS", 8.0)
+# The repetition guard is DISABLED by default (0 = off): visual work (drawing, UI
+# probing) legitimately retries the same click/coordinate many times, and auto-
+# blocking those sabotages the task. The human approval gate on dangerous tools is
+# the real control. Set HALIA_REPEAT_WARN_AT to re-enable it for headless runs.
+DEFAULT_REPEAT_WARN_AT = _env_int("HALIA_REPEAT_WARN_AT", 0)
+DEFAULT_REPEAT_RADIUS = _env_float("HALIA_REPEAT_RADIUS", 4.0)
 # Screenshots no longer accumulate in the transmitted context — _drop_old_screenshots
 # evicts every older screenshot image so only the latest one is sent — so a raw
 # screenshot COUNT is no longer a context concern. The hard block is therefore
@@ -791,7 +827,9 @@ def _click_coords(name: str, arguments: str) -> tuple[float, float] | None:
 #   circuit breaker  — a tool that keeps erroring is disabled (per-tool).
 #   exploration      — a long run of ONLY recon tools is hard-blocked.
 #   screenshot budget— a high backstop ceiling on total screenshots across the run.
-#   repetition       — identical/near-identical UI actions are blocked early.
+#   repetition       — identical/near-identical UI actions are blocked early (OFF
+#                      by default: drawing retries are legitimate, so human
+#                      approval is the control; enable via HALIA_REPEAT_WARN_AT).
 #   STUCK            — two consecutive no-progress signals escalate into a
 #                      system-level re-plan note (the last line of defense).
 # All of these are backstops. The primary loop control is the UNCHANGED-screenshot
@@ -880,10 +918,11 @@ def _execute_batch(
             circuit_notes.append(name)
             ctx._stuck += 1
             continue
-        # Repetition guard: an IDENTICAL UI action attempted again and again is a
-        # no-progress loop — these calls usually "succeed" (no error), so the circuit
-        # breaker never sees them. Block before the tool runs again.
-        if guard_tool and repeats >= ctx.repeat_warn_at:
+        # Repetition guard (OPT-IN, off by default): an IDENTICAL UI action attempted
+        # again and again is a no-progress loop — these calls usually "succeed" (no
+        # error), so the circuit breaker never sees them. Only block when the operator
+        # has enabled it (repeat_warn_at > 0).
+        if ctx.repeat_warn_at > 0 and guard_tool and repeats >= ctx.repeat_warn_at:
             observation = (
                 f"repetition guard: '{name}' with the same (or near-identical) arguments "
                 f"has already been tried {repeats} times this run without progress. "
@@ -1236,6 +1275,7 @@ def run(
     registry: SkillRegistry,
     provider: Provider | None = None,
     max_iters: int = DEFAULT_MAX_ITERS,
+    repeat_warn_at: int = DEFAULT_REPEAT_WARN_AT,
     observer: Observer | None = None,
     approver: Approver | None = None,
     extra_system: str = "",
@@ -1283,6 +1323,7 @@ def run(
     ctx = _Ctx(
         provider=provider, config=config, registry=registry, prompt=prompt,
         extra_system=extra_system, plan=plan_text, max_iters=max_iters,
+        repeat_warn_at=repeat_warn_at,
         observer=observer, approver=approver,
         pause_on_approval=pause_on_approval, checkpoint_db=checkpoint_db,
         compact_approver=(lambda: True) if compact else None,

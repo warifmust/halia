@@ -72,8 +72,26 @@ def test_cua_session_restarts_after_session_ended(monkeypatch: Any) -> None:
         def __init__(self, session: str = "", screenshot_out_file: Any = None) -> None:
             pass
 
+    class CursorReducedMotion:
+        AUTO = "auto"
+        ON = "on"
+        OFF = "off"
+
+    class CursorThemeSelection:
+        def __init__(self, *, theme_id: str, reduced_motion: Any) -> None:
+            self.theme_id = theme_id
+            self.reduced_motion = reduced_motion
+
+    class SetAgentCursorEnabledInput:
+        def __init__(self, *, session: str, enabled: bool) -> None:
+            self.session = session
+            self.enabled = enabled
+
     mod.StartSessionInput = StartSessionInput
     mod.GetDesktopStateInput = GetDesktopStateInput
+    mod.CursorReducedMotion = CursorReducedMotion
+    mod.CursorThemeSelection = CursorThemeSelection
+    mod.SetAgentCursorEnabledInput = SetAgentCursorEnabledInput
     monkeypatch.setitem(sys.modules, "cua_driver", mod)
 
     # A real (tiny) PNG so the screenshot pipeline writes a valid image file.
@@ -98,10 +116,14 @@ def test_cua_session_restarts_after_session_ended(monkeypatch: Any) -> None:
         def __init__(self) -> None:
             self.start_calls = 0
             self.state_calls = 0
+            self.cursor_enabled_calls = 0
             self._first = True
 
         async def start_session(self, _input: Any) -> None:
             self.start_calls += 1
+
+        async def set_agent_cursor_enabled(self, _input: Any) -> None:
+            self.cursor_enabled_calls += 1
 
         async def get_desktop_state(self, _input: Any) -> FakeDesktop:
             self.state_calls += 1
@@ -224,7 +246,7 @@ def test_cua_capture_scope_resolution(monkeypatch: Any) -> None:
 
 
 def test_cua_cursor_theme_resolution(monkeypatch: Any) -> None:
-    """cursor_theme resolves from env/config; absent → None (driver default)."""
+    """cursor_theme resolves from env/config; absent → the built-in blue `cua.default`."""
     from enum import Enum
 
     # cua_driver isn't installed in headless CI — provide a minimal fake module.
@@ -247,7 +269,7 @@ def test_cua_cursor_theme_resolution(monkeypatch: Any) -> None:
 
     monkeypatch.delenv("HALIA_CUA_CURSOR_THEME", raising=False)
     monkeypatch.setattr("halia.config.settings.read_config", lambda: {})
-    assert _cua_cursor_theme() is None
+    assert _cua_cursor_theme().theme_id == "cua.default"
 
     monkeypatch.setenv("HALIA_CUA_CURSOR_THEME", "my-cursor")
     theme = _cua_cursor_theme()
@@ -315,6 +337,52 @@ def test_cua_draw_path_requires_points(monkeypatch: Any) -> None:
     assert out.startswith("error:")
 
 
+def test_cua_fill_spans_rasterizes_square() -> None:
+    """A square rasterizes into horizontal scanlines clipped to its interior."""
+    from halia.skills.cua import _fill_spans
+
+    square = [(0, 0), (10, 0), (10, 10), (0, 10)]
+    spans = _fill_spans(square, spacing=5.0, direction="horizontal")
+    # Scanlines at y=0 and y=5 (y=10 is the top boundary, excluded half-open).
+    assert spans == [((0.0, 0.0), (10.0, 0.0)), ((0.0, 5.0), (10.0, 5.0))]
+
+    vertical = _fill_spans(square, spacing=5.0, direction="vertical")
+    assert vertical == [((0.0, 0.0), (0.0, 10.0)), ((5.0, 0.0), (5.0, 10.0))]
+
+
+def test_cua_fill_path_drags_inside_shape(monkeypatch: Any) -> None:
+    from halia.skills.cua import CuaFillPath, CuaScreenshot
+
+    monkeypatch.setattr("halia.skills.cua._is_cua_enabled", lambda: True)
+    monkeypatch.setattr(CuaScreenshot, "_scale", 1.0)
+
+    calls: list[tuple[float, float, float, float]] = []
+
+    class FakeCua:
+        def drag(
+            self, fx: float, fy: float, tx: float, ty: float,
+            button: str = "left", duration_ms: int | None = None,
+            steps: int | None = None,
+        ) -> str:
+            calls.append((fx, fy, tx, ty))
+            return "ok"
+
+    monkeypatch.setattr("halia.skills.cua._get_cua", lambda: FakeCua())
+
+    out = CuaFillPath().run(
+        {"points": [[0, 0], [10, 0], [10, 10], [0, 10]], "spacing": 5}
+    )
+    assert calls == [(0.0, 0.0, 10.0, 0.0), (0.0, 5.0, 10.0, 5.0)]
+    assert "2 horizontal strokes" in out
+
+
+def test_cua_fill_path_rejects_open_or_small_outline(monkeypatch: Any) -> None:
+    from halia.skills.cua import CuaFillPath
+
+    monkeypatch.setattr("halia.skills.cua._is_cua_enabled", lambda: True)
+    assert CuaFillPath().run({"points": [[0, 0], [5, 5]]}).startswith("error:")
+
+
 def test_cua_undo_uses_platform_hotkey(monkeypatch: Any) -> None:
     from halia.skills.cua import CuaUndo
 
@@ -349,10 +417,10 @@ def test_cua_prompt_scopes_cua_open_url_to_web_only(monkeypatch: Any) -> None:
 # ── cua_screenshot: fixed coordinate space ────────────────────────────────
 
 
-def test_cua_screenshot_detail_does_not_change_coordinate_space(
+def test_cua_screenshot_detail_controls_resolution_and_scale(
     monkeypatch: Any, tmp_path: Any,
 ) -> None:
-    """high vs low detail produce the SAME width, so click coordinates stay valid."""
+    """'high' = 1600px, 'low' = 1024px; _scale maps image→screen correctly either way."""
     from halia.skills.cua import CuaScreenshot
 
     monkeypatch.setattr("halia.skills.cua._is_cua_enabled", lambda: True)
@@ -367,26 +435,22 @@ def test_cua_screenshot_detail_does_not_change_coordinate_space(
 
     monkeypatch.setattr("halia.skills.cua._get_cua", lambda: FakeCua())
 
+    def width_of(b64: str) -> int:
+        buf = io.BytesIO(base64.b64decode(b64))
+        return Image.open(buf).size[0]
+
     try:
         CuaScreenshot().run({"detail": "high"})
-        high_scale = CuaScreenshot._scale
-        high_img = CuaScreenshot._pending_image
+        assert width_of(CuaScreenshot._pending_image) == 1600
+        assert CuaScreenshot._scale == 3024 / 1600
 
         CuaScreenshot().run({"detail": "low"})
-        low_scale = CuaScreenshot._scale
-        low_img = CuaScreenshot._pending_image
+        assert width_of(CuaScreenshot._pending_image) == 1024
+        assert CuaScreenshot._scale == 3024 / 1024
 
-        # Same coordinate space regardless of detail — this is the invariant that
-        # keeps cua_click/cua_drag/cua_scroll targets valid between screenshots.
-        assert high_scale == low_scale
-        assert high_scale == 3024 / 1600  # resized from 3024px to the fixed 1600px
-
-        def width_of(b64: str) -> int:
-            buf = io.BytesIO(base64.b64decode(b64))
-            return Image.open(buf).size[0]
-
-        assert width_of(high_img) == 1600
-        assert width_of(low_img) == 1600
+        # Coordinates map image→screen via the LAST screenshot's scale either way:
+        # a click at x=512 on the low-res image lands at real x=1512.
+        assert 512 * CuaScreenshot._scale == 1512.0
     finally:
         CuaScreenshot._scale = 1.0
         CuaScreenshot._pending_image = None

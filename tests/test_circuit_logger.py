@@ -98,6 +98,7 @@ def test_repetition_guard_blocks_identical_ui_action() -> None:
         prompt="t", extra_system="", plan="", max_iters=8,
         observer=None, approver=None,
         pause_on_approval=False, max_tool_failures=3,
+        repeat_warn_at=2, repeat_radius=8.0,
     )
     messages: list[dict[str, Any]] = []
     steps: list[Step] = []
@@ -114,6 +115,37 @@ def test_repetition_guard_blocks_identical_ui_action() -> None:
     assert skill.run.call_count == 2  # first two run; 3rd + 4th are blocked
     assert any("repetition guard" in m["content"] for m in messages)
     assert "repetition guard" in messages[-1]["content"]
+
+
+def test_repetition_guard_disabled_by_default() -> None:
+    """repeat_warn_at=0 (the default) means identical clicks are never auto-blocked."""
+    from halia.audit.trace import Step
+    from halia.core.agent import _Ctx, _execute_batch
+
+    registry = MagicMock()
+    skill = MagicMock()
+    skill.name = "cua_click"
+    skill.dangerous = False
+    skill.run.return_value = "Clicked left"
+    registry.get.return_value = skill
+    registry.tool_schemas.return_value = []
+
+    ctx = _Ctx(
+        provider=MagicMock(), config=MagicMock(), registry=registry,
+        prompt="t", extra_system="", plan="", max_iters=8,
+        observer=None, approver=None,
+        pause_on_approval=False, max_tool_failures=3,
+        repeat_warn_at=0, repeat_radius=4.0,
+    )
+    messages: list[dict[str, Any]] = []
+    steps: list[Step] = []
+    call = {"name": "cua_click", "arguments": '{"x": 1, "y": 1}'}
+    calls = [{"id": f"c{i}", **call} for i in range(6)]
+
+    _execute_batch(ctx, calls, messages, steps)  # type: ignore[arg-type]
+
+    assert skill.run.call_count == 6  # all run — no repetition blocking
+    assert not any("repetition guard" in m["content"] for m in messages)
 
 
 def test_repetition_guard_allows_distinct_calls() -> None:
@@ -275,6 +307,7 @@ def test_repetition_guard_blocks_near_identical_clicks() -> None:
         prompt="t", extra_system="", plan="", max_iters=8,
         observer=None, approver=None,
         pause_on_approval=False, max_tool_failures=3,
+        repeat_warn_at=2, repeat_radius=8.0,
     )
     messages: list[dict[str, Any]] = []
     steps: list[Step] = []
@@ -406,6 +439,7 @@ def test_stuck_increments_on_blocked_repeat_and_resets_on_progress() -> None:
         prompt="t", extra_system="", plan="", max_iters=8,
         observer=None, approver=None,
         pause_on_approval=False, max_tool_failures=3,
+        repeat_warn_at=2, repeat_radius=8.0,
     )
     messages: list[dict[str, Any]] = []
     steps: list[Step] = []
