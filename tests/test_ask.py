@@ -33,6 +33,21 @@ def test_choices_render_radio_and_return_selection(monkeypatch: Any) -> None:
     assert out == "user selected: run as a negative test (expect 401)"
 
 
+def test_choices_other_falls_through_to_free_text(monkeypatch: Any) -> None:
+    import sys
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    # pick() returns the LAST option — the "something else" sentinel — so the user
+    # falls through to free-text and types their own approach.
+    monkeypatch.setattr("halia.cli.input.pick", lambda title, opts, default=0: opts[-1])
+    monkeypatch.setattr("halia.skills.ask.pt_prompt", lambda *a, **kw: "use the staging DB instead")
+    out = AskUser().run({
+        "question": "Auth wall — what next?",
+        "choices": ["provide a token", "run as a negative test (expect 401)"],
+    })
+    assert out == "user answered: use the staging DB instead"
+
+
 def test_choices_non_interactive_still_unavailable(monkeypatch: Any) -> None:
     import sys
 

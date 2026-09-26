@@ -5,7 +5,7 @@ tracked in the SQLite `images` table with metadata (dimensions, mime type,
 original path). The stored file is named <hash>.<ext> for deduplication.
 
 Usage:
-    from halia.images import store_image, get_image, list_images
+    from halia.images import store_image, get_image
     img = store_image("~/Photos/screenshot.png")
     # img.id can be referenced in conversations
 """
@@ -225,44 +225,3 @@ def get_image_path(image_id: str, db_path: Path = DB_PATH) -> Path | None:
         return None
     path = _get_images_dir() / img.filename
     return path if path.exists() else None
-
-
-def list_images(limit: int = 20, db_path: Path = DB_PATH) -> list[Image]:
-    """List recently stored images."""
-    conn = connect(db_path)
-    try:
-        rows = conn.execute(
-            "SELECT id, stored_at, original_path, filename, mime_type, "
-            "width, height, size_bytes, content_hash FROM images "
-            "ORDER BY stored_at DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-        return [
-            Image(
-                id=r[0], stored_at=r[1], original_path=r[2],
-                filename=r[3], mime_type=r[4], width=r[5],
-                height=r[6], size_bytes=r[7], content_hash=r[8],
-            )
-            for r in rows
-        ]
-    finally:
-        conn.close()
-
-
-def delete_image(image_id: str, db_path: Path = DB_PATH) -> bool:
-    """Delete an image by ID. Returns True if it existed."""
-    img = get_image(image_id, db_path)
-    if img is None:
-        return False
-    # Remove the file
-    file_path = _get_images_dir() / img.filename
-    if file_path.exists():
-        file_path.unlink()
-    # Remove from DB
-    conn = connect(db_path)
-    try:
-        conn.execute("DELETE FROM images WHERE id = ?", (image_id,))
-        conn.commit()
-    finally:
-        conn.close()
-    return True

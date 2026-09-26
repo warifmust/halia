@@ -26,6 +26,22 @@ class ScrollBy(Enum):
     PAGE = "page"
 
 
+class CaptureScope(Enum):
+    AUTO = "auto"
+    WINDOW = "window"
+    DESKTOP = "desktop"
+
+
+class CursorReducedMotion(Enum):
+    AUTO = "auto"
+    ON = "on"
+    OFF = "off"
+
+
+class CursorThemeSelection:
+    def __init__(self, *, theme_id: str, reduced_motion: CursorReducedMotion) -> None: ...
+
+
 class StartSessionInput:
     def __init__(
         self,

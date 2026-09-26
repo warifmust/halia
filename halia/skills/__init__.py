@@ -28,6 +28,7 @@ from halia.skills.readability import Readability
 from halia.skills.reconcile import ReconcileCsv
 from halia.skills.reference import LearnFromReference, SaveReference, TeachHistory
 from halia.skills.registry import SkillRegistry
+from halia.skills.sample_colors import SampleColors
 from halia.skills.search import SearchCode
 from halia.skills.spreadsheet import MakeExcel
 from halia.skills.textmetrics import CountText
@@ -41,12 +42,14 @@ try:
         CuaDesktopState,
         CuaDoubleClick,
         CuaDrag,
+        CuaDrawPath,
         CuaHotkey,
         CuaOpenUrl,
         CuaPressKey,
         CuaScreenshot,
         CuaScroll,
         CuaType,
+        CuaUndo,
         CuaWindow,
     )
     _HAS_CUA = True
@@ -83,6 +86,7 @@ _SKILL_FACTORIES: dict[str, type] = {
     "query_data": QueryData,
     "readability": Readability,
     "count_text": CountText,
+    "sample_colors": SampleColors,
     "make_chart": MakeChart,
     "make_diagram": MakeDiagram,
     "make_er_diagram": MakeErDiagram,
@@ -107,7 +111,9 @@ if _cua_usable:
         "cua_click": CuaClick,
         "cua_double_click": CuaDoubleClick,
         "cua_drag": CuaDrag,
+        "cua_draw_path": CuaDrawPath,
         "cua_type": CuaType,
+        "cua_undo": CuaUndo,
         "cua_scroll": CuaScroll,
         "cua_desktop": CuaDesktopState,
         "cua_open_url": CuaOpenUrl,

@@ -36,7 +36,6 @@ halia/
   cli/          # typer entrypoint: setup, config, chat/run, slash commands
   core/         # the agent loop, loop guards, checkpoint/resume, planner
   computer/     # CUA backend (cua-driver) — the only computer backend
-  cua/          # CUA vision helpers
   skills/       # horizontal skill library (fs, data, web, cua, …)
   eval/         # deterministic computer-use eval harness
   providers/    # LLM providers (OpenAI-compat, Anthropic)

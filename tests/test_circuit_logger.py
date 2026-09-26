@@ -336,6 +336,58 @@ def test_screenshot_budget_blocks_run_of_too_many_screenshots() -> None:
     assert click.run.call_count == 5
 
 
+def test_screenshot_block_disabled_when_block_at_zero() -> None:
+    """block_at=0 (the new default) disables the hard cap: every screenshot runs."""
+    from halia.audit.trace import Step
+    from halia.core.agent import _Ctx, _execute_batch
+
+    registry = MagicMock()
+    screenshot = MagicMock()
+    screenshot.name = "cua_screenshot"
+    screenshot.dangerous = False
+    screenshot.run.return_value = "Screenshot captured (1600x1039)."
+    registry.get.return_value = screenshot
+    registry.tool_schemas.return_value = []
+
+    ctx = _Ctx(
+        provider=MagicMock(), config=MagicMock(), registry=registry,
+        prompt="t", extra_system="", plan="", max_iters=8,
+        observer=None, approver=None,
+        pause_on_approval=False, max_tool_failures=3,
+        screenshot_warn_at=0, screenshot_block_at=0,
+        exploration_block_at=1000,  # isolate from the exploration guard
+    )
+    messages: list[dict[str, Any]] = []
+    steps: list[Step] = []
+    calls = [
+        {"id": f"s{i}", "name": "cua_screenshot", "arguments": "{}"}
+        for i in range(50)
+    ]
+
+    _execute_batch(ctx, calls, messages, steps)  # type: ignore[arg-type]
+
+    assert screenshot.run.call_count == 50
+    assert not any("screenshot budget exceeded" in m["content"] for m in messages)
+
+
+def test_wrap_up_note_injected_near_turn_cap() -> None:
+    """The turn-budget wrap-up note fires only when few turns remain."""
+    from halia.core.agent import _compose_turn_note, _Ctx
+
+    ctx = _Ctx(
+        provider=MagicMock(), config=MagicMock(), registry=MagicMock(),
+        prompt="t", extra_system="", plan="", max_iters=8,
+        observer=None, approver=None,
+        pause_on_approval=False,
+    )
+    # Far from the cap: no wrap-up note.
+    assert _compose_turn_note(ctx, 2) == ""
+    # Near the cap (3 turns left): wrap-up note present.
+    note = _compose_turn_note(ctx, 6)
+    assert "FINISH" in note
+    assert "6/8" in note
+
+
 def test_stuck_increments_on_blocked_repeat_and_resets_on_progress() -> None:
     """Blocked UI repeats count toward STUCK; a successful different action resets it."""
     from halia.audit.trace import Step

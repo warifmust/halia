@@ -127,8 +127,8 @@ _CUA_PROMPT = (
     "DESKTOP AUTOMATION (CUA): interact with websites or any desktop app using the "
     "cua_* tools. Work in BATCHES: take ONE cua_screenshot, derive EVERY action you "
     "need from it, issue all of them as multiple tool calls in a single response, "
-    "then take ONE more screenshot to verify the whole batch. Screenshots are "
-    "expensive — never take one between actions in the same batch. "
+    "then take ONE more screenshot to verify the whole batch. Batch tightly: don't "
+    "take a screenshot between actions in the same batch. "
     "OPEN A WEB PAGE: use cua_open_url ONLY for http/https web URLs (it opens the "
     "default browser). NEVER use it for local files, folders, or apps — to open those, "
     "navigate Finder/Explorer: cua_click to select, then cua_double_click (or "
@@ -141,9 +141,11 @@ _CUA_PROMPT = (
     "KEYBOARD-FIRST FORMS: click the FIRST field, type into it, then Tab (cua_press_key) "
     "to move between fields instead of re-clicking each one. For radio/checkbox groups, "
     "click the group once, then use arrow keys + space to select. "
-    "DRAWING: to draw a line or shape, use cua_drag from one point to another — one "
-    "drag is one straight segment; chain drags to sketch (triangle = 3, rectangle = 4). "
-    "Select the drawing tool, batch the drags, then one screenshot to check. "
+    "DRAWING: draw freehand strokes with cua_draw_path — pass the stroke's waypoints "
+    "as [x, y] pairs in ONE call and halia draws the whole stroke (with smoothing). "
+    "Use cua_drag for a single straight segment. Select the drawing tool, then take "
+    "one screenshot to check. Use sample_colors on the reference image to get exact "
+    "hex/rgb values before drawing. "
     "PRECISE TARGETING: if clicks keep missing, use cua_desktop to list open windows "
     "(pid + window_id), then cua_window(pid, window_id) for each element's role, label, "
     "and click center — pass those centers straight to cua_click instead of guessing. "
@@ -238,11 +240,20 @@ def _env_float(name: str, default: float) -> float:
 DEFAULT_MAX_TOOL_FAILURES = _env_int("HALIA_MAX_TOOL_FAILURES", 3)
 DEFAULT_REPEAT_WARN_AT = _env_int("HALIA_REPEAT_WARN_AT", 2)
 DEFAULT_REPEAT_RADIUS = _env_float("HALIA_REPEAT_RADIUS", 8.0)
-DEFAULT_SCREENSHOT_WARN_AT = _env_int("HALIA_SCREENSHOT_WARN_AT", 8)
-DEFAULT_SCREENSHOT_BLOCK_AT = _env_int("HALIA_SCREENSHOT_BLOCK_AT", 24)
+# Screenshots no longer accumulate in the transmitted context — _drop_old_screenshots
+# evicts every older screenshot image so only the latest one is sent — so a raw
+# screenshot COUNT is no longer a context concern. The hard block is therefore
+# DISABLED by default (0 = off); set HALIA_SCREENSHOT_BLOCK_AT to re-enable it as a
+# runaway backstop. The soft nudge below is the remaining "consider wrapping up"
+# signal, and the turn-budget wrap-up note (HALIA_WRAP_UP_AT) is the real soft limit.
+DEFAULT_SCREENSHOT_WARN_AT = _env_int("HALIA_SCREENSHOT_WARN_AT", 30)
+DEFAULT_SCREENSHOT_BLOCK_AT = _env_int("HALIA_SCREENSHOT_BLOCK_AT", 0)
 DEFAULT_EXPLORATION_WARN_AT = _env_int("HALIA_EXPLORATION_WARN_AT", 8)
 DEFAULT_EXPLORATION_BLOCK_AT = _env_int("HALIA_EXPLORATION_BLOCK_AT", 16)
 DEFAULT_STUCK_AT = _env_int("HALIA_STUCK_AT", 2)
+# When only this many loop turns remain before the hard max_iters cap, inject a
+# system note telling the model to finish up instead of starting new sub-tasks.
+DEFAULT_WRAP_UP_AT = _env_int("HALIA_WRAP_UP_AT", 3)
 CHECKPOINT_ON_CAP = os.environ.get("HALIA_CHECKPOINT_ON_CAP", "").strip().lower() in (
     "1", "true", "yes", "on",
 )
@@ -651,11 +662,17 @@ class _Ctx:
     _recent_clicks: list[tuple[str, float, float]] = field(default_factory=list)
     # A click within this many pixels of a recent click on the same tool counts as a repeat.
     repeat_radius: float = DEFAULT_REPEAT_RADIUS
-    # Screenshot budget: screenshots dominate context cost, so warn then block a run
-    # that takes too many (even when interleaved with clicks).
+    # Screenshot count. Older screenshot images are evicted from the transmitted
+    # history (_drop_old_screenshots), so the token cost no longer grows with the
+    # count. The hard block is DISABLED by default (block_at 0); the soft nudge at
+    # `screenshot_warn_at` is the only active screenshot signal.
     _screenshots: int = 0
     screenshot_warn_at: int = DEFAULT_SCREENSHOT_WARN_AT
-    screenshot_block_at: int = DEFAULT_SCREENSHOT_BLOCK_AT
+    screenshot_block_at: int = DEFAULT_SCREENSHOT_BLOCK_AT  # 0 = hard block off
+    # Turn-budget wrap-up: with this many loop turns left before max_iters, inject
+    # a system note telling the model to finish. The soft limit that replaces the
+    # old screenshot cap's "wrap up" role.
+    wrap_up_at: int = DEFAULT_WRAP_UP_AT
     # Exploration guard: consecutive recon steps (screenshots/scrolls/app-switches)
     # since the last progress-producing tool. Long runs of pure recon are no-progress
     # loops; warn, then hard-block, once the budget is exhausted.
@@ -732,16 +749,24 @@ def _call_signature(name: str, arguments: str) -> str:
 # dodge the exact-match guard by nudging coordinates ±1px while stuck on one target.
 _COORD_CLICK_TOOLS = frozenset({"cua_click", "cua_double_click"})
 
-# Screenshots dominate context cost; a run that screenshots after every click is a
-# no-progress loop in disguise, so count them separately from the consecutive
-# exploration guard (which clicks reset).
+# Screenshot count is tracked separately from the exploration guard (which clicks
+# reset) because a visual task may legitimately need many screenshots interleaved
+# with clicks. Older screenshot images are evicted from context, so the count is a
+# backstop against a runaway run, not a token-cost control.
 _SCREENSHOT_TOOLS = frozenset({"cua_screenshot"})
 
 _SCREENSHOT_NUDGE = (
-    "\n\n⚠️ You have taken {count} screenshots this run. Screenshots are the largest "
-    "token cost — each one is expensive and slows the run down. Stop screenshotting "
-    "after every action: batch your actions, use cua_window/cua_desktop for element "
-    "positions, and screenshot only once to verify a finished batch."
+    "\n\nℹ️ You have taken {count} screenshots this run. That's fine for visual work, "
+    "but batch when you can: derive several actions from one screenshot, then take "
+    "ONE more to verify the whole batch — don't screenshot after every single "
+    "action. If you're pixel-guessing a UI element, cua_window/cua_desktop give "
+    "exact coordinates instead of another screenshot."
+)
+
+_WRAP_UP_NOTE = (
+    "\n\n⏳ Turn budget nearly spent ({used}/{cap} turns used). STOP exploring and "
+    "FINISH now: give your best answer, or ask the user what to do next. Do NOT "
+    "start new sub-tasks or keep trying new approaches."
 )
 
 
@@ -765,7 +790,7 @@ def _click_coords(name: str, arguments: str) -> tuple[float, float] | None:
 # Guard layering (reassessed now that the STUCK re-plan path exists):
 #   circuit breaker  — a tool that keeps erroring is disabled (per-tool).
 #   exploration      — a long run of ONLY recon tools is hard-blocked.
-#   screenshot budget— too many screenshots across the run is hard-blocked.
+#   screenshot budget— a high backstop ceiling on total screenshots across the run.
 #   repetition       — identical/near-identical UI actions are blocked early.
 #   STUCK            — two consecutive no-progress signals escalate into a
 #                      system-level re-plan note (the last line of defense).
@@ -833,10 +858,14 @@ def _execute_batch(
             circuit_notes.append(name)
             ctx._stuck += 1
             continue
-        # Screenshot budget guard (hard block): screenshots are the largest context
-        # cost, and a model that screenshots after every click burns tokens without
-        # progress. Force it to finish or switch to structural tools.
-        if name in _SCREENSHOT_TOOLS and ctx._screenshots >= ctx.screenshot_block_at:
+        # Screenshot budget guard (hard block, OPT-IN): disabled by default
+        # (screenshot_block_at 0) since older screenshots are evicted from context.
+        # When enabled it forces the run to finish or switch to structural tools.
+        if (
+            ctx.screenshot_block_at > 0
+            and name in _SCREENSHOT_TOOLS
+            and ctx._screenshots >= ctx.screenshot_block_at
+        ):
             observation = (
                 f"screenshot budget exceeded: {ctx._screenshots} screenshots this run. "
                 f"STOP screenshotting. Use cua_window/cua_desktop for element "
@@ -1075,6 +1104,22 @@ def _pause(
     )
 
 
+def _compose_turn_note(ctx: _Ctx, iters_used: int) -> str:
+    """Compose the per-turn system note: the STUCK re-plan note plus a wrap-up
+    note once the turn budget is nearly spent."""
+    note = ctx.turn_note
+    if ctx._stuck >= ctx.stuck_at:
+        note = _STUCK_NOTE if not note else note + "\n\n" + _STUCK_NOTE
+    if (
+        ctx.max_iters > 0
+        and ctx.wrap_up_at > 0
+        and (ctx.max_iters - iters_used) <= ctx.wrap_up_at
+    ):
+        wrap = _WRAP_UP_NOTE.format(used=iters_used, cap=ctx.max_iters)
+        note = wrap if not note else note + wrap
+    return note
+
+
 def _loop(
     ctx: _Ctx,
     messages: list[Message],
@@ -1103,6 +1148,7 @@ def _loop(
             "exploration_warn_at": ctx.exploration_warn_at,
             "exploration_block_at": ctx.exploration_block_at,
             "stuck_at": ctx.stuck_at,
+            "wrap_up_at": ctx.wrap_up_at,
         },
     )
 
@@ -1114,9 +1160,7 @@ def _loop(
         if ctx.on_activity is not None:
             ctx.on_activity("")  # about to call the model (thinking)
         # Send a bounded window of history (full transcript stays in `messages`).
-        note = ctx.turn_note
-        if ctx._stuck >= ctx.stuck_at:
-            note = _STUCK_NOTE if not note else note + "\n\n" + _STUCK_NOTE
+        note = _compose_turn_note(ctx, iters_used)
         window = _with_turn_note(_window(messages, ctx.history_budget), note)
         if ctx.on_delta is not None:
             result = ctx.provider.chat(window, tools=tools, on_delta=ctx.on_delta)

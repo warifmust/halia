@@ -22,6 +22,10 @@ from prompt_toolkit.styles import Style
 
 _STYLE = Style.from_dict({"prompt": "bold ansigreen"})
 
+# Appended to every ask_user radio list so the user can type a custom answer
+# instead of being forced to pick one of the suggested choices.
+_OTHER_CHOICE = "Something else — type my own answer"
+
 # Slash commands available during ask_user.
 _SLASH_COMMANDS = [
     ("/quit", "exit halia"),
@@ -91,16 +95,21 @@ class AskUser:
             )
 
         # Radio-button selection when the model offers `choices` (like the setup wizard).
+        # A final "something else" option lets the user type a free-form answer instead
+        # of being forced to pick one of the suggested choices.
         choices = args.get("choices")
         if isinstance(choices, list) and choices:
             opts = [str(c).strip() for c in choices if str(c).strip()]
             if opts:
                 from halia.cli.input import pick
 
-                chosen = pick(question.strip(), opts)
+                chosen = pick(question.strip(), [*opts, _OTHER_CHOICE])
                 if not chosen:
                     return "user made no selection — treat this as 'skip this step'."
-                return f"user selected: {chosen}"
+                if chosen != _OTHER_CHOICE:
+                    return f"user selected: {chosen}"
+                # Fall through to the free-text prompt so the user can type their own
+                # answer instead of one of the suggested choices.
 
         print(f"\n{question.strip()}")
         try:

@@ -28,6 +28,15 @@ from halia.config.settings import (
 )
 
 
+def _model_options(models: list[str]) -> list[str]:
+    """Model picker options: the curated list plus an always-present
+    'Custom model…' choice, so every provider supports any model."""
+    options = list(models)
+    if "Custom model…" not in options:
+        options.append("Custom model…")
+    return options
+
+
 def run_setup(console: Console) -> None:
     """Interactively configure trusted directory, provider, model, and API key."""
     console.print("[bold]halia setup[/bold] — first-time configuration.\n")
@@ -89,9 +98,10 @@ def _setup_provider(console: Console) -> None:
     if spec.note:
         console.print(f"[dim]{spec.note}[/dim]")
 
-    # Model picker — radio buttons if we have a curated list, text input otherwise.
+    # Model picker — curated list plus an always-present "Custom model…" option,
+    # so every provider can select any model (e.g. a newer model before it's curated).
     if spec.models:
-        model = pick("\nSelect model:", spec.models, default=0)
+        model = pick("\nSelect model:", _model_options(spec.models), default=0)
         if model == "Custom model…":
             model = ask("\nEnter model name: ")
     else:

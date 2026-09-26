@@ -16,6 +16,7 @@ import asyncio
 import atexit
 import base64
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -33,6 +34,50 @@ def cua_available() -> bool:
     """
     from halia.computer import display_available
     return display_available()
+
+
+def _cua_capture_scope() -> Any | None:
+    """Resolve the CUA capture scope from env/config; None → driver default.
+
+    `window` scopes the agent's input to a single window so the user can keep
+    working in other windows; `desktop` drives the whole desktop; `auto` lets
+    the driver choose. Set HALIA_CUA_CAPTURE_SCOPE or config `cua_capture_scope`.
+    """
+    from halia.config.settings import read_config
+
+    raw = os.environ.get("HALIA_CUA_CAPTURE_SCOPE") or read_config().get("cua_capture_scope")
+    if not raw:
+        return None
+    from cua_driver import CaptureScope
+
+    key = str(raw).strip().lower()
+    if key == "window":
+        return CaptureScope.WINDOW
+    if key == "desktop":
+        return CaptureScope.DESKTOP
+    if key == "auto":
+        return CaptureScope.AUTO
+    return None
+
+
+def _cua_cursor_theme() -> Any | None:
+    """Resolve the CUA agent-cursor theme from env/config; None → driver default.
+
+    The driver renders its own cursor overlay; `theme_id` selects its appearance
+    (so it can be visually distinct from the user's real pointer). Set
+    HALIA_CUA_CURSOR_THEME or config `cua_cursor_theme`.
+    """
+    from halia.config.settings import read_config
+
+    theme_id = os.environ.get("HALIA_CUA_CURSOR_THEME") or read_config().get("cua_cursor_theme")
+    if not theme_id:
+        return None
+    from cua_driver import CursorReducedMotion, CursorThemeSelection
+
+    return CursorThemeSelection(
+        theme_id=str(theme_id).strip(),
+        reduced_motion=CursorReducedMotion.AUTO,
+    )
 
 
 class CuaComputer:
@@ -105,8 +150,8 @@ class CuaComputer:
         await driver.start_session(
             StartSessionInput(
                 session=self._session_name,
-                capture_scope=None,
-                cursor_theme=None,
+                capture_scope=_cua_capture_scope(),
+                cursor_theme=_cua_cursor_theme(),
             )
         )
         self._session_started = True

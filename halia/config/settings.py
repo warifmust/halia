@@ -64,14 +64,13 @@ PROVIDERS: dict[str, ProviderSpec] = {
             "deepseek-v4-flash", "mimo-v2.5", "mimo-v2.5-pro", "hy3",
             "deepseek-v4-pro", "gpt-5.6-sol", "gpt-5.6-luna", "claude-opus-5",
             "grok-4.5", "gemini-3.5-flash", "gpt-oss-120b", "qwen-3.6-plus",
-            "Custom model…",
         ],
     ),
     "mimo": ProviderSpec(
         "https://api.xiaomimimo.com/v1", "MIMO_API_KEY", "mimo-v2.5",
         auth_header="api-key",
         key_url="https://mimo.ai/dashboard",
-        models=["mimo-v2.5", "mimo-v2.5-pro"],
+        models=["mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.6"],
     ),
     "anthropic": ProviderSpec(
         "https://api.anthropic.com/v1", "ANTHROPIC_API_KEY", "claude-sonnet-5",
