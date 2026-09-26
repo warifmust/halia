@@ -59,16 +59,37 @@ class GetDesktopStateInput:
     ) -> None: ...
 
 
+class InputDeliveryMode(Enum):
+    BACKGROUND = "background"
+    FOREGROUND = "foreground"
+
+
+class ActionTarget:
+    class DESKTOP:
+        def __init__(self, display_id: str) -> None: ...
+    class WINDOW:
+        def __init__(self, pid: int, window_id: int) -> None: ...
+
+
+class ClickPosition:
+    class COORDINATES:
+        def __init__(self, x: float, y: float) -> None: ...
+    class CAPTURED_COORDINATES:
+        def __init__(self, x: float, y: float) -> None: ...
+    class ELEMENT:
+        def __init__(self, ref: Any) -> None: ...
+
+
 class ClickInput:
     def __init__(
         self,
-        session: str,
-        x: float,
-        y: float,
-        target: Any = None,
-        scope: Any = DesktopScope.DESKTOP,
-        button: ClickButton = ClickButton.LEFT,
-        count: int = 1,
+        *,
+        target: Any,
+        position: Any,
+        delivery_mode: Any,
+        session: str | None = None,
+        button: Any = None,
+        count: int | None = None,
     ) -> None: ...
 
 

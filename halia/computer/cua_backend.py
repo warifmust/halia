@@ -230,7 +230,13 @@ class CuaComputer:
         self, x: float, y: float, button: str = "left", count: int = 1
     ) -> str:
         """Click at coordinates via cua-driver (count=2 for a double-click)."""
-        from cua_driver import ClickButton, ClickInput, DesktopScope
+        from cua_driver import (
+            ActionTarget,
+            ClickButton,
+            ClickInput,
+            ClickPosition,
+            InputDeliveryMode,
+        )
 
         # Map string button name to enum
         btn_map = {
@@ -243,11 +249,10 @@ class CuaComputer:
         async def _op(driver: Any) -> Any:
             return await driver.click(
                 ClickInput(
+                    target=ActionTarget.DESKTOP("primary"),
+                    position=ClickPosition.COORDINATES(x, y),
+                    delivery_mode=InputDeliveryMode.BACKGROUND,
                     session=self._session_name,
-                    x=x,
-                    y=y,
-                    target=None,
-                    scope=DesktopScope.DESKTOP,
                     button=btn,
                     count=count,
                 )

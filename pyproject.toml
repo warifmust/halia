@@ -19,7 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 cua = [
-    "cua-driver>=0.1",
+    "cua-driver>=0.29",
 ]
 
 [project.scripts]
