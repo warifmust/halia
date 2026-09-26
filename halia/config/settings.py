@@ -67,10 +67,10 @@ PROVIDERS: dict[str, ProviderSpec] = {
         ],
     ),
     "mimo": ProviderSpec(
-        "https://api.xiaomimimo.com/v1", "MIMO_API_KEY", "mimo-v2.5",
+        "https://api.xiaomimimo.com/v1", "MIMO_API_KEY", "mimo-v2.6-pro",
         auth_header="api-key",
         key_url="https://mimo.ai/dashboard",
-        models=["mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.6"],
+        models=["mimo-v2.6-pro", "mimo-v2.6-flash", "mimo-v2.5-pro"],
     ),
     "anthropic": ProviderSpec(
         "https://api.anthropic.com/v1", "ANTHROPIC_API_KEY", "claude-sonnet-5",
