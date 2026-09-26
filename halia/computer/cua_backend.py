@@ -251,7 +251,7 @@ class CuaComputer:
                 ClickInput(
                     target=ActionTarget.DESKTOP("primary"),
                     position=ClickPosition.COORDINATES(x, y),
-                    delivery_mode=InputDeliveryMode.BACKGROUND,
+                    delivery_mode=InputDeliveryMode.FOREGROUND,
                     session=self._session_name,
                     button=btn,
                     count=count,

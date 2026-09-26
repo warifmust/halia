@@ -133,6 +133,63 @@ def test_cua_session_restarts_after_session_ended(monkeypatch: Any) -> None:
     assert Path(path).exists()
 
 
+def test_cua_click_uses_foreground_desktop_delivery(monkeypatch: Any) -> None:
+    """Desktop clicks must use InputDeliveryMode.FOREGROUND (driver rejects BACKGROUND)."""
+    from enum import Enum
+
+    class InputDeliveryMode(Enum):
+        BACKGROUND = "background"
+        FOREGROUND = "foreground"
+
+    class ClickButton(Enum):
+        LEFT = "left"
+        RIGHT = "right"
+        MIDDLE = "middle"
+
+    class ActionTarget:
+        class DESKTOP:
+            def __init__(self, display_id: str) -> None:
+                self.display_id = display_id
+
+    class ClickPosition:
+        class COORDINATES:
+            def __init__(self, x: float, y: float) -> None:
+                self.x = x
+                self.y = y
+
+    class ClickInput:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+
+    mod = types.ModuleType("cua_driver")
+    mod.ActionTarget = ActionTarget
+    mod.ClickPosition = ClickPosition
+    mod.InputDeliveryMode = InputDeliveryMode
+    mod.ClickButton = ClickButton
+    mod.ClickInput = ClickInput
+    monkeypatch.setitem(sys.modules, "cua_driver", mod)
+
+    captured: dict[str, Any] = {}
+
+    class FakeDriver:
+        async def click(self, inp: Any) -> None:
+            captured["input"] = inp
+
+    from halia.computer.cua_backend import CuaComputer
+
+    cua = CuaComputer()
+    cua._driver = FakeDriver()
+    cua._session_started = True
+
+    out = cua.click(100.0, 200.0)
+
+    inp = captured["input"]
+    assert inp.kwargs["delivery_mode"] is InputDeliveryMode.FOREGROUND
+    assert inp.kwargs["target"].display_id == "primary"
+    assert (inp.kwargs["position"].x, inp.kwargs["position"].y) == (100.0, 200.0)
+    assert "Clicked left" in out
+
+
 def test_cua_capture_scope_resolution(monkeypatch: Any) -> None:
     """capture_scope resolves from env/config; unknown/absent → None (driver default)."""
     from enum import Enum
