@@ -97,9 +97,7 @@ def test_make_pptx_honors_permission_floor(tmp_path: Any) -> None:
 
 
 def test_make_pptx_is_dangerous_and_wired() -> None:
-    from halia.presets import get_preset
     from halia.skills import available_skills
 
     assert MakePptx().dangerous is True
     assert "make_pptx" in available_skills()
-    assert "make_pptx" in get_preset("education").skills

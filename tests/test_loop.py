@@ -388,3 +388,35 @@ def test_checkpoint_on_cap_saves_checkpoint(tmp_path: Any) -> None:
     assert row is not None
     assert row[0] == excinfo.value.checkpoint_id
     assert "iteration cap" in row[1]
+
+
+def test_turn_timeout_stops_loop_and_returns_partial() -> None:
+    """A wall-clock deadline stops the loop and hands back a partial answer."""
+    from halia.core.agent import _Ctx, _loop
+
+    calls = {"n": 0}
+
+    class Forever:
+        def chat(
+            self, messages: list[Message], tools: Any = None, on_delta: Any = None
+        ) -> ChatResult:
+            calls["n"] += 1
+            return ChatResult(
+                content=None,
+                tool_calls=[ToolCall(id="1", name="list_files", arguments="{}")],
+            )
+
+    ctx = _Ctx(
+        provider=Forever(), config=_CFG, registry=default_registry(),
+        prompt="x", extra_system="", plan="", max_iters=100,
+        observer=None, approver=None, pause_on_approval=False,
+        turn_timeout=1e-9,  # already expired — forces the time-up path immediately
+    )
+    result = _loop(
+        ctx,
+        [{"role": "system", "content": "s"}, {"role": "user", "content": "x"}],
+        [],
+        0,
+    )
+    assert calls["n"] == 1  # one model call, then stop — never executes the tool
+    assert "time budget reached" in result.answer

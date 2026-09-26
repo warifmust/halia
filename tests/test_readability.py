@@ -44,11 +44,8 @@ def test_skill_is_safe() -> None:
     assert Readability().dangerous is False
 
 
-def test_wired_into_catalogue_and_education_preset() -> None:
-    from halia.presets import get_preset
+def test_wired_into_catalogue() -> None:
     from halia.skills import available_skills, build_registry
 
     assert "readability" in available_skills()
     assert build_registry(["readability"]).get("readability") is not None
-    edu = get_preset("education")
-    assert edu is not None and "readability" in edu.skills

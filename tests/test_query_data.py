@@ -93,10 +93,8 @@ def test_unsupported_file_type(tmp_path: Any) -> None:
 
 
 def test_query_data_safe_and_wired() -> None:
-    from halia.presets import get_preset
     from halia.skills import available_skills, default_registry
 
     assert QueryData().dangerous is False
     assert "query_data" in available_skills()
     assert default_registry().get("query_data") is not None
-    assert "query_data" in get_preset("data").skills

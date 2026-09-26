@@ -59,11 +59,7 @@ def test_limit_caps_groups(tmp_path: Any) -> None:
 
 
 def test_group_by_is_safe_and_wired() -> None:
-    from halia.presets import get_preset, preset_names
     from halia.skills import available_skills
 
     assert GroupByCsv().dangerous is False
     assert "group_by" in available_skills()
-    data = get_preset("data")
-    assert data is not None and "group_by" in data.skills
-    assert "data" in preset_names()

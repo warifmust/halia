@@ -53,8 +53,21 @@ def test_banner_is_present() -> None:
 
     banner = _banner_text()
     assert "█" in banner  # block-letter art rendered
-    assert "v" in banner  # version in the top border
     assert "a general, highly capable agent" in banner  # tagline inside the box
+
+
+def test_banner_title_shows_halia_and_version() -> None:
+    from rich.console import Console
+
+    from halia import __version__
+    from halia.cli.tui import render_banner
+
+    con = Console(width=100, force_terminal=True, record=True)
+    render_banner(con)
+    out = con.export_text()
+    assert f"v{__version__}" in out  # title bar shows version only, like `--help`'s Options
+    assert "HALIA v" not in out  # the word HALIA is gone from the title bar
+    assert "█" in out  # block-letter art still inside
 
 
 def test_word_nav_bindings_registered() -> None:

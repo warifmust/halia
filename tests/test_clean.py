@@ -107,9 +107,7 @@ def test_honors_permission_floor(tmp_path: Any) -> None:
 
 
 def test_dangerous_and_wired() -> None:
-    from halia.presets import get_preset
     from halia.skills import available_skills
 
     assert CleanCsv().dangerous is True
     assert "clean_csv" in available_skills()
-    assert "clean_csv" in get_preset("data").skills

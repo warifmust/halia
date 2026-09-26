@@ -34,13 +34,6 @@ CREATE TABLE IF NOT EXISTS memory (
     content    TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS profiles (
-    name         TEXT PRIMARY KEY,
-    skills_json  TEXT NOT NULL,
-    model        TEXT,
-    extra_prompt TEXT NOT NULL DEFAULT ''
-);
-
 CREATE TABLE IF NOT EXISTS checkpoints (
     id            TEXT PRIMARY KEY,
     created_at    TEXT NOT NULL,

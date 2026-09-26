@@ -91,12 +91,9 @@ def test_secret_uses_getpass(monkeypatch: Any) -> None:
 
 
 def test_safe_and_wired() -> None:
-    from halia.presets import get_preset
     from halia.skills import DEFAULT_SKILLS, available_skills, default_registry
 
     assert AskUser().dangerous is False
     assert "ask_user" in available_skills()
     assert "ask_user" in DEFAULT_SKILLS  # available in any chat
     assert default_registry().get("ask_user") is not None
-    qa = get_preset("qa")
-    assert qa is not None and "ask_user" in qa.skills

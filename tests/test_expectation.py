@@ -66,12 +66,9 @@ def test_validation() -> None:
 
 
 def test_safe_and_wired() -> None:
-    from halia.presets import get_preset
     from halia.skills import DEFAULT_SKILLS, available_skills, default_registry
 
     assert CheckExpectation().dangerous is False
     assert "check_expectation" in available_skills()
     assert "check_expectation" in DEFAULT_SKILLS  # auto-joins the generalist
     assert default_registry().get("check_expectation") is not None
-    qa = get_preset("qa")
-    assert qa is not None and "check_expectation" in qa.skills

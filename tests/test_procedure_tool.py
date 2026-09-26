@@ -67,15 +67,12 @@ def test_requires_name() -> None:
 
 
 def test_gated_and_wired() -> None:
-    from halia.presets import get_preset
     from halia.skills import DEFAULT_SKILLS, available_skills, default_registry
 
     assert SaveProcedure().dangerous is True  # persistence → approval-gated (the confirm)
     assert "save_procedure" in available_skills()
     assert "save_procedure" in DEFAULT_SKILLS  # halia can teach from any chat
     assert default_registry().get("save_procedure") is not None
-    qa = get_preset("qa")
-    assert qa is not None and "save_procedure" in qa.skills
 
 
 # --- conversational approver ---

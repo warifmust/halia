@@ -61,13 +61,10 @@ def test_check_requirements_is_safe() -> None:
     assert CheckRequirements().dangerous is False
 
 
-def test_compliance_preset_wired() -> None:
-    from halia.presets import get_preset, preset_names
-    from halia.skills import available_skills
+def test_compliance_skills_wired() -> None:
+    from halia.skills import available_skills, default_registry
 
     assert "read_docx" in available_skills()
     assert "check_requirements" in available_skills()
-    cp = get_preset("compliance")
-    assert cp is not None
-    assert {"check_requirements", "read_docx"} <= set(cp.skills)
-    assert "compliance" in preset_names()
+    assert default_registry().get("check_requirements") is not None
+    assert default_registry().get("read_docx") is not None

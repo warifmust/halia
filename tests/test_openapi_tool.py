@@ -111,11 +111,9 @@ def test_errors(tmp_path: Any) -> None:
 
 
 def test_wired_and_safe(tmp_path: Any) -> None:
-    from halia.presets import get_preset
     from halia.skills import available_skills, default_registry
 
     assert OpenApiLookup().dangerous is False
     assert OpenApiLookup().untrusted is True
     assert "openapi_lookup" in available_skills()
     assert default_registry().get("openapi_lookup") is not None
-    assert "openapi_lookup" in get_preset("qa").skills

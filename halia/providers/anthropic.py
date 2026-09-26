@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any
 
 import httpx
@@ -30,6 +31,12 @@ try:
 except ValueError:
     _DEFAULT_TIMEOUT = 180.0
 
+# Absolute cap on a single model generation (0 = no cap). See openai_compat.
+try:
+    _GENERATION_TIMEOUT = float(os.environ.get("HALIA_GENERATION_TIMEOUT", "600"))
+except ValueError:
+    _GENERATION_TIMEOUT = 600.0
+
 # Anthropic requires an explicit max_tokens on every request (unlike OpenAI). Default is
 # generous for report/QA-doc generation; override with HALIA_MAX_TOKENS.
 try:
@@ -47,12 +54,14 @@ class AnthropicProvider:
         api_key: str,
         model: str,
         timeout: float = _DEFAULT_TIMEOUT,
+        generation_timeout: float = _GENERATION_TIMEOUT,
         client: httpx.Client | None = None,
         max_tokens: int = _DEFAULT_MAX_TOKENS,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._model = model
+        self._generation_timeout = generation_timeout
         self._max_tokens = max_tokens
         self._client = client if client is not None else httpx.Client(timeout=timeout)
 
@@ -130,12 +139,18 @@ class AnthropicProvider:
         cache_read = 0
         cache_write = 0
 
+        started = time.perf_counter()
         try:
             with self._client.stream("POST", url, json=payload, headers=self._headers()) as resp:
                 if resp.status_code != 200:
                     body = resp.read().decode("utf-8", "replace")
                     raise ProviderError(f"HTTP {resp.status_code} from {url}: {body}")
                 for line in resp.iter_lines():
+                    if self._generation_timeout > 0 and \
+                            time.perf_counter() - started > self._generation_timeout:
+                        raise ProviderError(
+                            f"generation timed out after {self._generation_timeout:.0f}s"
+                        )
                     if not line.startswith("data:"):
                         continue
                     data = line[len("data:"):].strip()

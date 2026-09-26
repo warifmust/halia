@@ -32,6 +32,14 @@ try:
 except ValueError:
     _DEFAULT_TIMEOUT = 180.0
 
+# Absolute cap on a single model generation. Streaming resets the per-chunk read
+# timeout, so a very long reasoning pass could otherwise run for hours; this is the
+# hard ceiling on the WHOLE generation (0 = no cap).
+try:
+    _GENERATION_TIMEOUT = float(os.environ.get("HALIA_GENERATION_TIMEOUT", "600"))
+except ValueError:
+    _GENERATION_TIMEOUT = 600.0
+
 # Transient statuses worth retrying with backoff. 429 (rate limit) and 5xx (server errors)
 # usually clear within seconds; other 4xx are deterministic (auth, bad request) and must not
 # be retried.
@@ -83,6 +91,7 @@ class OpenAICompatProvider:
         api_key: str,
         model: str,
         timeout: float = _DEFAULT_TIMEOUT,
+        generation_timeout: float = _GENERATION_TIMEOUT,
         client: httpx.Client | None = None,
         auth_header: str = "Bearer",
         max_retries: int = _DEFAULT_MAX_RETRIES,
@@ -93,6 +102,7 @@ class OpenAICompatProvider:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._model = model
+        self._generation_timeout = generation_timeout
         self._auth_header = auth_header
         self._max_retries = max_retries
         self._retry_base = retry_base
@@ -225,6 +235,7 @@ class OpenAICompatProvider:
         # tool-call deltas arrive fragmented, keyed by index → accumulate id/name/arguments.
         acc: dict[int, dict[str, str]] = {}
         stream_usage: Usage = Usage()
+        started = time.perf_counter()
         try:
             with self._client.stream("POST", url, json=payload, headers=headers) as resp:
                 if resp.status_code != 200:
@@ -235,6 +246,11 @@ class OpenAICompatProvider:
                         )
                     raise ProviderError(f"HTTP {resp.status_code} from {url}: {body}")
                 for line in resp.iter_lines():
+                    if self._generation_timeout > 0 and \
+                            time.perf_counter() - started > self._generation_timeout:
+                        raise ProviderError(
+                            f"generation timed out after {self._generation_timeout:.0f}s"
+                        )
                     if not line.startswith("data:"):
                         continue
                     data = line[len("data:"):].strip()

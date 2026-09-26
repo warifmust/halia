@@ -35,18 +35,7 @@ def test_requires_text() -> None:
 
 
 def test_is_safe_and_wired() -> None:
-    from halia.presets import get_preset
     from halia.skills import available_skills
 
     assert CountText().dangerous is False
     assert "count_text" in available_skills()
-    assert "count_text" in get_preset("marketing").skills
-
-
-def test_marketing_preset_is_wired() -> None:
-    from halia.presets import get_preset, preset_names
-
-    mk = get_preset("marketing")
-    assert mk is not None
-    assert {"count_text", "make_excel", "web_search"} <= set(mk.skills)
-    assert "marketing" in preset_names()

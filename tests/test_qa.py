@@ -59,12 +59,8 @@ def test_validation() -> None:
 
 
 def test_safe_and_wired() -> None:
-    from halia.presets import get_preset, preset_names
     from halia.skills import available_skills, default_registry
 
     assert CheckQaArtifact().dangerous is False
     assert "check_qa_artifact" in available_skills()
     assert default_registry().get("check_qa_artifact") is not None  # auto-joined default
-    qa = get_preset("qa")
-    assert qa is not None and "check_qa_artifact" in qa.skills
-    assert "qa" in preset_names()

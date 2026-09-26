@@ -1,19 +1,50 @@
-# halia
+```
+╭─ v0.31.0 ────────────────────────────────────────────────────────────────────────────────╮
+│                                ██   ██  █████  ██      ██  █████                        │
+│                                ██   ██ ██   ██ ██      ██ ██   ██                       │
+│                                ███████ ███████ ██      ██ ███████                       │
+│                                ██   ██ ██   ██ ██      ██ ██   ██                       │
+│                                ██   ██ ██   ██ ███████ ██ ██   ██                       │
+│                                                                                          │
+│                                 a general, highly capable agent                          │
+│                 Enter to send · Option+Enter for a newline · /help for commands          │
+╰──────────────────────────────────────────────────────────────────────────────────────────╯
+```
+
 
 A **trust-first** general agent — output you can *verify*, actions you can *gate*.
-Self-hosted, provider-based (no bundled models). Early scaffold.
+Self-hosted, provider-based (no bundled models). Your model, your API key, your machine.
 
-## Install
+## 🚀 Install
 
 ```bash
-./install.sh            # bootstraps uv if needed, installs the `halia` command
+curl -LsSf https://raw.githubusercontent.com/warifmust/halia/main/install.sh | bash
 halia setup             # pick a provider + paste your API key
 halia --help
 ```
 
-Then just talk to it: `halia chat` (a conversation), or `halia run "<task>"` (one-shot).
+Then just talk to it: `halia chat` (a conversation) or `halia run "<task>"` (one-shot).
 
-## Development
+## 🤖 What is halia
+
+halia is a general-purpose agent that runs on your machine and puts **trust first**:
+every action is *gated*, every answer is *traceable*. It routes your request to the
+right tool itself — files, data, web, or the desktop — and stays within the bounds
+you set. Loop guards, time budgets, and a per-turn audit trail keep it honest.
+
+## ✨ Capabilities
+
+- 📁 **Files & system** — read, write, search, and shell commands you opt into, plus a
+  read-only `disk_usage` for "how much space is left?" questions.
+- 📊 **Data** — spreadsheets, CSVs, PDFs, DOCX/PPTX, charts, diagrams, and SQL, with
+  one-shot analysis and export.
+- 🌐 **Web** — fetch pages, run searches, and call OpenAPI endpoints as tools.
+- 🖥️ **Computer use** — drive the desktop (click, type, screenshot, draw) when you want
+  it, gated behind approval.
+- 🧠 **Memory & procedures** — teach it facts and repeatable multi-step workflows.
+- 🧾 **Audit** — full provenance of every run, stored locally in SQLite.
+
+## 🛠️ Development
 
 ```bash
 uv sync                 # create the venv + install deps (uv manages Python 3.12)
@@ -29,7 +60,7 @@ For a `halia` on your PATH that tracks source edits live, install it editable:
 uv tool install --editable .
 ```
 
-## Layout
+## 📂 Layout
 
 ```
 halia/

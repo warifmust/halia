@@ -49,36 +49,17 @@ _BLOCK_LETTERS = (
 
 
 def _banner_text() -> str:
-    """Boxed banner: block-letter HALIA + a two-line tagline, wide as the status bar."""
-    from halia import __version__
-
+    """Banner body: block-letter HALIA + tagline + hints, centered to the panel."""
     desc = "a general, highly capable agent"
     hints = "Enter to send · Option+Enter for a newline · /help for commands"
-    label = f"v{__version__}"
     art_width = max(len(row.rstrip()) for row in _BLOCK_LETTERS)
     art = [row.rstrip().ljust(art_width) for row in _BLOCK_LETTERS]
 
-    width = 100  # matches the status-bar line
-    inner = width - 2
-    tl, tr, bl, br = "┌", "┐", "└", "┘"
-    h_bar, v_bar = "─", "│"
-
-    def centered(text: str) -> str:
-        pad = inner - len(text)
-        left = pad // 2
-        return v_bar + " " * left + text + " " * (pad - left) + v_bar
-
-    half = (inner - len(label)) // 2
-    top = tl + h_bar * half + label + h_bar * (inner - len(label) - half) + tr
-    blank = v_bar + " " * inner + v_bar
-    bottom = bl + h_bar * inner + br
-
-    lines = [top]
-    lines.extend(centered(row) for row in art)
-    lines.append(blank)  # one blank line between the title and the tagline
-    lines.append(centered(desc))
-    lines.append(centered(hints))
-    lines.append(bottom)
+    width = 96  # 100-wide panel minus the two borders and 2×1 padding
+    lines = [row.center(width) for row in art]
+    lines.append("")
+    lines.append(desc.center(width))
+    lines.append(hints.center(width))
     return "\n".join(lines)
 
 _console = Console()
@@ -93,7 +74,6 @@ _SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/config", "view or change config settings (setting value)"),
     ("/export", "save the conversation as markdown (optional path)"),
     ("/model", "show or switch the model (name)"),
-    ("/profile", "show or switch the profile (name)"),
     ("/undo", "drop the last exchange (conversation only)"),
     ("/teach", "store a file or URL as a reference (path/URL, --profile)"),
     ("/files", "list or search taught reference files"),
@@ -251,9 +231,23 @@ class _Footer:
 
 
 def render_banner(console: Console | None = None) -> None:
-    """Print the HALIA banner (boxed title + tagline)."""
+    """Print the HALIA banner — a rounded panel with a `--help`-style title bar."""
+    from rich import box
+    from rich.panel import Panel
+
+    from halia import __version__
+
     con = console or _console
-    con.print(Text(_banner_text(), style="bold yellow"))
+    panel = Panel(
+        Text(_banner_text(), style="bold yellow"),
+        title=Text(f"v{__version__}", style="bold yellow"),
+        title_align="left",
+        width=100,
+        box=box.ROUNDED,
+        border_style="yellow",
+        padding=(0, 1),
+    )
+    con.print(panel)
 
 
 def build_key_bindings() -> KeyBindings:
@@ -313,7 +307,6 @@ def build_session(**kwargs: Any) -> PromptSession[str]:
 
 
 def run_tui(
-    profile: str | None = None,
     allow_commands: bool = False,
     resume: str | None = None,
     max_iters: int = 50,
@@ -335,7 +328,6 @@ def run_tui(
         _chat_history,
         _chat_model,
         _chat_procedure,
-        _chat_profile,
         _chat_resume,
         _chat_token,
         _chat_undo,
@@ -414,8 +406,8 @@ def run_tui(
         if loaded is None:
             console.print(f"[yellow]no session '{resume}'[/yellow] — see `halia sessions`.")
             return
-        sess = loaded  # narrowed to Session, so /model+/profile can replace() it cleanly
-        config, registry, _ = _prepare_context(sess.profile, sess.allow_commands)
+        sess = loaded  # narrowed to Session, so /model can replace() it cleanly
+        config, registry, _ = _prepare_context(sess.allow_commands)
         config = replace(config, model=sess.model)
         messages: list[Message] = list(sess.messages)
         archived: list[Message] = list(sess.archived_messages)
@@ -424,10 +416,10 @@ def run_tui(
             f"last active {_resumed_age_note(sess.updated_at)}[/dim]\n"
         )
     else:
-        config, registry, extra_system = _prepare_context(profile, allow_commands)
+        config, registry, extra_system = _prepare_context(allow_commands)
         messages = [{"role": "system", "content": _get_system_prompt() + extra_system}]
         archived = []
-        sess = new_session(config.provider, config.model, profile, allow_commands, messages)
+        sess = new_session(config.provider, config.model, None, allow_commands, messages)
         save_session(sess)
 
     def persist() -> None:
@@ -442,8 +434,7 @@ def run_tui(
 
     approve = _make_approver()  # one trust scope for the whole session
     budget = max_iters  # tool-call rounds per turn; raise it live with /iters
-    run_profile = sess.profile  # None for the general profile — used to rebuild the registry
-    active_profile = run_profile or "general"
+    active_profile = "general"
     turn_secs = [0.0]  # last turn's wall time (list so the toolbar closure sees updates)
     total_usage = Usage()  # accumulated token usage across the session
     show_tokens = bool(read_config().get("show_tokens", False))  # /token toggles this (persisted)
@@ -702,6 +693,7 @@ def run_tui(
         filled = round(pct / 10)
         bar = "▓" * filled + "░" * (10 - filled)
         local = "on" if allow_local_enabled() else "off"
+        shell = "on" if registry.get("run_command") is not None else "off"
         if not show_tokens:
             tok_seg = "tok --"  # hidden by default (the raw count misleads — see /token, /cost)
         else:
@@ -712,7 +704,7 @@ def run_tui(
         return (
             f" {active_profile} · {config.model} · {sess.id[:6]} · "
             f"ctx {bar} {pct}% · budget {budget} · {tok_seg} "
-            f"· local {local} · {turn_secs[0]:.1f}s "
+            f"· shell {shell} · local {local} · {turn_secs[0]:.1f}s "
         )
 
     session = build_session()
@@ -760,7 +752,7 @@ def run_tui(
                 want = parts[1].lower() == "on"
             else:
                 want = registry.get("run_command") is None  # bare /commands toggles
-            _, registry, _ = _prepare_context(run_profile, want)
+            _, registry, _ = _prepare_context(want)
             on = registry.get("run_command") is not None
             console.print(
                 f"[dim]shell commands {'ON' if on else 'OFF'} — halia "
@@ -843,14 +835,6 @@ def run_tui(
             if new_cfg is not None:
                 config = new_cfg
                 sess = replace(sess, model=config.model)
-                persist()
-            continue
-        if user_input.lower().startswith("/profile"):
-            res = _chat_profile(user_input, run_profile, allow_commands, messages)
-            if res is not None:
-                registry, prof_name = res
-                run_profile = active_profile = prof_name
-                sess = replace(sess, profile=prof_name)
                 persist()
             continue
         if user_input.lower() == "/undo":
@@ -1000,7 +984,7 @@ def run_tui(
             turn_secs[0] = time.perf_counter() - started
             from halia.memory.failures import record_failure
 
-            record_failure(user_input, str(exc), profile or "")
+            record_failure(user_input, str(exc), "")
             console.print(f"[red]error:[/red] {exc}")
             console.print(
                 f"[dim]raise the budget with /iters {budget * 2} and say 'continue', "
@@ -1020,7 +1004,7 @@ def run_tui(
             turn_secs[0] = time.perf_counter() - started
             from halia.memory.failures import record_failure
 
-            record_failure(user_input, str(exc), profile or "")
+            record_failure(user_input, str(exc), "")
             console.print(f"[red]error:[/red] {exc}\n")
             # Drop the partial tool exchange but KEEP the user's message, so the
             # task is remembered when the session is resumed.

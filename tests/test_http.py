@@ -255,12 +255,9 @@ def test_http_request_does_not_inject_browser_ua() -> None:
 
 
 def test_dangerous_and_wired() -> None:
-    from halia.presets import get_preset
     from halia.skills import DEFAULT_SKILLS, available_skills, default_registry
 
     assert HttpRequest().dangerous is True  # mutating → approval-gated
     assert "http_request" in available_skills()
     assert "http_request" in DEFAULT_SKILLS  # auto-joins the generalist
     assert default_registry().get("http_request") is not None
-    qa = get_preset("qa")
-    assert qa is not None and "http_request" in qa.skills

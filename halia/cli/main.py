@@ -7,7 +7,6 @@ this module just wires the commands. Commands are added as the layers land —
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
@@ -880,11 +879,11 @@ def _make_approver() -> Any:
 
 
 def _prepare_context(
-    profile: str | None, allow_commands: bool, query: str | None = None
+    allow_commands: bool, query: str | None = None
 ) -> tuple[Any, Any, str]:
-    """Resolve (config, registry, extra_system) from profile/preset + memory + persona.
+    """Resolve (config, registry, extra_system) from memory + persona.
 
-    Exits with an error message on config/profile problems.
+    Exits with an error message on config problems.
     """
     # Rebuild the skill catalogue after setup/config: on a fresh install the
     # setup wizard (run before this) may have installed cua-driver and set the
@@ -892,7 +891,6 @@ def _prepare_context(
     # computed against a stale config. Re-executing the module re-reads config
     # and installed packages now.
     import importlib
-    from dataclasses import replace
 
     import halia.skills as _skills_pkg
     importlib.reload(_skills_pkg)
@@ -901,8 +899,7 @@ def _prepare_context(
     from halia.core.agent import persona_overlay
     from halia.memory.facts import memory_block
     from halia.memory.failures import failures_advisory
-    from halia.presets import resolve_profile
-    from halia.skills import build_registry, default_registry
+    from halia.skills import default_registry
 
     try:
         config = load_config()
@@ -912,23 +909,7 @@ def _prepare_context(
 
     advisory = failures_advisory(query) if query else ""
     extra_system = memory_block(query=query) + advisory + persona_overlay()
-    if profile is not None:
-        prof = resolve_profile(profile)  # user profile wins, else a built-in preset
-        if prof is None:
-            console.print(
-                f"[red]error:[/red] no profile or preset '{profile}' "
-                f"(see `halia profile list`)."
-            )
-            raise typer.Exit(1)
-        _mark_profile_used()  # they know profiles exist now — stop nudging in general sessions
-        skills = [*prof.skills, "run_command"] if allow_commands else list(prof.skills)
-        registry = build_registry(skills)
-        if prof.model:
-            config = replace(config, model=prof.model)
-        if prof.extra_prompt:
-            extra_system = f"{extra_system}\n\n{prof.extra_prompt}"
-    else:
-        registry = default_registry(allow_commands=allow_commands)
+    registry = default_registry(allow_commands=allow_commands)
     return config, registry, extra_system
 
 
@@ -937,7 +918,6 @@ def _execute_run(
     max_iters: int,
     quiet: bool,
     allow_commands: bool,
-    profile: str | None,
     plan: bool = False,
     pause_for_approval: bool = False,
     extra_prompt_block: str = "",
@@ -947,7 +927,7 @@ def _execute_run(
     budget: int = 0,
     json_output: bool = False,
 ) -> None:
-    """Shared body for `run` and the persona-preset commands (`halia finance`, …).
+    """Shared body for `run` and `procedure run`.
 
     `extra_prompt_block` is appended to the system prompt for this run only (used to
     inject a saved test procedure's instructions — see `procedure run`). `notify` pushes
@@ -990,7 +970,7 @@ def _execute_run(
         console.print("[cyan]plan[/cyan]")
         console.print(f"[dim]{text}[/dim]\n")
 
-    config, registry, extra_system = _prepare_context(profile, allow_commands, query=prompt)
+    config, registry, extra_system = _prepare_context(allow_commands, query=prompt)
     if extra_prompt_block:
         extra_system = f"{extra_system}\n\n{extra_prompt_block}".strip()
 
@@ -1012,7 +992,7 @@ def _execute_run(
     except (ProviderError, RunLimitError) as exc:
         from halia.memory.failures import record_failure
 
-        record_failure(prompt, str(exc), profile or "")  # objective failure → advisory next time
+        record_failure(prompt, str(exc), "")  # objective failure → advisory next time
         console.print(f"[red]error:[/red] {exc}")
         cid = getattr(exc, "checkpoint_id", "")
         if cid:
@@ -1122,10 +1102,6 @@ def run(
         bool,
         typer.Option("--allow-commands", help="Enable shell commands (gated by approval)."),
     ] = False,
-    profile: Annotated[
-        str | None,
-        typer.Option("--profile", help="Use a named profile or preset (e.g. finance)."),
-    ] = None,
     plan: Annotated[
         bool,
         typer.Option("--plan", help="Draft a short plan before executing (one extra call)."),
@@ -1173,65 +1149,9 @@ def run(
 
         set_allow_local(True)
     _execute_run(
-        prompt, max_iters, quiet, allow_commands, profile, plan, pause_for_approval,
+        prompt, max_iters, quiet, allow_commands, plan, pause_for_approval,
         notify=notify, compact=compact, budget=budget, json_output=json_output,
     )
-
-
-def _make_preset_command(preset_name: str) -> Callable[..., None]:
-    """Build a command bound to one preset (own scope → no late-binding).
-
-    With a task → one-shot run in that persona. Without a task → open the chat shell in
-    that persona (so `halia qa` drops you into the QA TUI, `halia qa "…"` runs it once).
-    """
-
-    def _cmd(
-        prompt: Annotated[
-            str | None,
-            typer.Argument(help="Task to run one-shot; omit to open the chat shell."),
-        ] = None,
-        max_iters: Annotated[int, typer.Option(help="Max tool-call iterations.")] = 8,
-        quiet: Annotated[
-            bool, typer.Option("--quiet", "-q", help="Hide the tool-call trace.")
-        ] = False,
-        allow_commands: Annotated[
-            bool,
-            typer.Option("--allow-commands", help="Enable shell commands (gated by approval)."),
-        ] = False,
-        allow_local: Annotated[
-            bool,
-            typer.Option("--allow-local", help="Let http_request reach localhost/LAN."),
-        ] = False,
-        plan: Annotated[
-            bool,
-            typer.Option("--plan", help="Draft a short plan before executing (one extra call)."),
-        ] = False,
-    ) -> None:
-        if prompt is None or not prompt.strip():
-            from halia.cli.tui import run_tui
-
-            run_tui(profile=preset_name, allow_commands=allow_commands, allow_local=allow_local)
-            return
-        if allow_local:
-            from halia.permissions.network import set_allow_local
-
-            set_allow_local(True)
-        _execute_run(prompt, max_iters, quiet, allow_commands, preset_name, plan)
-
-    return _cmd
-
-
-def _register_preset_commands() -> None:
-    """Register one command per built-in preset: `halia qa` (chat) or `halia qa "…"` (one-shot)."""
-    from halia.presets import BUILTIN_PRESETS
-
-    for preset_name in BUILTIN_PRESETS:
-        app.command(name=preset_name, help=f"Chat in the '{preset_name}' persona (or run a task).")(
-            _make_preset_command(preset_name)
-        )
-
-
-_register_preset_commands()
 
 
 def _resumed_age_note(updated_at: str) -> str:
@@ -1287,9 +1207,6 @@ def _ensure_config() -> None:
 
 
 def chat(
-    profile: Annotated[
-        str | None, typer.Option("--profile", help="Use a named profile or preset (e.g. finance).")
-    ] = None,
     allow_commands: Annotated[
         bool, typer.Option("--allow-commands", help="Enable shell commands (gated by approval).")
     ] = False,
@@ -1336,15 +1253,15 @@ def chat(
                 "See `halia sessions`."
             )
             raise typer.Exit(1)
-        session = loaded  # narrowed to Session, so /model+/profile can replace() it cleanly
-        # Rebuild the tools from the session's own profile/allow_commands; keep its model.
-        config, registry, _ = _prepare_context(session.profile, session.allow_commands)
+        session = loaded  # narrowed to Session, so /model can replace() it cleanly
+        # Rebuild the tools from the session's own allow_commands; keep its model.
+        config, registry, _ = _prepare_context(session.allow_commands)
         config = replace(config, model=session.model)
         messages: list[Message] = list(session.messages)
     else:
-        config, registry, extra_system = _prepare_context(profile, allow_commands)
+        config, registry, extra_system = _prepare_context(allow_commands)
         messages = [{"role": "system", "content": _get_system_prompt() + extra_system}]
-        session = new_session(config.provider, config.model, profile, allow_commands, messages)
+        session = new_session(config.provider, config.model, None, allow_commands, messages)
         save_session(session)  # persist immediately so it shows up in `halia sessions`
 
     console.print(
@@ -1359,9 +1276,6 @@ def chat(
     else:
         console.print(f"[dim]session [bold]{session.id}[/bold] — resume later with "
                       f"`halia chat --resume {session.id}`[/dim]\n")
-
-    if profile is None:
-        _profile_hint()
 
     pending = list_checkpoints(limit=3)
     if pending:
@@ -1401,7 +1315,6 @@ def chat(
                 "  [cyan]/config[/cyan] [setting] [value]  view or change config settings\n"
                 "  [cyan]/export[/cyan] [path]  save the conversation as markdown\n"
                 "  [cyan]/model[/cyan] [name]  show or switch the model\n"
-                "  [cyan]/profile[/cyan] [name]  show or switch the profile\n"
                 "  [cyan]/undo[/cyan]  drop the last exchange (conversation only)\n"
                 "  [cyan]/teach[/cyan]  store a file or URL as a reference (path/URL, --profile)\n"
                 "  [cyan]/files[/cyan]  list or search taught reference files\n"
@@ -1441,7 +1354,7 @@ def chat(
                 want = parts[1].lower() == "on"
             else:
                 want = registry.get("run_command") is None
-            _, registry, _ = _prepare_context(session.profile, want)
+            _, registry, _ = _prepare_context(want)
             on = registry.get("run_command") is not None
             console.print(
                 f"[dim]shell commands {'ON' if on else 'OFF'} — halia "
@@ -1524,13 +1437,6 @@ def chat(
             if new_cfg is not None:
                 config = new_cfg
                 session = replace(session, model=config.model)
-                persist()
-            continue
-        if user_input.lower().startswith("/profile"):
-            res = _chat_profile(user_input, session.profile, session.allow_commands, messages)
-            if res is not None:
-                registry, prof_name = res
-                session = replace(session, profile=prof_name)
                 persist()
             continue
         if user_input.lower() == "/undo":
@@ -1618,7 +1524,7 @@ def chat(
         except (ProviderError, RunLimitError) as exc:
             from halia.memory.failures import record_failure
 
-            record_failure(user_input, str(exc), profile or "")
+            record_failure(user_input, str(exc), "")
             console.print(f"[red]error:[/red] {exc}\n")
             cid = getattr(exc, "checkpoint_id", "")
             if cid:
@@ -1981,39 +1887,6 @@ def _chat_cost(total_usage: Any, model: str) -> None:
         )
 
 
-def _profile_hint() -> None:
-    """Print the general-profile discoverability hint if not suppressed (bumps the counter).
-
-    Shown only in the general profile; auto-hides once you've used any profile or it's been
-    shown a few times; `hints: false` in config turns it off entirely.
-    """
-    from halia.cli.slash import should_show_profile_hint
-    from halia.config.settings import read_config, write_config
-    from halia.presets import BUILTIN_PRESETS
-
-    data = read_config()
-    if not should_show_profile_hint(data):
-        return
-    data["general_hint_shows"] = int(data.get("general_hint_shows", 0) or 0) + 1
-    write_config(data)
-    verticals = " · ".join(sorted(BUILTIN_PRESETS))
-    console.print(
-        "[dim]You're in the general profile (all tools). For focused work, try a vertical:\n"
-        f"  {verticals}\n"
-        "  — a tighter, better-selected toolset. Switch anytime with /profile <name>.[/dim]\n"
-    )
-
-
-def _mark_profile_used() -> None:
-    """Record that a profile has been activated — suppresses the general-profile hint."""
-    from halia.config.settings import read_config, write_config
-
-    data = read_config()
-    if not data.get("profile_used"):
-        data["profile_used"] = True
-        write_config(data)
-
-
 def _handle_config_chat(user_input: str) -> None:
     """Handle /config [setting] [value] — view or change config settings."""
     from halia.config.settings import read_config, write_config
@@ -2106,44 +1979,6 @@ def _chat_model(command: str, config: Any) -> Any | None:
         )
     console.print(f"[green]✓[/green] model → [bold]{name}[/bold] [dim](from the next turn)[/dim]\n")
     return replace(config, model=name)
-
-
-def _chat_profile(
-    command: str, current_profile: str | None, allow_commands: bool, messages: list[Message]
-) -> Any | None:
-    """Handle `/profile [name]`. Returns (registry, profile_name) if switched, else None.
-
-    Rebuilds the skill registry and re-personas the live conversation (messages[0]),
-    keeping the current provider/model. Validates the name first so an unknown profile
-    can't trip `_prepare_context`'s hard exit.
-    """
-    from halia.core.agent import _get_system_prompt
-    from halia.presets import BUILTIN_PRESETS, resolve_profile
-    from halia.profiles import list_profiles
-
-    parts = command.split(maxsplit=1)
-    if len(parts) < 2 or not parts[1].strip():
-        builtin = ", ".join(sorted(BUILTIN_PRESETS))
-        user = ", ".join(p.name for p in list_profiles())
-        console.print(f"[bold]profile[/bold]: {current_profile or '(default/general)'}")
-        console.print(f"[dim]built-in: {builtin}[/dim]")
-        if user:
-            console.print(f"[dim]yours: {user}[/dim]")
-        console.print("[dim]switch with: /profile <name>[/dim]\n")
-        return None
-    name = parts[1].strip()
-    if resolve_profile(name) is None:
-        console.print(
-            f"[red]error:[/red] no profile or preset '{name}' (see `halia profile list`).\n"
-        )
-        return None
-    _, registry, extra_system = _prepare_context(name, allow_commands)
-    if messages and messages[0].get("role") == "system":
-        messages[0] = {"role": "system", "content": _get_system_prompt() + extra_system}
-    console.print(
-        f"[green]✓[/green] profile → [bold]{name}[/bold] [dim](skills + persona updated)[/dim]\n"
-    )
-    return registry, name
 
 
 def _chat_undo(messages: list[Message]) -> bool:
@@ -2402,73 +2237,6 @@ def failures(
         console.print(f"[bold]{f.id}[/bold] [dim]{f.created_at[:19]}[/dim]{prof}")
         console.print(f"  task: {f.prompt[:100]}")
         console.print(f"  [red]cause:[/red] {f.cause}")
-
-
-profile_app = typer.Typer(help="Manage profiles (per-vertical skill/model/prompt sets).")
-app.add_typer(profile_app, name="profile")
-
-
-@profile_app.command("create")
-def profile_create(
-    name: Annotated[str, typer.Argument(help="Profile name.")],
-    skill: Annotated[
-        list[str] | None, typer.Option("--skill", help="A skill to enable (repeatable).")
-    ] = None,
-    model: Annotated[str | None, typer.Option("--model", help="Model override.")] = None,
-    prompt: Annotated[str, typer.Option("--prompt", help="Extra system prompt / persona.")] = "",
-) -> None:
-    """Create (or replace) a profile."""
-    from halia.profiles import Profile, save_profile
-    from halia.skills import available_skills
-
-    skills = skill or []
-    unknown = [s for s in skills if s not in available_skills()]
-    if unknown:
-        console.print(f"[red]unknown skills:[/red] {', '.join(unknown)}")
-        console.print(f"[dim]available: {', '.join(available_skills())}[/dim]")
-        raise typer.Exit(1)
-    save_profile(Profile(name=name, skills=skills, model=model, extra_prompt=prompt))
-    console.print(f"[green]✓[/green] saved profile '[bold]{name}[/bold]' ({len(skills)} skills).")
-
-
-@profile_app.command("list")
-def profile_list() -> None:
-    """List profiles (yours + built-in persona presets)."""
-    from halia.presets import BUILTIN_PRESETS
-    from halia.profiles import list_profiles
-    from halia.skills import DEFAULT_SKILLS
-
-    user = list_profiles()
-    user_names = {p.name for p in user}
-
-    console.print("[bold]default[/bold] [dim](no profile)[/dim]")
-    console.print(
-        f"  [bold]general assistant[/bold]  [dim]all {len(DEFAULT_SKILLS)} tools — "
-        f"just `halia run \"…\"` or `halia chat`[/dim]"
-    )
-    console.print("[bold]built-in presets[/bold] [dim](run as `halia <name> \"…\"`)[/dim]")
-    for name, prof in sorted(BUILTIN_PRESETS.items()):
-        tag = " [dim](overridden by your profile)[/dim]" if name in user_names else ""
-        console.print(f"  [bold]{name}[/bold]{tag}  [dim]{len(prof.skills)} skills[/dim]")
-
-    console.print("[bold]your profiles[/bold]")
-    if not user:
-        console.print("  [dim]none yet — create one with `halia profile create`.[/dim]")
-        return
-    for prof in user:
-        console.print(f"  [bold]{prof.name}[/bold]  [dim]{prof.model or '(default model)'}[/dim]")
-        console.print(f"    skills: {', '.join(prof.skills) or '(calculate only)'}")
-
-
-@profile_app.command("delete")
-def profile_delete(name: Annotated[str, typer.Argument(help="Profile name.")]) -> None:
-    """Delete a profile."""
-    from halia.profiles import delete_profile
-
-    if delete_profile(name):
-        console.print(f"[green]✓[/green] deleted profile '{name}'")
-    else:
-        console.print(f"[yellow]no profile named '{name}'[/yellow]")
 
 
 schedule_app = typer.Typer(help="Schedule procedures via the OS crontab (no daemon).")
@@ -2760,10 +2528,6 @@ def procedure_run(
     ] = None,
     max_iters: Annotated[int, typer.Option(help="Max tool-call iterations.")] = 12,
     quiet: Annotated[bool, typer.Option("--quiet", "-q", help="Hide the tool-call trace.")] = False,
-    profile: Annotated[
-        str | None,
-        typer.Option("--profile", help="Run under a profile/preset (default: general)."),
-    ] = None,
     plan: Annotated[bool, typer.Option("--plan", help="Draft a short plan first.")] = False,
     pause_for_approval: Annotated[
         bool,
@@ -2814,7 +2578,6 @@ def procedure_run(
         max_iters,
         quiet,
         allow_commands=False,
-        profile=profile,
         plan=plan,
         pause_for_approval=pause_for_approval,
         extra_prompt_block=extra_block,

@@ -79,10 +79,7 @@ def test_make_docx_honors_permission_floor(tmp_path: Any) -> None:
 
 
 def test_make_docx_is_dangerous_and_wired() -> None:
-    from halia.presets import get_preset
     from halia.skills import available_skills
 
     assert MakeDocx().dangerous is True
     assert "make_docx" in available_skills()
-    for vertical in ("finance", "research", "education"):
-        assert "make_docx" in get_preset(vertical).skills

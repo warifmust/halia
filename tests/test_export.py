@@ -100,14 +100,11 @@ def test_make_pdf_is_dangerous() -> None:
     assert MakePdf().dangerous is True
 
 
-def test_make_pdf_wired_into_catalogue_and_presets() -> None:
-    from halia.presets import get_preset
+def test_make_pdf_wired_into_catalogue() -> None:
     from halia.skills import available_skills, build_registry
 
     assert "make_pdf" in available_skills()
     assert build_registry(["make_pdf"]).get("make_pdf") is not None
-    for vertical in ("finance", "research", "education"):
-        assert "make_pdf" in get_preset(vertical).skills
 
 
 def test_with_title_dedupes_leading_heading() -> None:

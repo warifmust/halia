@@ -59,9 +59,7 @@ def test_make_excel_honors_permission_floor(tmp_path: Any) -> None:
 
 
 def test_make_excel_is_dangerous_and_wired() -> None:
-    from halia.presets import get_preset
     from halia.skills import available_skills
 
     assert MakeExcel().dangerous is True
     assert "make_excel" in available_skills()
-    assert "make_excel" in get_preset("finance").skills

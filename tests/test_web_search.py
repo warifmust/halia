@@ -71,10 +71,8 @@ def test_web_search_is_safe() -> None:
     assert WebSearch().dangerous is False
 
 
-def test_web_search_in_default_and_research() -> None:
-    from halia.presets import get_preset
+def test_web_search_in_default() -> None:
     from halia.skills import available_skills, default_registry
 
     assert "web_search" in available_skills()
     assert default_registry().get("web_search") is not None
-    assert "web_search" in get_preset("research").skills

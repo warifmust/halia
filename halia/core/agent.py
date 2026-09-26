@@ -125,6 +125,14 @@ SYSTEM_PROMPT = (
     "Should I use Excel, or do you still want PDF?' Wait for their answer. Only call "
     "make_pdf if they explicitly confirm after the warning. For narrow content (2-3 "
     "columns, short text), PDF is fine. "
+    "SYSTEM TASKS: for disk/storage questions (free space, biggest folders/files) use "
+    "the disk_usage tool — it runs df/du safely and needs no approval. To map a tree, "
+    "pass depth=2 or 3 in ONE disk_usage call instead of drilling one folder at a time. "
+    "For other system questions (running processes, git) use run_command — these are "
+    "seconds-long shell jobs, not GUI tasks. If run_command is NOT in your toolset, tell "
+    "the user to enable it with /commands (or --allow-commands) and state the exact "
+    "command you would run. NEVER drive Finder/Explorer or CUA to answer a disk/storage "
+    "question. "
 )
 
 _CUA_PROMPT = (
@@ -290,6 +298,10 @@ DEFAULT_STUCK_AT = _env_int("HALIA_STUCK_AT", 2)
 # When only this many loop turns remain before the hard max_iters cap, inject a
 # system note telling the model to finish up instead of starting new sub-tasks.
 DEFAULT_WRAP_UP_AT = _env_int("HALIA_WRAP_UP_AT", 3)
+# Wall-clock budget per turn (seconds). A single model turn can otherwise run for
+# minutes-to-hours (50 tool rounds × slow vision calls). When the deadline passes
+# the loop stops issuing tools and hands back a partial answer. 0 = disabled.
+DEFAULT_TURN_TIMEOUT = _env_float("HALIA_TURN_TIMEOUT", 240.0)
 CHECKPOINT_ON_CAP = os.environ.get("HALIA_CHECKPOINT_ON_CAP", "").strip().lower() in (
     "1", "true", "yes", "on",
 )
@@ -724,6 +736,8 @@ class _Ctx:
     stuck_at: int = DEFAULT_STUCK_AT
     # Freeze a checkpoint when the iteration cap is hit (instead of just raising).
     checkpoint_on_cap: bool = CHECKPOINT_ON_CAP
+    # Wall-clock budget per turn (seconds); 0 = no time limit.
+    turn_timeout: float = DEFAULT_TURN_TIMEOUT
 
 
 def _is_dangerous(registry: SkillRegistry, name: str) -> bool:
@@ -803,6 +817,12 @@ _WRAP_UP_NOTE = (
     "\n\n⏳ Turn budget nearly spent ({used}/{cap} turns used). STOP exploring and "
     "FINISH now: give your best answer, or ask the user what to do next. Do NOT "
     "start new sub-tasks or keep trying new approaches."
+)
+
+_TIME_UP_NOTE = (
+    "⏰ TIME BUDGET REACHED: you are out of time for this turn. Summarise what you "
+    "have accomplished so far in a short final answer and mention anything left to do "
+    "— do NOT call any more tools."
 )
 
 
@@ -1171,6 +1191,7 @@ def _loop(
     from halia.audit.logger import log_run_end, log_run_start
 
     run_start = _time.perf_counter()
+    deadline = run_start + ctx.turn_timeout if ctx.turn_timeout > 0 else None
     # A unique id per run so two runs with the same prompt prefix don't collide in logs.
     run_id = uuid.uuid4().hex[:12]
     log_run_start(
@@ -1200,6 +1221,9 @@ def _loop(
             ctx.on_activity("")  # about to call the model (thinking)
         # Send a bounded window of history (full transcript stays in `messages`).
         note = _compose_turn_note(ctx, iters_used)
+        over_time = deadline is not None and _time.perf_counter() > deadline
+        if over_time:
+            note = _TIME_UP_NOTE if not note else note + "\n\n" + _TIME_UP_NOTE
         window = _with_turn_note(_window(messages, ctx.history_budget), note)
         if ctx.on_delta is not None:
             result = ctx.provider.chat(window, tools=tools, on_delta=ctx.on_delta)
@@ -1228,6 +1252,19 @@ def _loop(
             )
             return RunResult(
                 answer=answer, steps=steps, plan=ctx.plan, usage=ctx.total_usage,
+            )
+
+        if over_time:
+            # Time's up — do NOT execute more tools; hand back partial progress.
+            partial = (result.content or "").strip()
+            elapsed = (_time.perf_counter() - run_start) * 1000
+            log_run_end(
+                run_id, partial[:200], len(steps),
+                ctx.total_usage.total_tokens, elapsed,
+            )
+            return RunResult(
+                answer=partial or "[time budget reached — halia stopped to hand back control]",
+                steps=steps, plan=ctx.plan, usage=ctx.total_usage,
             )
 
         # A dangerous tool with pausing on ⇒ freeze here for a human decision.

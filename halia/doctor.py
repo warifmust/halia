@@ -75,7 +75,7 @@ def _database() -> Check:
         return Check("database", FAIL, f"cannot open {DB_PATH}: {exc}")
     if not integrity or integrity[0] != "ok":
         return Check("database", FAIL, f"integrity check failed: {integrity}")
-    expected = {"runs", "sessions", "profiles", "snapshots"}
+    expected = {"runs", "sessions", "snapshots"}
     missing = expected - tables
     if missing:
         return Check("database", WARN, f"missing tables {sorted(missing)} (older DB?)")
