@@ -1022,18 +1022,21 @@ def run_tui(
 
             record_failure(user_input, str(exc), profile or "")
             console.print(f"[red]error:[/red] {exc}\n")
-            # Roll the whole failed turn back to the last valid state — never leave a
-            # half-appended tool exchange (a lone tool_calls with no responses 400s next call).
-            del messages[turn_start:]
+            # Drop the partial tool exchange but KEEP the user's message, so the
+            # task is remembered when the session is resumed.
+            del messages[turn_start + 1:]
+            persist()
             continue
         except KeyboardInterrupt:
             # Ctrl-C mid-run: NOT a failure (don't record it). The interrupt can land mid-tool,
-            # so roll the whole turn back to a balanced state instead of crashing the TUI.
+            # so drop the partial tool exchange but KEEP the user's message, so the task is
+            # remembered when the session is resumed.
             close_stream()
             footer.stop()
             turn_secs[0] = time.perf_counter() - started
             console.print("\n[yellow]⏹️ stopped.[/yellow]\n")
-            del messages[turn_start:]
+            del messages[turn_start + 1:]
+            persist()
             continue
         footer.stop()  # clear the working line before printing the answer
         turn_secs[0] = time.perf_counter() - started
