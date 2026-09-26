@@ -135,7 +135,18 @@ def test_cua_session_restarts_after_session_ended(monkeypatch: Any) -> None:
 
 def test_cua_capture_scope_resolution(monkeypatch: Any) -> None:
     """capture_scope resolves from env/config; unknown/absent → None (driver default)."""
-    from cua_driver import CaptureScope
+    from enum import Enum
+
+    # cua_driver isn't installed in headless CI — provide a minimal fake module.
+    class CaptureScope(Enum):
+        AUTO = "auto"
+        WINDOW = "window"
+        DESKTOP = "desktop"
+
+    mod = types.ModuleType("cua_driver")
+    mod.CaptureScope = CaptureScope
+    monkeypatch.setitem(sys.modules, "cua_driver", mod)
+
     from halia.computer.cua_backend import _cua_capture_scope
 
     monkeypatch.delenv("HALIA_CUA_CAPTURE_SCOPE", raising=False)
@@ -157,6 +168,24 @@ def test_cua_capture_scope_resolution(monkeypatch: Any) -> None:
 
 def test_cua_cursor_theme_resolution(monkeypatch: Any) -> None:
     """cursor_theme resolves from env/config; absent → None (driver default)."""
+    from enum import Enum
+
+    # cua_driver isn't installed in headless CI — provide a minimal fake module.
+    class CursorReducedMotion(Enum):
+        AUTO = "auto"
+        ON = "on"
+        OFF = "off"
+
+    class CursorThemeSelection:
+        def __init__(self, *, theme_id: str, reduced_motion: Any) -> None:
+            self.theme_id = theme_id
+            self.reduced_motion = reduced_motion
+
+    mod = types.ModuleType("cua_driver")
+    mod.CursorReducedMotion = CursorReducedMotion
+    mod.CursorThemeSelection = CursorThemeSelection
+    monkeypatch.setitem(sys.modules, "cua_driver", mod)
+
     from halia.computer.cua_backend import _cua_cursor_theme
 
     monkeypatch.delenv("HALIA_CUA_CURSOR_THEME", raising=False)
