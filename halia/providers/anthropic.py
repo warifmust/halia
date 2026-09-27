@@ -215,6 +215,45 @@ class AnthropicProvider:
 # ── Message / tool conversion ──────────────────────────────────────────────────
 
 
+def _list_blocks(content: list[Any]) -> list[dict[str, Any]]:
+    """Convert a list of user content blocks (OpenAI-style) to Anthropic blocks.
+
+    `image_url` blocks become Anthropic `image` blocks (base64 data URLs are split
+    into media_type + data); `text` blocks pass through; already-Anthropic blocks
+    (e.g. the screenshot image built with `image`/`source`) pass through unchanged.
+    """
+    blocks: list[dict[str, Any]] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "image_url":
+            url = item.get("image_url", {}).get("url", "")
+            if url.startswith("data:"):
+                # Format: data:image/png;base64,<data>
+                parts = url.split(",", 1)
+                if len(parts) == 2:
+                    media_type = parts[0].split(":")[1].split(";")[0]
+                    blocks.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": parts[1],
+                        },
+                    })
+            else:
+                blocks.append({
+                    "type": "image",
+                    "source": {"type": "url", "url": url},
+                })
+        elif item.get("type") == "text":
+            blocks.append({"type": "text", "text": item.get("text", "")})
+        else:
+            # Pass through other block types
+            blocks.append(item)
+    return blocks
+
+
 def _convert_messages(
     messages: list[Message],
 ) -> tuple[str, list[dict[str, Any]]]:
@@ -224,6 +263,11 @@ def _convert_messages(
     messages are mapped: user/assistant pass through; tool-result messages become
     user messages with tool_result content blocks. Assistant messages that carry
     tool_calls are converted to have tool_use content blocks.
+
+    Anthropic requires every assistant tool_use turn to be answered by a SINGLE
+    user message containing ALL of its tool_result blocks (and roles must
+    alternate), so consecutive `tool` messages — and a user message that follows
+    them (the injected screenshot image) — are merged into one user turn.
     """
     system_parts: list[str] = []
     converted: list[dict[str, Any]] = []
@@ -235,19 +279,41 @@ def _convert_messages(
             system_parts.append(content)
         i += 1
 
+    # tool_result blocks for the current assistant turn, awaiting their user message.
+    pending_results: list[dict[str, Any]] = []
+
+    def flush() -> None:
+        if pending_results:
+            converted.append({"role": "user", "content": pending_results[:]})
+            pending_results.clear()
+
     for msg in messages[i:]:
         role = msg.get("role", "")
         content = msg.get("content")
 
         if role == "tool":
-            # Tool result → user message with tool_result content block.
+            # Tool result → accumulate into ONE user message with tool_result blocks.
             tool_id = msg.get("tool_call_id", "")
             text = content if isinstance(content, str) else str(content)
-            converted.append({
-                "role": "user",
-                "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": text}],
+            pending_results.append({
+                "type": "tool_result", "tool_use_id": tool_id, "content": text,
             })
-        elif role == "assistant" and msg.get("tool_calls"):
+            continue
+
+        if role == "user" and pending_results:
+            # A user message immediately after tool results (the injected screenshot
+            # image) is environment input for the SAME turn — merge its blocks into
+            # the tool_result user message instead of a second consecutive user turn.
+            if isinstance(content, list):
+                pending_results.extend(_list_blocks(content))
+            else:
+                pending_results.append({
+                    "type": "text", "text": content if isinstance(content, str) else str(content),
+                })
+            continue
+
+        flush()
+        if role == "assistant" and msg.get("tool_calls"):
             # Assistant turn with tool calls → text + tool_use blocks.
             blocks: list[dict[str, Any]] = []
             if isinstance(content, str) and content.strip():
@@ -268,49 +334,13 @@ def _convert_messages(
         elif role in ("user", "assistant"):
             # Handle list content (images) and string content
             if isinstance(content, list):
-                # Convert OpenAI image_url format to Anthropic format
-                image_blocks: list[dict[str, Any]] = []
-                for item in content:
-                    if isinstance(item, dict):
-                        if item.get("type") == "image_url":
-                            url = item.get("image_url", {}).get("url", "")
-                            if url.startswith("data:"):
-                                # Extract base64 data from data URL
-                                # Format: data:image/png;base64,<data>
-                                parts = url.split(",", 1)
-                                if len(parts) == 2:
-                                    media_type = parts[0].split(":")[1].split(";")[0]
-                                    image_blocks.append({
-                                        "type": "image",
-                                        "source": {
-                                            "type": "base64",
-                                            "media_type": media_type,
-                                            "data": parts[1],
-                                        },
-                                    })
-                            else:
-                                # URL-based image
-                                image_blocks.append({
-                                    "type": "image",
-                                    "source": {
-                                        "type": "url",
-                                        "url": url,
-                                    },
-                                })
-                        elif item.get("type") == "text":
-                            image_blocks.append({
-                                "type": "text",
-                                "text": item.get("text", ""),
-                            })
-                        else:
-                            # Pass through other block types
-                            image_blocks.append(item)
-                converted.append({"role": role, "content": image_blocks})
+                converted.append({"role": role, "content": _list_blocks(content)})
             else:
                 text = content if isinstance(content, str) else ""
                 converted.append({"role": role, "content": text})
         # Ignore unknown roles (Anthropic is strict).
 
+    flush()
     return "\n\n".join(system_parts), converted
 
 

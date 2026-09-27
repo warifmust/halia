@@ -52,18 +52,19 @@ PROVIDERS: dict[str, ProviderSpec] = {
         ],
     ),
     "deepseek": ProviderSpec(
-        "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY", "deepseek-v4-flash",
+        "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY", "deepseek-flash",
         key_url="https://platform.deepseek.com/api_keys",
-        models=["deepseek-v4-flash", "deepseek-v4-pro"],
+        models=["deepseek-flash", "deepseek-v4-pro"],
     ),
     "openrouter": ProviderSpec(
-        "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", "deepseek-v4-flash",
+        "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", "deepseek/deepseek-v4.1-flash",
         key_url="https://openrouter.ai/keys",
         note="One key → many models. Load credits once. Select 'Custom model…' to enter any model.",
         models=[
-            "deepseek-v4-flash", "mimo-v2.5", "mimo-v2.5-pro", "hy3",
-            "deepseek-v4-pro", "gpt-5.6-sol", "gpt-5.6-luna", "claude-opus-5",
-            "grok-4.5", "gemini-3.5-flash", "gpt-oss-120b", "qwen-3.6-plus",
+            "deepseek/deepseek-v4.1-flash", "xiaomi/mimo-v2.5", "xiaomi/mimo-v2.5-pro",
+            "tencent/hy3", "deepseek/deepseek-v4-pro", "openai/gpt-5.6-sol", "openai/gpt-5.6-luna",
+            "anthropic/claude-opus-5", "x-ai/grok-4.5", "google/gemini-3.5-flash",
+            "openai/gpt-oss-120b", "qwen/qwen3.6-flash",
         ],
     ),
     "mimo": ProviderSpec(

@@ -23,7 +23,7 @@ def _msgs() -> list[Message]:
 
 def test_session_roundtrip(tmp_path: Any) -> None:
     db = tmp_path / "halia.db"
-    s = new_session("deepseek", "deepseek-v4-flash", "finance", True, _msgs())
+    s = new_session("deepseek", "deepseek-flash", "finance", True, _msgs())
     save_session(s, db_path=db)
     loaded = get_session(s.id, db_path=db)
     assert loaded is not None

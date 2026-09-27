@@ -9,7 +9,7 @@ from halia.audit.trace import Step
 def test_save_and_list_roundtrip(tmp_path: Any) -> None:
     db = tmp_path / "halia.db"
     record = new_record(
-        "deepseek", "deepseek-v4-flash", "hi", "hello", [Step("list_files", "{}", "a\nb")]
+        "deepseek", "deepseek-flash", "hi", "hello", [Step("list_files", "{}", "a\nb")]
     )
     save_run(record, db_path=db)
 

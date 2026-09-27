@@ -863,6 +863,7 @@ def _execute_batch(
     from halia.audit.logger import log_tool_call
 
     circuit_notes: list[str] = []
+    batch_image: tuple[str, str, bool, str] | None = None  # staged screenshot to inject post-batch
     for tc in calls:
         name = tc["name"]
         sig = _call_signature(name, tc["arguments"])
@@ -1041,48 +1042,56 @@ def _execute_batch(
         # Build tool message
         tool_msg: Message = {"role": "tool", "tool_call_id": tc["id"], "content": observation}
         messages.append(tool_msg)
-        # If CUA screenshot captured an image, inject it as a user message.
-        # Evict older screenshot images first — they are the dominant context
-        # cost and stale once a newer one arrives (the full record stays in
-        # the audit trail).
+        # A CUA screenshot stages its image on the skill class (side-channel).
+        # Capture it here but inject it AFTER the whole batch: an OpenAI-style API
+        # requires every assistant tool_calls turn to be followed IMMEDIATELY by its
+        # tool messages, so a user image message must never be spliced between them.
         if _pending_img:
-            _drop_old_screenshots(messages)
-            caption = (
-                "[System: desktop screenshot captured]"
-                if name == "cua_screenshot"
-                else "[System: browser screenshot captured]"
+            batch_image = (_pending_img, _pending_detail, _unchanged, name)
+
+    # Inject the screenshot captured by this batch (if any) as ONE trailing user
+    # message, after all of the batch's tool messages. Older screenshot images are
+    # evicted first — they are the dominant context cost and stale once a newer one
+    # arrives (the full record stays in the audit trail).
+    if batch_image is not None:
+        _drop_old_screenshots(messages)
+        img, detail, unchanged, shot_name = batch_image
+        caption = (
+            "[System: desktop screenshot captured]"
+            if shot_name == "cua_screenshot"
+            else "[System: browser screenshot captured]"
+        )
+        if unchanged:
+            caption += (
+                " ⚠️ UNCHANGED from the previous screenshot — the screen did not "
+                "change, so your last action had NO visible effect. Do NOT repeat "
+                "it. Diagnose why (wrong selector/coordinates, not in view) and "
+                "switch approach."
             )
-            if _unchanged:
-                caption += (
-                    " ⚠️ UNCHANGED from the previous screenshot — the screen did not "
-                    "change, so your last action had NO visible effect. Do NOT repeat "
-                    "it. Diagnose why (wrong selector/coordinates, not in view) and "
-                    "switch approach."
-                )
-            if ctx.config.provider_kind == "anthropic":
-                img_content: Any = [
-                    {"type": "text", "text": caption},
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/jpeg",
-                            "data": _pending_img,
-                        },
+        if ctx.config.provider_kind == "anthropic":
+            img_content: Any = [
+                {"type": "text", "text": caption},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/jpeg",
+                        "data": img,
                     },
-                ]
-            else:
-                img_content = [
-                    {"type": "text", "text": caption},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{_pending_img}",
-                            "detail": _pending_detail,
-                        },
+                },
+            ]
+        else:
+            img_content = [
+                {"type": "text", "text": caption},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{img}",
+                        "detail": detail,
                     },
-                ]
-            messages.append({"role": "user", "content": img_content})
+                },
+            ]
+        messages.append({"role": "user", "content": img_content})
 
 
 def _take_pending_image(name: str) -> tuple[str | None, str, bool]:

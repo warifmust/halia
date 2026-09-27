@@ -91,6 +91,85 @@ def test_convert_messages_tool_result() -> None:
     ]
 
 
+def test_convert_messages_merges_multiple_tool_results() -> None:
+    """Consecutive tool results for one assistant turn merge into ONE user message.
+
+    Anthropic requires all tool_result blocks for a single assistant tool_use turn to
+    live in the same user message — separate user messages would break role alternation.
+    """
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call_1", "function": {"name": "a", "arguments": "{}"}},
+                {"id": "call_2", "function": {"name": "b", "arguments": "{}"}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "r1"},
+        {"role": "tool", "tool_call_id": "call_2", "content": "r2"},
+    ]
+    system, converted = _convert_messages(messages)
+    assert system == "s"
+    assert converted == [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "call_1", "name": "a", "input": {}},
+                {"type": "tool_use", "id": "call_2", "name": "b", "input": {}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "call_1", "content": "r1"},
+                {"type": "tool_result", "tool_use_id": "call_2", "content": "r2"},
+            ],
+        },
+    ]
+
+
+def test_convert_messages_merges_trailing_screenshot_into_tool_results() -> None:
+    """A user image message right after tool results merges into the same user turn."""
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "draw"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call_1", "function": {"name": "cua_screenshot", "arguments": "{}"}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "[System: desktop screenshot captured]"},
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": "image/jpeg", "data": "AAAA"},
+                },
+            ],
+        },
+    ]
+    system, converted = _convert_messages(messages)
+    assert system == "s"
+    # One user turn carries BOTH the tool_result and the screenshot image blocks.
+    user = converted[-1]
+    assert user["role"] == "user"
+    blocks = user["content"]
+    assert blocks[0] == {"type": "tool_result", "tool_use_id": "call_1", "content": "ok"}
+    assert blocks[1] == {"type": "text", "text": "[System: desktop screenshot captured]"}
+    assert blocks[2] == {
+        "type": "image",
+        "source": {"type": "base64", "media_type": "image/jpeg", "data": "AAAA"},
+    }
+
+
 def test_convert_messages_assistant_tool_calls() -> None:
     """Assistant messages with tool_calls become tool_use blocks."""
     messages = [

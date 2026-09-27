@@ -38,7 +38,7 @@ def test_load_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = load_config()
     assert cfg.provider == "deepseek"
     assert cfg.base_url == "https://api.deepseek.com/v1"
-    assert cfg.model == "deepseek-v4-flash"
+    assert cfg.model == "deepseek-flash"
     assert cfg.api_key == "sk-test"
 
 
@@ -54,11 +54,11 @@ def test_unknown_provider_raises(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_load_from_files() -> None:
-    write_config({"provider": "deepseek", "model": "deepseek-v4-flash"})
+    write_config({"provider": "deepseek", "model": "deepseek-flash"})
     write_secret("deepseek", "sk-file")
     cfg = load_config()
     assert cfg.provider == "deepseek"
-    assert cfg.model == "deepseek-v4-flash"
+    assert cfg.model == "deepseek-flash"
     assert cfg.api_key == "sk-file"
 
 

@@ -144,6 +144,60 @@ def test_converse_turn_note_injected_transiently_not_persisted() -> None:
     assert all("ADVISORY" not in str(m.get("content", "")) for m in messages)
 
 
+def test_screenshot_batch_keeps_tool_messages_adjacent() -> None:
+    # A batch of [cua_screenshot, list_files] must NOT splice the screenshot's user
+    # image between the two tool responses — that breaks the assistant→tool adjacency
+    # contract and makes the NEXT request 400 ("insufficient tool messages").
+    from halia.core.agent import converse
+    from halia.skills.cua import CuaScreenshot
+
+    CuaScreenshot._last_hash = None
+    CuaScreenshot._pending_image = "QUJD"
+    CuaScreenshot._pending_detail = "low"
+    try:
+        captured: dict[str, Any] = {}
+
+        class Mixed:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def chat(self, messages: list[Message], tools: Any = None) -> ChatResult:
+                self.calls += 1
+                if self.calls == 1:
+                    return ChatResult(
+                        content=None,
+                        tool_calls=[
+                            ToolCall(id="1", name="cua_screenshot", arguments="{}"),
+                            ToolCall(id="2", name="list_files", arguments="{}"),
+                        ],
+                    )
+                captured["window"] = list(messages)
+                return ChatResult(content="done", tool_calls=[])
+
+        messages: list[Message] = [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "draw it"},
+        ]
+        converse(messages, _CFG, default_registry(), provider=Mixed())
+
+        window = captured["window"]
+        assert _balanced(window)
+        idx = next(
+            i
+            for i, m in enumerate(window)
+            if m.get("role") == "assistant" and m.get("tool_calls")
+        )
+        # both tool responses immediately follow the assistant turn…
+        assert [window[idx + 1]["role"], window[idx + 2]["role"]] == ["tool", "tool"]
+        # …and the screenshot image lands after them as a trailing user message.
+        assert window[idx + 3]["role"] == "user"
+        assert "desktop screenshot captured" in str(window[idx + 3]["content"])
+    finally:
+        CuaScreenshot._last_hash = None
+        CuaScreenshot._pending_image = None
+        CuaScreenshot._pending_detail = None
+
+
 def test_converse_no_turn_note_leaves_window_unchanged() -> None:
     from halia.core.agent import converse
 
