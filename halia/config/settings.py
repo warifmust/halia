@@ -97,6 +97,7 @@ class Config:
     api_key: str
     auth_header: str = "Bearer"
     provider_kind: str = "openai_compat"
+    router_model: str | None = None  # optional system-1 model for MCP intent routing
 
 
 class ConfigError(RuntimeError):
@@ -169,9 +170,14 @@ def load_config() -> Config:
             f"{spec.key_env} (or HALIA_API_KEY) in your environment."
         )
 
+    router_model = os.environ.get("HALIA_ROUTER_MODEL") or file_data.get("router_model")
+    if not isinstance(router_model, str) or not router_model:
+        router_model = None
+
     return Config(
         provider=provider, model=model, base_url=base_url, api_key=api_key,
         auth_header=spec.auth_header, provider_kind=spec.provider_kind,
+        router_model=router_model,
     )
 
 

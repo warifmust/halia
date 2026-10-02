@@ -21,6 +21,7 @@ from halia.config.settings import (
     PROVIDERS,
     SECRETS_FILE,
     get_trusted_dirs,
+    read_config,
     read_secret,
     trust_directory,
     write_config,
@@ -47,7 +48,21 @@ def run_setup(console: Console) -> None:
     # Step 2: Provider + model + API key
     _setup_provider(console)
 
-    # Step 3: CUA — desktop automation
+    # Step 3: Optional system-1 router model (MCP intent routing)
+    _setup_router(console)
+
+    # Step 4: MCP servers + secrets (optional — skip to do it later)
+    choice = pick(
+        "\nConfigure MCP servers now?",
+        ["Yes — configure MCP", "Skip — do it later with `halia mcp setup`"],
+        default=1,
+    )
+    if choice.startswith("Yes"):
+        from halia.mcp.setup import mcp_setup
+
+        mcp_setup(console)
+
+    # Step 5: CUA — desktop automation
     _setup_cua(console)
 
     console.print('\nTry it: [bold]halia ask "hello"[/bold]')
@@ -146,6 +161,53 @@ def _resolve_api_key(console: Console, provider: str) -> str:
             console.print("[dim]Reusing stored key.[/dim]")
             return existing
     return ask(f"\nAPI key for {provider}: ", is_password=True)
+
+
+def _setup_router(console: Console) -> None:
+    """Optionally configure a system-1 router model for MCP intent routing.
+
+    The router reuses the main provider + API key (it's just a different model
+    string, e.g. a small/fast one). It's optional: without it, MCP lazy mode
+    still works — the agent just calls `mcp_connect` itself instead of being
+    preloaded by the router.
+    """
+    existing = read_config()
+    current = existing.get("router_model")
+    if current:
+        console.print(
+            f"\n[dim]Router model (MCP intent routing): [cyan]{current}[/cyan][/dim]"
+        )
+        choice = pick(
+            "Change it?",
+            ["No — keep current", "Yes — change", "Remove"],
+            default=0,
+        )
+        if choice.startswith("No"):
+            return
+        if choice.startswith("Remove"):
+            existing.pop("router_model", None)
+            write_config(existing)
+            console.print("[dim]router model removed.[/dim]")
+            return
+
+    choice = pick(
+        "\nConfigure a router model (system-1) for MCP intent routing?",
+        ["Yes — set a router model", "No — skip (lazy MCP only)"],
+        default=1,
+    )
+    if choice.startswith("No"):
+        return
+    router = ask(
+        "\nRouter model name (system-1 — small/fast; e.g. typesafe/jev-router): "
+    ).strip()
+    if not router:
+        console.print("[dim]skipped — no router model set.[/dim]")
+        return
+    existing = read_config()
+    existing["router_model"] = router
+    write_config(existing)
+    console.print(f"[green]✓[/green] router model set to [bold]{router}[/bold]")
+    console.print("[dim]  Reuses the same provider + API key as the main model.[/dim]")
 
 
 def _install_python_package(

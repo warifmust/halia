@@ -152,6 +152,7 @@ _ACTIVITY: dict[str, tuple[str, str]] = {
     "make_pptx": ("✍️", "Writing it up"),
     "save_procedure": ("💾", "Remembering it"),
     "run_command": ("⚙️", "Running a command"),
+    "mcp_connect": ("🌐", "Loading MCP tools"),
     "compacting": ("🗜", "Compacting memory"),
 }
 _DEFAULT_ACTIVITY = ("🔧", "Working")
@@ -226,6 +227,12 @@ class _Footer:
         else:  # back to the model — revert to 'thinking' once the current hold elapses
             self._pending_think = True
 
+    def set_phase(self, emoji: str, message: str) -> None:
+        """Set the footer message for a pre-turn phase WITHOUT counting a tool."""
+        self._activity = (emoji, message)
+        self._hold_until = time.perf_counter() + _MIN_ACTIVITY_HOLD
+        self._pending_think = False
+
     def __rich__(self) -> Text:
         now = time.perf_counter()
         emoji, msg = self._activity
@@ -239,16 +246,26 @@ class _Footer:
         return Text(f"{frame} {emoji} {msg} · {now - self._start:.0f}s{tail}", style="bold")
 
 
-def render_banner(console: Console | None = None) -> None:
+def render_banner(console: Console | None = None, mcp_line: str = "") -> None:
     """Print the HALIA banner — a rounded panel with a `--help`-style title bar."""
     from rich import box
+    from rich.align import Align
+    from rich.console import Group
     from rich.panel import Panel
+    from rich.text import Text
 
     from halia import __version__
 
     con = console or _console
+    body: Any = Text(_banner_text(), style="bold yellow")
+    if mcp_line:
+        body = Group(
+            body,
+            Text(),  # blank spacer line
+            Align(Text.from_markup(mcp_line), align="center", width=96),
+        )
     panel = Panel(
-        Text(_banner_text(), style="bold yellow"),
+        body,
         title=Text(f"v{__version__}", style="bold yellow"),
         title_align="left",
         width=100,
@@ -340,7 +357,9 @@ def run_tui(
         _chat_resume,
         _chat_token,
         _chat_undo,
+        _close_mcp,
         _make_approver,
+        _preload_mcp,
         _prepare_context,
         _resumed_age_note,
         _show_step,
@@ -410,28 +429,31 @@ def run_tui(
             console.print("[dim]run `halia setup` when you're ready.[/dim]")
             return
 
-    render_banner()
-
     if resume is not None:
         loaded = get_session(resume)
         if loaded is None:
             console.print(f"[yellow]no session '{resume}'[/yellow] — see `halia sessions`.")
             return
         sess = loaded  # narrowed to Session, so /model can replace() it cleanly
-        config, registry, _ = _prepare_context(sess.allow_commands)
+        config, registry, _, mcp_banner = _prepare_context(sess.allow_commands)
         config = replace(config, model=sess.model)
         messages: list[Message] = list(sess.messages)
         archived: list[Message] = list(sess.archived_messages)
-        console.print(
+        resume_note = (
             f"[dim]resumed session [bold]{sess.id}[/bold] — {sess.turn_count()} turns, "
             f"last active {_resumed_age_note(sess.updated_at)}[/dim]\n"
         )
     else:
-        config, registry, extra_system = _prepare_context(allow_commands)
+        config, registry, extra_system, mcp_banner = _prepare_context(allow_commands)
         messages = [{"role": "system", "content": _get_system_prompt() + extra_system}]
         archived = []
         sess = new_session(config.provider, config.model, None, allow_commands, messages)
         save_session(sess)
+        resume_note = ""
+
+    render_banner(mcp_line=mcp_banner)
+    if resume_note:
+        console.print(resume_note)
 
     def persist() -> None:
         save_session(replace(sess, messages=list(messages), archived_messages=list(archived)))
@@ -782,7 +804,7 @@ def run_tui(
                 want = parts[1].lower() == "on"
             else:
                 want = registry.get("run_command") is None  # bare /commands toggles
-            _, registry, _ = _prepare_context(want)
+            _, registry, _, _ = _prepare_context(want)
             on = registry.get("run_command") is not None
             console.print(
                 f"[dim]shell commands {'ON' if on else 'OFF'} — halia "
@@ -1020,6 +1042,12 @@ def run_tui(
         started = time.perf_counter()
         footer.reset()
         footer.start()
+        # The router + mcp_connect can take seconds (npx download, OAuth, LLM call) —
+        # keep the footer spinning through it so it doesn't look like a hang.
+        if getattr(config, "router_model", None):
+            footer.set_phase("🌐", "Loading MCP tools")
+        _preload_mcp(user_input, config, registry)
+        footer.set_activity("")
         try:
             # Real on_delta streams the answer token-by-token (and keeps the connection warm —
             # each chunk resets the read timeout, so long generations never time out).
@@ -1098,3 +1126,5 @@ def run_tui(
             config.provider, config.model, user_input, result.answer, result.steps,
         )
         save_run(record)
+
+    _close_mcp()

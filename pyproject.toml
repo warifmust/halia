@@ -21,6 +21,9 @@ dependencies = [
 cua = [
     "cua-driver>=0.29",
 ]
+mcp = [
+    "mcp>=1.0",
+]
 
 [project.scripts]
 halia = "halia.cli.main:app"

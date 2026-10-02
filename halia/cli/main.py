@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 import typer
 from rich.console import Console
 from rich.highlighter import RegexHighlighter
+from rich.text import Text
 from rich.theme import Theme
 
 from halia import __version__
@@ -559,7 +560,27 @@ def _show_step(step: Any) -> None:
     # The call line is syntax-highlighted (func=blue, key=yellow, value=green, methods by
     # verb) so it's readable and unmistakably a tool call, not an error. Big content blobs
     # (make_pdf/write_file) are collapsed to a size so the trace stays clean.
-    console.print(_tool_hl(f"→ {step.tool}({_short_args(step.arguments)})"))
+    tool = step.tool
+    if tool.startswith("mcp__"):
+        # MCP tools are namespaced mcp__<server>__<tool>; mark them clearly so it's
+        # obvious halia is reaching outside itself to an external server. Built as ONE
+        # rich Text (not several `print(..., end="")` calls) so the TUI's live footer
+        # can't erase the prefix or slice the JSON arguments mid-line.
+        rest = tool[5:]
+        server, _, name = rest.partition("__")
+        line = Text()
+        line.append("→ ")
+        line.append("🌐 MCP", style="cyan")
+        line.append(" ")
+        line.append(server, style="bold blue")
+        line.append(" › ")
+        line.append(name, style="blue")
+        line.append("(")
+        line.append(_short_args(step.arguments))
+        line.append(")")
+        console.print(line)
+    else:
+        console.print(_tool_hl(f"→ {tool}({_short_args(step.arguments)})"))
     # Result line: a muted grey — clearly secondary, and darker than the bold status line.
     console.print(f"  ↳ {step.preview()}", style="grey50", highlight=False, markup=False)
 
@@ -867,10 +888,77 @@ def _make_approver() -> Any:
     return approve
 
 
+def _register_mcp(registry: Any) -> tuple[str, str]:
+    """Connect/register MCP. Returns (system_block, banner_line) — no printing."""
+    from halia.mcp import mcp_system_block, register_mcp_skills
+
+    status = register_mcp_skills(registry, console=console)
+    block = mcp_system_block()
+    banner = ""
+    if status.announce and status.servers:
+        parts: list[str] = []
+        for name, detail in status.servers.items():
+            if detail == "ok":
+                parts.append(f"[green]{name}[/green]")
+            elif detail == "lazy":
+                parts.append(f"[yellow]{name}[/yellow]")
+            else:
+                reason = detail.removeprefix("error: ")
+                parts.append(f"[red]{name}[/red] ✗ [dim]({reason})[/dim]")
+        if block:
+            n = len(status.servers)
+            banner = (
+                f"🌐 MCP: {' · '.join(parts)} "
+                f"[dim]({n} server{'s' if n != 1 else ''} — connect on use)[/dim]"
+            )
+        else:
+            tools = status.tool_count
+            label = "tool" if tools == 1 else "tools"
+            banner = f"🌐 MCP: {' · '.join(parts)} [dim]({tools} {label})[/dim]"
+    return block, banner
+
+
+def _close_mcp() -> None:
+    """Close MCP sessions at a clean shutdown point (never at process exit)."""
+    from halia.mcp import close_manager
+
+    close_manager()
+
+
+def _preload_mcp(user_text: str, config: Any, registry: Any) -> None:
+    """Preload MCP servers the router model deems relevant (lazy mode + router set).
+
+    Runs once per user turn, before the agent. A missing router model, eager mode,
+    or a router failure all fall through to lazy `mcp_connect` — never blocking.
+    """
+    from halia.mcp import get_manager, load_mode, load_servers
+    from halia.mcp.router import route_servers
+    from halia.mcp.skill import McpConnectSkill
+
+    if load_mode() != "lazy" or not getattr(config, "router_model", None):
+        return
+    servers = load_servers()
+    if not servers:
+        return
+    manager = get_manager(console)
+    unconnected = [s for s in servers if s.name not in manager.connected_names()]
+    if not unconnected:
+        return
+    try:
+        names = route_servers(user_text, config, unconnected, console)
+    except Exception:  # noqa: BLE001 — routing is a hint; the agent self-serves
+        return
+    if not names:
+        return
+    connect = McpConnectSkill(manager, registry, servers)
+    for name in names:
+        connect.run({"server": name})
+
+
 def _prepare_context(
     allow_commands: bool, query: str | None = None
-) -> tuple[Any, Any, str]:
-    """Resolve (config, registry, extra_system) from memory + persona.
+) -> tuple[Any, Any, str, str]:
+    """Resolve (config, registry, extra_system, mcp_banner) from memory + persona.
 
     Exits with an error message on config problems.
     """
@@ -899,7 +987,10 @@ def _prepare_context(
     advisory = failures_advisory(query) if query else ""
     extra_system = memory_block(query=query) + advisory + persona_overlay()
     registry = default_registry(allow_commands=allow_commands)
-    return config, registry, extra_system
+    mcp_block, mcp_banner = _register_mcp(registry)
+    if mcp_block:
+        extra_system = f"{extra_system}\n\n{mcp_block}".strip()
+    return config, registry, extra_system, mcp_banner
 
 
 def _execute_run(
@@ -959,9 +1050,13 @@ def _execute_run(
         console.print("[cyan]plan[/cyan]")
         console.print(f"[dim]{text}[/dim]\n")
 
-    config, registry, extra_system = _prepare_context(allow_commands, query=prompt)
+    config, registry, extra_system, mcp_banner = _prepare_context(allow_commands, query=prompt)
+    if mcp_banner:
+        console.print(mcp_banner)
     if extra_prompt_block:
         extra_system = f"{extra_system}\n\n{extra_prompt_block}".strip()
+
+    _preload_mcp(prompt, config, registry)
 
     try:
         result = run_agent(
@@ -986,9 +1081,11 @@ def _execute_run(
         cid = getattr(exc, "checkpoint_id", "")
         if cid:
             console.print(f"[dim]resume with: halia resume {cid}[/dim]")
+        _close_mcp()
         raise typer.Exit(1) from exc
 
     _present_result(config, prompt, result, quiet, notify, json_output=json_output)
+    _close_mcp()
 
 
 def _read_stdin() -> str:
@@ -1250,11 +1347,15 @@ def chat(
             raise typer.Exit(1)
         session = loaded  # narrowed to Session, so /model can replace() it cleanly
         # Rebuild the tools from the session's own allow_commands; keep its model.
-        config, registry, _ = _prepare_context(session.allow_commands)
+        config, registry, _, mcp_banner = _prepare_context(session.allow_commands)
+        if mcp_banner:
+            console.print(mcp_banner)
         config = replace(config, model=session.model)
         messages: list[Message] = list(session.messages)
     else:
-        config, registry, extra_system = _prepare_context(allow_commands)
+        config, registry, extra_system, mcp_banner = _prepare_context(allow_commands)
+        if mcp_banner:
+            console.print(mcp_banner)
         messages = [{"role": "system", "content": _get_system_prompt() + extra_system}]
         session = new_session(config.provider, config.model, None, allow_commands, messages)
         save_session(session)  # persist immediately so it shows up in `halia sessions`
@@ -1351,7 +1452,7 @@ def chat(
                 want = parts[1].lower() == "on"
             else:
                 want = registry.get("run_command") is None
-            _, registry, _ = _prepare_context(want)
+            _, registry, _, _ = _prepare_context(want)
             on = registry.get("run_command") is not None
             console.print(
                 f"[dim]shell commands {'ON' if on else 'OFF'} — halia "
@@ -1519,6 +1620,7 @@ def chat(
         advisory = failures_advisory(user_input)  # Tier 2: warn on similar past failures
         if advisory:
             console.print("  🧠 [dim]recalling a similar past failure[/dim]")
+        _preload_mcp(user_input, config, registry)
         try:
             result = converse(
                 messages, config, registry, observer=_show_step, approver=approve,
@@ -1551,6 +1653,8 @@ def chat(
             config.provider, config.model, user_input, result.answer, result.steps,
         )
         save_run(record)
+
+    _close_mcp()
 
 
 def _chat_procedure(command: str) -> str | None:
@@ -2325,6 +2429,157 @@ def schedule_remove(name: Annotated[str, typer.Argument(help="Schedule name.")])
         console.print(f"[green]✓[/green] removed schedule '{name}'")
     else:
         console.print(f"[yellow]no schedule named '{name}'[/yellow]")
+
+
+mcp_app = typer.Typer(help="Configure MCP servers (Model Context Protocol tools).")
+app.add_typer(mcp_app, name="mcp")
+
+
+@mcp_app.command("list")
+def mcp_list() -> None:
+    """Show configured MCP servers and their connection status."""
+    from halia.mcp import (
+        get_manager,
+        has_tokens,
+        load_mode,
+        load_servers,
+        mcp_available,
+        servers_file,
+    )
+
+    servers = load_servers()
+    if not servers:
+        console.print("[dim]no MCP servers configured.[/dim]")
+        console.print(
+            f"[dim]edit {servers_file()}[/dim] and add a server "
+            "(stdio: command+args · http: url+headers)."
+        )
+        return
+    if not mcp_available():
+        console.print(
+            "[yellow]`mcp` package not installed — run "
+            "`uv tool install --force "
+            "'git+https://github.com/warifmust/halia.git@main' --with mcp`[/yellow]"
+        )
+        return
+    by_name = {s.name: s for s in servers}
+    if load_mode() == "lazy":
+        console.print(f"[bold]lazy mode[/bold] [dim]({servers_file()})[/dim]")
+        for srv in servers:
+            tag = " [dim](OAuth)[/dim]" if srv.auth == "oauth" else ""
+            state = "authenticated" if has_tokens(srv.name) else "not connected"
+            desc = f" — {srv.description}" if srv.description else ""
+            console.print(f"  [yellow]{srv.name}[/yellow]{tag} — {state}{desc}")
+        console.print("[dim]servers connect when the agent calls mcp_connect.[/dim]")
+        console.print("[dim]force-login with: halia mcp login <name>[/dim]")
+        return
+    status = get_manager(console).connect_all(servers)
+    for name, detail in status.servers.items():
+        spec = by_name.get(name)
+        tag = " [dim](OAuth)[/dim]" if spec is not None and spec.auth == "oauth" else ""
+        if detail == "ok":
+            console.print(f"  [green]✓[/green] [bold]{name}[/bold]{tag}")
+        else:
+            reason = detail.removeprefix("error: ")
+            console.print(f"  [red]✗[/red] [bold]{name}[/bold]{tag} — {reason}")
+            if spec is not None and spec.auth == "oauth":
+                console.print(f"    [dim]run `halia mcp login {name}` to re-authenticate[/dim]")
+    tools = status.tool_count
+    console.print(f"[dim]{tools} tool{'s' if tools != 1 else ''} exposed.[/dim]")
+
+
+@mcp_app.command("login")
+def mcp_login(name: Annotated[str, typer.Argument(help="Server name to authenticate.")]) -> None:
+    """Connect to a server, running its OAuth login flow if needed."""
+    from halia.mcp import get_manager, load_servers, mcp_available
+
+    servers = load_servers()
+    spec = next((s for s in servers if s.name == name), None)
+    if spec is None:
+        console.print(f"[yellow]no MCP server named '{name}'.[/yellow]")
+        return
+    if not mcp_available():
+        console.print(
+            "[yellow]`mcp` package not installed — run "
+            "`uv tool install --force "
+            "'git+https://github.com/warifmust/halia.git@main' --with mcp`[/yellow]"
+        )
+        return
+    if spec.auth == "oauth":
+        console.print(f"[cyan]🌐 MCP OAuth[/cyan] — signing in to [bold]{name}[/bold]…")
+    status = get_manager(console).connect_all([spec])
+    detail = status.servers.get(name, "error: not connected")
+    if detail == "ok":
+        console.print(f"[green]✓[/green] [bold]{name}[/bold] connected.")
+    else:
+        console.print(f"[red]✗[/red] {detail.removeprefix('error: ')}")
+        raise typer.Exit(1)
+
+
+@mcp_app.command("set-key")
+def mcp_set_key(
+    name: Annotated[
+        str,
+        typer.Argument(help="Secret key name, as referenced in mcp.json (e.g. github_mcp_pat)."),
+    ],
+    value: Annotated[
+        str | None, typer.Argument(help="Secret value. Omit to be prompted (hidden).")
+    ] = None,
+) -> None:
+    """Store a token/API key in ~/.halia/secrets.json (use as ${secret:<name>})."""
+    from halia.cli.input import ask
+    from halia.config.settings import write_secret
+
+    from_arg = value is not None
+    if not from_arg:
+        value = ask(f"Value for '{name}': ", is_password=True).strip()
+    if not value:
+        console.print("[yellow]no value entered — nothing stored.[/yellow]")
+        raise typer.Exit(1)
+    write_secret(name, value)
+    console.print(f"[green]✓[/green] stored [bold]{name}[/bold] (0600) — use as ${{secret:{name}}}")
+    if from_arg:
+        console.print(
+            "[dim]tip: passing the value as an argument leaves it in shell history — "
+            "prefer `halia mcp set-key <name>` and paste at the hidden prompt.[/dim]"
+        )
+
+
+@mcp_app.command("setup")
+def mcp_setup_cmd() -> None:
+    """Interactively configure MCP servers and their secrets."""
+    from halia.mcp.setup import mcp_setup
+
+    mcp_setup(console)
+
+
+@mcp_app.command("edit")
+def mcp_edit() -> None:
+    """Open ~/.halia/mcp.json in $EDITOR."""
+    import os
+    import subprocess
+
+    from halia.mcp import servers_file, write_raw
+
+    path = servers_file()
+    if not path.exists():
+        write_raw({"mcpServers": {}})
+    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL")
+    if not editor:
+        console.print(f"[yellow]no $EDITOR set.[/yellow] Edit {path} directly.")
+        return
+    subprocess.call([editor, str(path)])
+
+
+@mcp_app.command("remove")
+def mcp_remove(name: Annotated[str, typer.Argument(help="Server name to remove.")]) -> None:
+    """Remove an MCP server by name (no enable/disable — delete only)."""
+    from halia.mcp.config import remove_server
+
+    if remove_server(name):
+        console.print(f"[green]✓[/green] removed [bold]{name}[/bold].")
+    else:
+        console.print(f"[yellow]no MCP server named '{name}'.[/yellow]")
 
 
 gateway_app = typer.Typer(help="Configure outbound notifications (e.g. Telegram).")
