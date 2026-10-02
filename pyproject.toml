@@ -63,7 +63,18 @@ python_version = "3.11"
 strict = true
 
 [[tool.mypy.overrides]]
-module = ["openpyxl.*", "fpdf.*", "pptx.*", "docx.*"]
+module = [
+    "openpyxl.*",
+    "fpdf.*",
+    "pptx.*",
+    "docx.*",
+    # Optional deps (installed only with the `mcp` extra) — absent in CI's `uv sync`.
+    "mcp",
+    "mcp.*",
+    "httpx2",
+    "pydantic",
+    "pydantic.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
