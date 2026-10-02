@@ -244,9 +244,15 @@ def _get_system_prompt() -> str:
     # No desktop available — don't advertise tools that aren't registered.
     return SYSTEM_PROMPT + _CLOSING_PROMPT
 
-DEFAULT_MAX_ITERS = 8
+# Tool-call rounds per turn. 0 = unlimited (the default) — a turn runs until it
+# finishes, pauses, or hits the wall-clock budget. Set a cap (e.g. 50) only if you
+# want a hard stop; the TUI raises it live with /iters N (0 = unlimited).
+DEFAULT_MAX_ITERS = 0
 
-# Budget cap: max total tokens per run. 0 = unlimited. Override with HALIA_BUDGET_TOKENS.
+# Per-turn token budget cap. 0 = unlimited (the default) — turns run to completion
+# and rely on the iteration/time caps for runaway control. Cost-conscious users on
+# paid models can set HALIA_BUDGET_TOKENS (e.g. 200000) to cap each turn, with a
+# soft "finish up" warning at 80%.
 try:
     DEFAULT_BUDGET_TOKENS = int(os.environ.get("HALIA_BUDGET_TOKENS", "0"))
 except ValueError:
@@ -278,11 +284,11 @@ def _env_float(name: str, default: float) -> float:
 
 
 DEFAULT_MAX_TOOL_FAILURES = _env_int("HALIA_MAX_TOOL_FAILURES", 3)
-# The repetition guard is DISABLED by default (0 = off): visual work (drawing, UI
-# probing) legitimately retries the same click/coordinate many times, and auto-
-# blocking those sabotages the task. The human approval gate on dangerous tools is
-# the real control. Set HALIA_REPEAT_WARN_AT to re-enable it for headless runs.
-DEFAULT_REPEAT_WARN_AT = _env_int("HALIA_REPEAT_WARN_AT", 0)
+# The repetition guard blocks an IDENTICAL (or near-identical, within repeat_radius)
+# click/type/URL after a few attempts — the classic "retry the same action forever"
+# loop. Drawing tools (cua_drag, cua_draw_path) are NOT in the guarded set, so
+# legitimate stroke retries are unaffected. Set HALIA_REPEAT_WARN_AT=0 to disable.
+DEFAULT_REPEAT_WARN_AT = _env_int("HALIA_REPEAT_WARN_AT", 3)
 DEFAULT_REPEAT_RADIUS = _env_float("HALIA_REPEAT_RADIUS", 4.0)
 # Screenshots no longer accumulate in the transmitted context — _drop_old_screenshots
 # evicts every older screenshot image so only the latest one is sent — so a raw
@@ -298,10 +304,10 @@ DEFAULT_STUCK_AT = _env_int("HALIA_STUCK_AT", 2)
 # When only this many loop turns remain before the hard max_iters cap, inject a
 # system note telling the model to finish up instead of starting new sub-tasks.
 DEFAULT_WRAP_UP_AT = _env_int("HALIA_WRAP_UP_AT", 3)
-# Wall-clock budget per turn (seconds). A single model turn can otherwise run for
-# minutes-to-hours (50 tool rounds × slow vision calls). When the deadline passes
-# the loop stops issuing tools and hands back a partial answer. 0 = disabled.
-DEFAULT_TURN_TIMEOUT = _env_float("HALIA_TURN_TIMEOUT", 240.0)
+# Wall-clock budget per turn (seconds). 0 = disabled (the default) — a turn runs
+# until it finishes or pauses. Set HALIA_TURN_TIMEOUT (e.g. 240) to add a deadline
+# that hands back a partial answer instead.
+DEFAULT_TURN_TIMEOUT = _env_float("HALIA_TURN_TIMEOUT", 0.0)
 CHECKPOINT_ON_CAP = os.environ.get("HALIA_CHECKPOINT_ON_CAP", "").strip().lower() in (
     "1", "true", "yes", "on",
 )
@@ -825,6 +831,11 @@ _TIME_UP_NOTE = (
     "— do NOT call any more tools."
 )
 
+_BUDGET_WARN_NOTE = (
+    "⏳ Token budget nearly spent ({used} of {cap} tokens used). FINISH now: give "
+    "your best answer or ask the user what to do next. Do NOT start new sub-tasks."
+)
+
 
 def _click_coords(name: str, arguments: str) -> tuple[float, float] | None:
     """Extract an (x, y) target from a coordinate-click tool call, if present."""
@@ -1185,6 +1196,14 @@ def _compose_turn_note(ctx: _Ctx, iters_used: int) -> str:
     ):
         wrap = _WRAP_UP_NOTE.format(used=iters_used, cap=ctx.max_iters)
         note = wrap if not note else note + wrap
+    if (
+        ctx.budget_tokens > 0
+        and ctx.total_usage.total_tokens >= ctx.budget_tokens * 4 // 5
+    ):
+        budget = _BUDGET_WARN_NOTE.format(
+            used=f"{ctx.total_usage.total_tokens:,}", cap=f"{ctx.budget_tokens:,}"
+        )
+        note = budget if not note else note + "\n\n" + budget
     return note
 
 
@@ -1222,7 +1241,7 @@ def _loop(
     )
 
     tools = ctx.registry.tool_schemas() or None
-    while iters_used < ctx.max_iters:
+    while ctx.max_iters <= 0 or iters_used < ctx.max_iters:
         iters_used += 1
         # Near the budget? Offer to compact older turns before we build the window.
         _maybe_compact(ctx, messages)
@@ -1242,14 +1261,15 @@ def _loop(
         # Accumulate token usage and check budget cap.
         ctx.total_usage = ctx.total_usage + result.usage
         if ctx.budget_tokens > 0 and ctx.total_usage.total_tokens >= ctx.budget_tokens:
-            answer = (result.content or "").strip() or ""
+            answer = (result.content or "").strip()
             budget_msg = (
-                f"[budget exceeded: {ctx.total_usage.total_tokens:,} / "
-                f"{ctx.budget_tokens:,} tokens used]"
+                f"[Turn token budget reached ({ctx.total_usage.total_tokens:,} / "
+                f"{ctx.budget_tokens:,} tokens) — stopped before running further "
+                f"tool calls. Say 'continue' to resume.]"
             )
             return RunResult(
-                answer=answer or budget_msg, steps=steps,
-                plan=ctx.plan, usage=ctx.total_usage,
+                answer=(answer + "\n\n" + budget_msg) if answer else budget_msg,
+                steps=steps, plan=ctx.plan, usage=ctx.total_usage,
             )
 
         if not result.tool_calls:
@@ -1431,6 +1451,7 @@ def converse(
     compact_approver: CompactApprover | None = None,
     on_compact: CompactArchiver | None = None,
     turn_note: str = "",
+    budget_tokens: int = 0,
     checkpoint_on_cap: bool = CHECKPOINT_ON_CAP,
 ) -> RunResult:
     """Run one chat turn over an existing conversation (the multi-turn / chat primitive).
@@ -1451,6 +1472,7 @@ def converse(
         pause_on_approval=False, history_budget=history_budget, on_delta=on_delta,
         on_activity=on_activity, compact_approver=compact_approver, on_compact=on_compact,
         turn_note=turn_note,
+        budget_tokens=budget_tokens,
         checkpoint_on_cap=checkpoint_on_cap,
     )
     return _loop(ctx, messages, [], 0)

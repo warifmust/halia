@@ -47,8 +47,8 @@ def run_setup(console: Console) -> None:
     # Step 2: Provider + model + API key
     _setup_provider(console)
 
-    # Step 3: Halia computer — desktop automation
-    _setup_computer(console)
+    # Step 3: CUA — desktop automation
+    _setup_cua(console)
 
     console.print('\nTry it: [bold]halia ask "hello"[/bold]')
 
@@ -148,47 +148,6 @@ def _resolve_api_key(console: Console, provider: str) -> str:
     return ask(f"\nAPI key for {provider}: ", is_password=True)
 
 
-def _setup_computer(console: Console) -> None:
-    """Offer to enable halia computer (CUA desktop automation)."""
-    from halia.config.settings import read_config, write_config
-
-    config = read_config()
-    if config.get("computer_enabled"):
-        console.print("\n[dim]halia computer is already enabled.[/dim]")
-        return
-
-    console.print(
-        "\n[bold]halia computer[/bold] — desktop automation\n"
-        "\n"
-        "halia can control your desktop (CUA):\n"
-        "  • Fill forms, click buttons, navigate apps and websites\n"
-        "  • Drive apps you're already signed into (Sheets, Excel, …)\n"
-        "  • Take screenshots for visual verification\n"
-        "  • Run automated tests on desktop and web applications\n"
-        "\n"
-        "This installs the CUA driver.\n"
-    )
-
-    choice = pick(
-        "Enable halia computer?",
-        ["Yes — install CUA driver", "No — skip for now (can add later)"],
-        default=0,
-    )
-
-    if choice.startswith("Yes"):
-        _install_cua_driver(console)
-        config["computer_enabled"] = True
-        write_config(config)
-        console.print("[green]✓[/green] halia computer enabled (CUA desktop automation)")
-    else:
-        config["computer_enabled"] = False
-        write_config(config)
-        console.print(
-            "[dim]halia computer skipped. "
-            "Enable later with: halia setup --computer[/dim]"
-        )
-
-
 def _install_python_package(
     console: Console,
     package: str,
@@ -242,7 +201,13 @@ class _Spinner:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=1)
-        # clear the spinner line
+        # The spinner thread writes in place via raw stdout (carriage return, no
+        # newline), so clear that line before rich prints the result — otherwise
+        # the "✓" lands right after the trailing "..." on the same line.
+        import sys
+
+        sys.stdout.write("\r\033[K")
+        sys.stdout.flush()
         self._console.print(f"[green]✓[/green] {self._message}")
 
     def _run(self) -> None:
@@ -304,11 +269,6 @@ def _install_cua_driver(console: Console) -> bool:
         console.print("[dim]  You can try later with: halia setup --cua[/dim]")
         return False
 
-    from halia.config.settings import read_config, write_config
-    config = read_config()
-    config["computer_enabled"] = True
-    write_config(config)
-
     console.print("[green]✓[/green] CUA driver installed and enabled")
 
     # On headless systems the driver cannot run — warn before the user relies on it.
@@ -319,49 +279,54 @@ def _install_cua_driver(console: Console) -> bool:
             "display) — CUA desktop automation will be unavailable here."
         )
 
-    # On macOS, trigger the accessibility permission dialog
+    # On macOS, grant the CUA driver its own TCC permissions (Accessibility +
+    # Screen Recording) under the `com.trycua.driver` identity. The embedded host
+    # launches the cua-driver binary, so the grants must belong to the BINARY —
+    # not to halia's terminal process. Hence `cua-driver permissions grant`
+    # (LaunchServices-attributed), not an in-process SDK call. We do NOT start a
+    # persistent `serve` daemon: halia spawns the binary itself per session.
     import platform
     if platform.system() == "Darwin":
         console.print(
-            "\n[dim]CUA needs Accessibility permission to click and type on your desktop.[/dim]"
+            "\n[dim]CUA needs Accessibility + Screen Recording permission to click, "
+            "type, capture the screen, and show its cursor overlay.[/dim]"
         )
         console.print(
-            "[dim]A macOS dialog will appear — click 'Allow' or 'OK' to grant access.[/dim]\n"
+            "[dim]A macOS dialog will appear — approve both requests, then this "
+            "continues automatically.[/dim]\n"
         )
-        # Try to start a CUA session and move the cursor — this triggers the permission dialog
         try:
-            import asyncio
+            import subprocess
 
-            from cua_driver import CuaDriver, StartSessionInput
+            from cua_driver import get_binary_path
 
-            async def _request_permission() -> bool:
-                driver = CuaDriver.create()
-                await driver.start_session(
-                    StartSessionInput(session="setup", capture_scope=None, cursor_theme=None)
+            with _Spinner(
+                console, "Requesting Accessibility + Screen Recording permission"
+            ):
+                result = subprocess.run(
+                    [str(get_binary_path()), "permissions", "grant"],
+                    capture_output=True, text=True, timeout=300,
                 )
-                # Moving the cursor triggers the accessibility permission dialog
-                from cua_driver import DesktopScope, MoveCursorInput
-                await driver.move_cursor(
-                    MoveCursorInput(
-                        session="setup", x=100, y=100,
-                        target=None, scope=DesktopScope.DESKTOP,
-                    )
+            if result.returncode == 0:
+                console.print(
+                    "[green]✓[/green] Accessibility + Screen Recording permission granted"
                 )
-                await driver.shutdown()
-                return True
-
-            with _Spinner(console, "Requesting accessibility permission"):
-                asyncio.run(_request_permission())
-            console.print("[green]✓[/green] Accessibility permission granted")
+            else:
+                detail = (result.stderr or result.stdout or "").strip()
+                console.print(
+                    f"[yellow]⚠ Permission request returned exit {result.returncode}: "
+                    f"{detail}[/yellow]"
+                )
         except Exception as exc:
-            console.print(f"[yellow]⚠ Could not verify accessibility permission: {exc}[/yellow]")
+            console.print(f"[yellow]⚠ Could not request permissions: {exc}[/yellow]")
             console.print(
-                "[dim]  If clicks don't work, manually add cua-driver to:\n"
-                "  System Settings → Privacy & Security → Accessibility\n"
+                "[dim]  Run `cua-driver permissions grant` manually, or add cua-driver to:\n"
+                "  System Settings → Privacy & Security → Accessibility + Screen Recording\n"
                 f"  Binary: {_get_cua_binary_path()}[/dim]"
             )
 
     console.print(
-        "[dim]  Halia uses CUA for all desktop and web tasks.[/dim]"
+        "[dim]  Halia uses CUA for all desktop and web tasks — with a visible "
+        "agent cursor overlay (your mouse stays free).[/dim]"
     )
     return True

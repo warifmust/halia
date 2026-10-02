@@ -19,11 +19,13 @@ def _provider_retry(
     max_retries: int = 0,
     retry_base: float = 0.0,
     retry_cap: float = 0.0,
+    empty_retries: int = 0,
 ) -> OpenAICompatProvider:
     client = httpx.Client(transport=httpx.MockTransport(handler))  # type: ignore[arg-type]
     return OpenAICompatProvider(
         base_url="https://x/v1", api_key="k", model="m", client=client,
         max_retries=max_retries, retry_base=retry_base, retry_cap=retry_cap,
+        empty_retries=empty_retries,
     )
 
 
@@ -107,7 +109,64 @@ def test_empty_reply_raises() -> None:
         return httpx.Response(200, json={"choices": [{"message": {"content": None}}]})
 
     with pytest.raises(ProviderError, match="no content"):
-        _provider(handler).chat([{"role": "user", "content": "hi"}])
+        _provider_retry(handler, empty_retries=0).chat([{"role": "user", "content": "hi"}])
+
+
+def test_empty_reply_retries_then_succeeds() -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(200, json={"choices": [{"message": {"content": None}}]})
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        })
+
+    result = _provider_retry(handler, empty_retries=2).chat([{"role": "user", "content": "hi"}])
+    assert result.content == "ok"
+    assert calls["n"] == 2
+
+
+def test_empty_reply_gives_up_after_max_attempts() -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={"choices": [{"message": {"content": None}}]})
+
+    with pytest.raises(ProviderError, match="retried 2"):
+        _provider_retry(handler, empty_retries=2).chat([{"role": "user", "content": "hi"}])
+    assert calls["n"] == 3  # 1 initial + 2 retries
+
+
+def test_stream_empty_reply_retries_then_succeeds() -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # First stream: usage only, no content/tool-call deltas → empty completion.
+            first = {
+                "choices": [],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 0, "total_tokens": 10},
+            }
+            return httpx.Response(200, text=_sse(first))
+        return httpx.Response(200, text=_sse(
+            {"choices": [{"delta": {"content": "recovered"}}]},
+            {
+                "choices": [],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 9, "total_tokens": 19},
+            },
+        ))
+
+    seen: list[str] = []
+    result = _provider_retry(handler, empty_retries=2).chat(
+        [{"role": "user", "content": "hi"}], on_delta=seen.append
+    )
+    assert result.content == "recovered"
+    assert calls["n"] == 2
 
 
 # --- streaming (on_delta) ---

@@ -117,8 +117,8 @@ def test_repetition_guard_blocks_identical_ui_action() -> None:
     assert "repetition guard" in messages[-1]["content"]
 
 
-def test_repetition_guard_disabled_by_default() -> None:
-    """repeat_warn_at=0 (the default) means identical clicks are never auto-blocked."""
+def test_repetition_guard_disabled_explicitly() -> None:
+    """repeat_warn_at=0 means identical clicks are never auto-blocked (opt-out)."""
     from halia.audit.trace import Step
     from halia.core.agent import _Ctx, _execute_batch
 

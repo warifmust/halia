@@ -90,8 +90,8 @@ def _main(
         str | None, typer.Option("--resume", help="Resume a saved session by id/prefix.")
     ] = None,
     max_iters: Annotated[
-        int, typer.Option("--max-iters", help="Tool-call rounds per turn (raise for big tasks).")
-    ] = 50,
+        int, typer.Option("--max-iters", help="Tool-call rounds per turn (0 = unlimited).")
+    ] = 0,
 ) -> None:
     """halia — a trust-first general agent. Run with no arguments to open the chat shell."""
     if ctx.invoked_subcommand is None:
@@ -217,24 +217,16 @@ def doctor() -> None:
 
 @app.command()
 def setup(
-    computer: Annotated[
-        bool, typer.Option("--computer", help="Enable desktop automation (CUA).")
-    ] = False,
     cua: Annotated[
         bool, typer.Option("--cua", help="Install CUA driver for full desktop automation.")
     ] = False,
 ) -> None:
     """Run the first-time setup wizard (provider, model, API key)."""
-    from halia.config.wizard import _setup_computer, _setup_cua, run_setup
+    from halia.config.wizard import _setup_cua, run_setup
 
     if cua:
         # Just install CUA, skip full setup
         _setup_cua(console)
-        return
-
-    if computer:
-        # Just enable computer, skip full setup
-        _setup_computer(console)
         return
 
     run_setup(console)
@@ -262,9 +254,6 @@ def config(
         for key, val in data.items():
             if key in ("provider", "model"):
                 console.print(f"  [cyan]{key}[/cyan]: {val}")
-            elif key == "computer_enabled":
-                icon = "[green]✓[/green]" if val else "[red]✗[/red]"
-                console.print(f"  [cyan]computer[/cyan]: {icon} {'enabled' if val else 'disabled'}")
             elif key == "trusted_dirs":
                 console.print(f"  [cyan]{key}[/cyan]: {len(val)} dir(s)")
             else:
@@ -1096,7 +1085,7 @@ def _notify_result(prompt: str, body: str) -> None:
 @app.command()
 def run(
     prompt: Annotated[str, typer.Argument(help="The task for halia to work on.")],
-    max_iters: Annotated[int, typer.Option(help="Max tool-call iterations.")] = 8,
+    max_iters: Annotated[int, typer.Option(help="Max tool-call iterations (0 = unlimited).")] = 0,
     quiet: Annotated[bool, typer.Option("--quiet", "-q", help="Hide the tool-call trace.")] = False,
     allow_commands: Annotated[
         bool,
@@ -1222,7 +1211,13 @@ def chat(
     from halia.audit.record import new_record, save_run
     from halia.cli.input import pick
     from halia.config.settings import is_trusted, trust_directory
-    from halia.core.agent import RunLimitError, _get_system_prompt, converse
+    from halia.core.agent import (
+        DEFAULT_BUDGET_TOKENS,
+        DEFAULT_MAX_ITERS,
+        RunLimitError,
+        _get_system_prompt,
+        converse,
+    )
     from halia.core.checkpoint import list_checkpoints
     from halia.core.session import get_session, new_session, save_session
     from halia.providers.base import ProviderError
@@ -1293,6 +1288,7 @@ def chat(
     from halia.providers.base import Usage
 
     total_usage = Usage()  # accumulated token usage across the session (for /cost)
+    budget = DEFAULT_MAX_ITERS  # tool-call rounds per turn; raise it live with /iters
 
     while True:
         try:
@@ -1331,8 +1327,9 @@ def chat(
             continue
         if user_input.lower() == "/clear":
             del messages[1:]  # keep the system prompt
+            total_usage = Usage()  # reset the session token counter too
             persist()
-            console.print("[dim]context cleared.[/dim]\n")
+            console.print("[dim]context cleared (token usage reset).[/dim]\n")
             continue
         if user_input.lower().startswith("/local"):
             from halia.permissions.network import allow_local_enabled, set_allow_local
@@ -1364,10 +1361,16 @@ def chat(
             continue
         if user_input.lower().startswith("/iters"):
             parts = user_input.split()
-            if len(parts) >= 2 and parts[1].isdigit() and int(parts[1]) > 0:
-                console.print(f"[dim]tool-call budget set to {parts[1]}/turn.[/dim]\n")
+            if len(parts) >= 2 and parts[1].isdigit() and int(parts[1]) >= 0:
+                budget = int(parts[1])
+                label = "unlimited" if budget == 0 else f"{budget}/turn"
+                console.print(f"[dim]tool-call budget set to {label}.[/dim]\n")
             else:
-                console.print("[dim]Usage: /iters N[/dim]\n")
+                label = "unlimited" if budget == 0 else f"{budget}/turn"
+                console.print(
+                    f"[dim]tool-call budget is {label}. "
+                    "Usage: /iters N (0 = unlimited)[/dim]\n"
+                )
             continue
         if user_input.lower() == "/compact":
             from halia.core.agent import compact_history
@@ -1520,6 +1523,7 @@ def chat(
             result = converse(
                 messages, config, registry, observer=_show_step, approver=approve,
                 turn_note=advisory,
+                max_iters=budget, budget_tokens=DEFAULT_BUDGET_TOKENS,
             )
         except (ProviderError, RunLimitError) as exc:
             from halia.memory.failures import record_failure
@@ -2526,7 +2530,7 @@ def procedure_run(
         str | None,
         typer.Option("--data-file", help="Path to your test data (for 'provided'-data procs)."),
     ] = None,
-    max_iters: Annotated[int, typer.Option(help="Max tool-call iterations.")] = 12,
+    max_iters: Annotated[int, typer.Option(help="Max tool-call iterations (0 = unlimited).")] = 0,
     quiet: Annotated[bool, typer.Option("--quiet", "-q", help="Hide the tool-call trace.")] = False,
     plan: Annotated[bool, typer.Option("--plan", help="Draft a short plan first.")] = False,
     pause_for_approval: Annotated[

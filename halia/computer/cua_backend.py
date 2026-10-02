@@ -16,12 +16,15 @@ import asyncio
 import atexit
 import base64
 import json
+import logging
 import os
 import sys
 import tempfile
 import threading
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def cua_available() -> bool:
@@ -81,29 +84,92 @@ def _cua_cursor_theme() -> Any | None:
     )
 
 
+def _cua_input_delivery() -> Any:
+    """Resolve the click input delivery mode from env/config.
+
+    FOREGROUND moves the real system cursor to the target (user-like); BACKGROUND
+    injects events without moving the user's cursor, so halia's overlay cursor acts
+    independently and the user can keep using their mouse. Defaults to FOREGROUND
+    for maximum app compatibility. Set HALIA_CUA_INPUT_MODE=background (or config
+    `cua_input_mode`) to separate the cursors.
+    """
+    from cua_driver import InputDeliveryMode
+    from halia.config.settings import read_config
+
+    raw = os.environ.get("HALIA_CUA_INPUT_MODE") or read_config().get("cua_input_mode")
+    if str(raw or "").strip().lower() == "background":
+        return InputDeliveryMode.BACKGROUND
+    return InputDeliveryMode.FOREGROUND
+
+
+# The macOS bundle identity the embedded cua-driver binary runs under. TCC grants
+# (Accessibility/Screen Recording) are attached to this identity by
+# `cua-driver permissions grant`, so both the overlay cursor and screen capture
+# work. Override with HALIA_CUA_HOST_BUNDLE_ID for a custom install.
+_CUA_HOST_BUNDLE_ID = os.environ.get("HALIA_CUA_HOST_BUNDLE_ID", "com.trycua.driver")
+
+
 class CuaComputer:
     """Desktop automation via cua-driver SDK."""
 
     def __init__(self) -> None:
         self._driver: Any = None
+        self._host: Any = None
         self._session_name = "halia"
         self._lock = threading.Lock()
         self._session_started = False
 
-    def _ensure_driver(self) -> Any:
-        """Lazy-init the cua-driver."""
+    async def _ensure_driver(self) -> Any:
+        """Lazy-start the embedded cua-driver host and connect to it.
+
+        The embedded host launches the bundled `cua-driver` binary (same version
+        as the SDK) as a subprocess with the overlay cursor enabled
+        (`no_overlay=False`), then we connect to its socket. The in-process
+        `CuaDriver.create()` runtime performs input and capture but never renders
+        the visual agent cursor — the overlay lives in the binary, so we run it.
+        """
         if self._driver is not None:
             return self._driver
 
         try:
-            from cua_driver import CuaDriver
+            from cua_driver import (
+                CuaDriver,
+                EmbeddedCuaDriverHost,
+                EmbeddedDriverHostOptions,
+                get_binary_path,
+            )
         except ImportError as exc:
             raise RuntimeError(
                 "cua-driver is not installed. "
                 "Run `halia setup --cua` to install it."
             ) from exc
 
-        self._driver = CuaDriver.create()
+        host = EmbeddedCuaDriverHost.with_options(
+            EmbeddedDriverHostOptions(
+                binary_path=str(get_binary_path()),
+                host_bundle_id=_CUA_HOST_BUNDLE_ID,
+                socket_path=None,
+                startup_timeout_ms=None,
+                shutdown_timeout_ms=None,
+                permission_mode=None,
+                session_policy_path=None,
+                approve_session_policy=False,
+                dangerously_bypass_approvals=False,
+                environment=[],
+                inherit_stderr=False,
+                no_overlay=False,
+            )
+        )
+        try:
+            connection = await host.start()
+            self._driver = CuaDriver.connect(connection.socket_path)
+        except Exception:
+            try:
+                await host.stop()
+            except Exception:
+                pass
+            raise
+        self._host = host
         return self._driver
 
     def _run_async(self, coro: Any) -> Any:
@@ -141,9 +207,46 @@ class CuaComputer:
         text = (message or "").lower()
         return "session has ended" in text or "call start_session" in text
 
+    def _is_connection_dead(self, message: str) -> bool:
+        """Detect a dead embedded-host connection (the child binary got killed).
+
+        The embedded ``cua-driver`` binary can die out from under us (Ctrl-C in
+        the terminal reaches the child through the process group). Every call then
+        fails with a socket error — "Connection refused", "No such file or
+        directory", etc. That needs a HOST relaunch, not just a session restart.
+        """
+        text = (message or "").lower()
+        return any(
+            kw in text
+            for kw in (
+                "connection refused",
+                "connection reset",
+                "broken pipe",
+                "connection closed",
+                "not connected",
+                "no such file or directory",
+                "connect to ",
+            )
+        )
+
+    async def _reset_driver(self) -> None:
+        """Drop a dead embedded host so the next `_ensure_driver` starts fresh.
+
+        Stop the (already dead) host, clear the cached driver/host/session, and
+        let the next operation relaunch the binary and reconnect.
+        """
+        host, self._host = self._host, None
+        self._driver = None
+        self._session_started = False
+        if host is not None:
+            try:
+                await host.stop()
+            except Exception:  # noqa: BLE001 — the host is already dead; ignore
+                pass
+
     async def _ensure_session(self) -> Any:
         """Ensure we have an active CUA session (started once, then reused)."""
-        driver = self._ensure_driver()
+        driver = await self._ensure_driver()
         if self._session_started:
             return driver
         from cua_driver import StartSessionInput
@@ -171,11 +274,16 @@ class CuaComputer:
         try:
             from cua_driver import SetAgentCursorEnabledInput
 
-            await driver.set_agent_cursor_enabled(
+            result = await driver.set_agent_cursor_enabled(
                 SetAgentCursorEnabledInput(session=self._session_name, enabled=True)
             )
-        except Exception:  # noqa: BLE001 — cosmetic; never fail a session over it
-            pass
+            if getattr(result, "is_error", False):
+                logger.warning(
+                    "CUA agent cursor could not be enabled: %s",
+                    getattr(result, "text", "") or getattr(result, "error_code", ""),
+                )
+        except Exception as exc:  # noqa: BLE001 — cosmetic; never fail a session over it
+            logger.warning("CUA agent cursor enable failed: %s", exc)
 
     async def _with_session_retry(self, op: Any) -> Any:
         """Run a driver operation, restarting the session once if it has ended.
@@ -198,10 +306,14 @@ class CuaComputer:
                 return result
             except Exception as exc:  # noqa: BLE001 — retry once, then re-raise
                 last_exc = exc
-                if not self._is_session_ended(str(exc)):
+                if self._is_session_ended(str(exc)):
+                    # Session ended — drop the stale flag so the next attempt restarts.
+                    self._session_started = False
+                elif self._is_connection_dead(str(exc)):
+                    # The embedded host died — relaunch it on the next attempt.
+                    await self._reset_driver()
+                else:
                     raise
-                # Session ended — drop the stale flag so the next attempt restarts.
-                self._session_started = False
         assert last_exc is not None  # the loop always runs at least once
         raise last_exc
 
@@ -255,7 +367,6 @@ class CuaComputer:
             ClickButton,
             ClickInput,
             ClickPosition,
-            InputDeliveryMode,
         )
 
         # Map string button name to enum
@@ -271,7 +382,7 @@ class CuaComputer:
                 ClickInput(
                     target=ActionTarget.DESKTOP("primary"),
                     position=ClickPosition.COORDINATES(x, y),
-                    delivery_mode=InputDeliveryMode.FOREGROUND,
+                    delivery_mode=_cua_input_delivery(),
                     session=self._session_name,
                     button=btn,
                     count=count,
@@ -341,7 +452,7 @@ class CuaComputer:
         points over `duration_ms`, then releases — a continuous stroke. This is how
         you DRAW: one drag = one line segment; chain several to sketch shapes.
         """
-        from cua_driver import ClickButton, DesktopScope, DragInput
+        from cua_driver import ActionTarget, ClickButton, DragInput
 
         btn_map = {
             "left": ClickButton.LEFT,
@@ -357,8 +468,8 @@ class CuaComputer:
                     from_y=from_y,
                     to_x=to_x,
                     to_y=to_y,
-                    target=None,
-                    scope=DesktopScope.DESKTOP,
+                    target=ActionTarget.DESKTOP("primary"),
+                    scope=None,
                     session=self._session_name,
                     duration_ms=duration_ms,
                     steps=steps,
@@ -584,7 +695,7 @@ class CuaComputer:
         return str(self._run_async(self._clear_field_async()))
 
     def close(self) -> None:
-        """Shut down the CUA driver."""
+        """Shut down the CUA driver and its embedded host."""
         if self._driver is not None:
             try:
                 from cua_driver import EndSessionInput
@@ -598,7 +709,13 @@ class CuaComputer:
             except Exception:
                 pass
             self._driver = None
-            self._session_started = False
+        if self._host is not None:
+            try:
+                self._run_async(self._host.stop())
+            except Exception:
+                pass
+            self._host = None
+        self._session_started = False
 
 
 # Module-level singleton for the CUA backend

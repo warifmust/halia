@@ -179,6 +179,9 @@ class CuaDriver:
     @staticmethod
     def create() -> CuaDriver: ...
 
+    @staticmethod
+    def connect(socket_path: str | None = None) -> CuaDriver: ...
+
     async def start_session(self, input: StartSessionInput) -> Any: ...
     async def get_desktop_state(self, input: GetDesktopStateInput) -> Any: ...
     async def call_tool(self, name: str, arguments_json: str) -> Any: ...
@@ -192,3 +195,32 @@ class CuaDriver:
     async def move_cursor(self, input: MoveCursorInput) -> Any: ...
     async def set_agent_cursor_enabled(self, input: SetAgentCursorEnabledInput) -> Any: ...
     async def shutdown(self) -> Any: ...
+
+
+class EmbeddedDriverHostOptions:
+    def __init__(
+        self,
+        *,
+        binary_path: str,
+        host_bundle_id: str,
+        socket_path: str | None = None,
+        startup_timeout_ms: int | None = None,
+        shutdown_timeout_ms: int | None = None,
+        permission_mode: Any = None,
+        capability_manifest_path: str | None = None,
+        approve_capability_manifest: bool = False,
+        session_policy_path: str | None = None,
+        approve_session_policy: bool = False,
+        dangerously_bypass_approvals: bool = False,
+        environment: list[Any] | None = None,
+        inherit_stderr: bool = False,
+        no_overlay: bool = False,
+    ) -> None: ...
+
+
+class EmbeddedCuaDriverHost:
+    @classmethod
+    def with_options(cls, options: EmbeddedDriverHostOptions) -> EmbeddedCuaDriverHost: ...
+
+    async def start(self) -> Any: ...
+    async def stop(self) -> None: ...

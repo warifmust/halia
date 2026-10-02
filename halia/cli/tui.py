@@ -11,6 +11,7 @@ next; here we just prove the input feels right.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections.abc import Iterable
@@ -64,6 +65,14 @@ def _banner_text() -> str:
 
 _console = Console()
 PROMPT = HTML("<b><ansiyellow>❯</ansiyellow></b> ")  # bold yellow chevron
+
+# Per-session token ceiling (cumulative across all turns). 0 = unlimited (the
+# default). Cost-conscious users can set HALIA_SESSION_BUDGET_TOKENS (e.g. 1000000)
+# to stop accepting new work at the cap — warn at 80%, hard stop at 100%.
+try:
+    SESSION_BUDGET_TOKENS = int(os.environ.get("HALIA_SESSION_BUDGET_TOKENS", "0"))
+except ValueError:
+    SESSION_BUDGET_TOKENS = 0
 
 # Slash commands: (command, description). Drives both /help and the completion dropdown.
 _SLASH_COMMANDS: list[tuple[str, str]] = [
@@ -309,7 +318,7 @@ def build_session(**kwargs: Any) -> PromptSession[str]:
 def run_tui(
     allow_commands: bool = False,
     resume: str | None = None,
-    max_iters: int = 50,
+    max_iters: int = 0,
     allow_local: bool = True,
 ) -> None:
     """Banner + a real chat loop: the prompt_toolkit input feeds the converse() loop.
@@ -340,7 +349,9 @@ def run_tui(
     from halia.cli.slash import human_count
     from halia.config.settings import read_config
     from halia.core.agent import (
+        DEFAULT_BUDGET_TOKENS,
         DEFAULT_HISTORY_BUDGET_CHARS,
+        DEFAULT_TURN_TIMEOUT,
         RunLimitError,
         _get_system_prompt,
         _total_chars,
@@ -434,6 +445,11 @@ def run_tui(
 
     approve = _make_approver()  # one trust scope for the whole session
     budget = max_iters  # tool-call rounds per turn; raise it live with /iters
+    # Token budgets: per-turn cap (HALIA_BUDGET_TOKENS) and a per-session ceiling
+    # (HALIA_SESSION_BUDGET_TOKENS). Both default to 0 = unlimited; set them only
+    # if you want a cost ceiling on a paid model.
+    turn_budget = DEFAULT_BUDGET_TOKENS
+    session_budget = SESSION_BUDGET_TOKENS
     active_profile = "general"
     turn_secs = [0.0]  # last turn's wall time (list so the toolbar closure sees updates)
     total_usage = Usage()  # accumulated token usage across the session
@@ -441,13 +457,17 @@ def run_tui(
     footer = _Footer(console)  # live 'working' line during a turn
     streaming = {"on": False}  # is an answer currently streaming to the screen this turn?
     compact_always = {"on": False}  # remembers an "always compact" choice for the session
+    # HALIA_COMPACT_AUTO=true auto-compacts without prompting (headless/long sessions).
+    compact_auto = os.environ.get("HALIA_COMPACT_AUTO", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
     pending_image_id: str | None = None  # set by /image, consumed by next user message
     pending_teach_paste: tuple[str, str] | None = None  # (profile, description) from /teach --paste
 
     def compact_consent() -> bool:
         # Asked when the window nears full (~85%). yes = once, always = auto for the session,
         # no = skip (fall back to trimming). Mirrors the approval gate's trust model.
-        if compact_always["on"]:
+        if compact_always["on"] or compact_auto:
             return True
         footer.stop()  # pause the live line for the interactive prompt
         console.print()
@@ -681,8 +701,15 @@ def run_tui(
             console.print(f"[dim]{setting} set to: {value}[/dim]\n")
 
     def ctx_pct() -> int:
-        """How full the sent-context window is (a char proxy for tokens)."""
-        used = _total_chars(messages)
+        """How full the sent-context window is (a char proxy for tokens).
+
+        Counts the message history PLUS the tool schemas sent on every call — the
+        schemas are static per session but their JSON is real context cost that a
+        message-only proxy silently ignores.
+        """
+        import json
+
+        used = _total_chars(messages) + len(json.dumps(registry.tool_schemas()))
         return min(100, int(used / DEFAULT_HISTORY_BUDGET_CHARS * 100))
 
     def status_line() -> str:
@@ -701,9 +728,11 @@ def run_tui(
             if total_usage.cached_tokens and total_usage.prompt_tokens:
                 cpct = 100 * total_usage.cached_tokens // total_usage.prompt_tokens
                 tok_seg += f" · {cpct}% cached"
+        iters_label = "∞" if budget == 0 else str(budget)
+        time_label = "∞" if DEFAULT_TURN_TIMEOUT <= 0 else f"{DEFAULT_TURN_TIMEOUT:g}s"
         return (
             f" {active_profile} · {config.model} · {sess.id[:6]} · "
-            f"ctx {bar} {pct}% · budget {budget} · {tok_seg} "
+            f"ctx {bar} {pct}% · iters {iters_label} · time {time_label} · {tok_seg} "
             f"· shell {shell} · local {local} · {turn_secs[0]:.1f}s "
         )
 
@@ -727,8 +756,9 @@ def run_tui(
             break
         if user_input.lower() == "/clear":
             del messages[1:]  # keep the system prompt
+            total_usage = Usage()  # reset the session token counter too
             persist()
-            console.print("[dim]context cleared.[/dim]\n")
+            console.print("[dim]context cleared (token usage reset).[/dim]\n")
             continue
         if user_input.lower() == "/compact":
             from halia.core.agent import compact_history
@@ -776,11 +806,16 @@ def run_tui(
             continue
         if user_input.lower().startswith("/iters"):
             parts = user_input.split()
-            if len(parts) >= 2 and parts[1].isdigit() and int(parts[1]) > 0:
+            if len(parts) >= 2 and parts[1].isdigit() and int(parts[1]) >= 0:
                 budget = int(parts[1])
-                console.print(f"[dim]tool-call budget set to {budget}/turn.[/dim]\n")
+                label = "unlimited" if budget == 0 else f"{budget}/turn"
+                console.print(f"[dim]tool-call budget set to {label}.[/dim]\n")
             else:
-                console.print(f"[dim]tool-call budget is {budget}/turn. Usage: /iters N[/dim]\n")
+                label = "unlimited" if budget == 0 else f"{budget}/turn"
+                console.print(
+                    f"[dim]tool-call budget is {label}. "
+                    "Usage: /iters N (0 = unlimited)[/dim]\n"
+                )
             continue
         if user_input.lower().startswith("/image"):
             parts = user_input.split(maxsplit=1)
@@ -849,6 +884,23 @@ def run_tui(
             if to_run is None:
                 continue
             user_input = to_run  # a `/procedure run` — fall through to execute it
+
+        # Session token ceiling: stop accepting new work once cumulative usage crosses
+        # the budget (soft warning at 80%, hard stop at 100%).
+        if session_budget > 0 and total_usage.total_tokens >= session_budget:
+            console.print(
+                f"[yellow]session token budget reached "
+                f"({human_count(total_usage.total_tokens)} / "
+                f"{human_count(session_budget)}) — /clear to start fresh, or raise "
+                f"HALIA_SESSION_BUDGET_TOKENS.[/yellow]\n"
+            )
+            continue
+        if session_budget > 0 and total_usage.total_tokens >= session_budget * 4 // 5:
+            console.print(
+                f"[yellow]⚠️ {human_count(total_usage.total_tokens)} / "
+                f"{human_count(session_budget)} session tokens used — nearing the "
+                f"budget.[/yellow]"
+            )
 
         turn_start = len(messages)  # so a failed turn can be rolled back to a valid state
 
@@ -977,6 +1029,7 @@ def run_tui(
                 on_activity=on_activity, on_delta=on_delta,
                 compact_approver=compact_consent, on_compact=on_compact,
                 turn_note=advisory,
+                budget_tokens=turn_budget,
             )
         except RunLimitError as exc:
             close_stream()
@@ -1033,6 +1086,12 @@ def run_tui(
         else:
             # No tokens streamed (e.g. an answer produced without content deltas) — print whole.
             console.print(f"[bold]halia ›[/bold] {escape(result.answer)}")
+        if turn_budget > 0 and result.usage.total_tokens >= turn_budget:
+            console.print(
+                f"[yellow]⏳ Turn token budget reached "
+                f"({human_count(result.usage.total_tokens)} / "
+                f"{human_count(turn_budget)}) — say 'continue' to resume.[/yellow]"
+            )
         console.print()
 
         record = new_record(

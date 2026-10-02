@@ -6,8 +6,8 @@ import pytest
 
 from halia.audit.trace import Step
 from halia.config.settings import Config
-from halia.core.agent import RunLimitError, run
-from halia.providers.base import ChatResult, Message, ToolCall
+from halia.core.agent import RunLimitError, converse, run
+from halia.providers.base import ChatResult, Message, ToolCall, Usage
 from halia.skills import default_registry
 
 _CFG = Config(provider="x", model="m", base_url="u", api_key="k")
@@ -474,3 +474,63 @@ def test_turn_timeout_stops_loop_and_returns_partial() -> None:
     )
     assert calls["n"] == 1  # one model call, then stop — never executes the tool
     assert "time budget reached" in result.answer
+
+
+def test_converse_stops_at_token_budget() -> None:
+    """A per-turn token budget halts the loop and returns a budget-exceeded result."""
+    class Big:
+        def chat(
+            self, messages: list[Message], tools: Any = None, on_delta: Any = None
+        ) -> ChatResult:
+            return ChatResult(
+                content=None,
+                tool_calls=[],
+                usage=Usage(prompt_tokens=900, completion_tokens=100, total_tokens=1000),
+            )
+
+    messages: list[Message] = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "hello"},
+    ]
+    result = converse(
+        messages, _CFG, default_registry(), provider=Big(), budget_tokens=500,
+    )
+    assert "token budget reached" in result.answer
+    assert result.usage.total_tokens == 1000
+
+
+def test_converse_injects_budget_warning_near_cap() -> None:
+    """Nearing the token budget injects a FINISH-now warning into the next request."""
+    windows: list[list[Message]] = []
+
+    class TwoStep:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def chat(
+            self, messages: list[Message], tools: Any = None, on_delta: Any = None
+        ) -> ChatResult:
+            self.calls += 1
+            windows.append(list(messages))
+            if self.calls == 1:
+                return ChatResult(
+                    content=None,
+                    tool_calls=[ToolCall(id="1", name="list_files", arguments="{}")],
+                    usage=Usage(prompt_tokens=400, completion_tokens=0, total_tokens=400),
+                )
+            return ChatResult(
+                content="done",
+                tool_calls=[],
+                usage=Usage(prompt_tokens=50, completion_tokens=10, total_tokens=60),
+            )
+
+    messages: list[Message] = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "go"},
+    ]
+    result = converse(
+        messages, _CFG, default_registry(), provider=TwoStep(), budget_tokens=500,
+    )
+    assert result.answer == "done"
+    # 400/500 ≥ 80% → the second model call's window carries the warn note
+    assert any("Token budget nearly spent" in str(m.get("content")) for m in windows[1])

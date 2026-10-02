@@ -25,20 +25,20 @@ from halia.providers.base import (
     Usage,
 )
 
-# Read timeout per request (or per streamed chunk). Generous by default for heavy reasoning
-# + large outputs; override with HALIA_TIMEOUT (seconds).
+# Read timeout per request (or per streamed chunk). None = no timeout (the default).
+# Set HALIA_TIMEOUT (seconds) to re-enable a per-request/per-chunk read timeout.
+_raw_timeout = os.environ.get("HALIA_TIMEOUT", "").strip()
 try:
-    _DEFAULT_TIMEOUT = float(os.environ.get("HALIA_TIMEOUT", "180"))
+    _DEFAULT_TIMEOUT: float | None = float(_raw_timeout) if _raw_timeout else None
 except ValueError:
-    _DEFAULT_TIMEOUT = 180.0
+    _DEFAULT_TIMEOUT = None
 
-# Absolute cap on a single model generation. Streaming resets the per-chunk read
-# timeout, so a very long reasoning pass could otherwise run for hours; this is the
-# hard ceiling on the WHOLE generation (0 = no cap).
+# Absolute cap on a single model generation. 0 = no cap (the default). Set
+# HALIA_GENERATION_TIMEOUT (seconds) to cap a single generation.
 try:
-    _GENERATION_TIMEOUT = float(os.environ.get("HALIA_GENERATION_TIMEOUT", "600"))
+    _GENERATION_TIMEOUT = float(os.environ.get("HALIA_GENERATION_TIMEOUT", "0"))
 except ValueError:
-    _GENERATION_TIMEOUT = 600.0
+    _GENERATION_TIMEOUT = 0.0
 
 # Transient statuses worth retrying with backoff. 429 (rate limit) and 5xx (server errors)
 # usually clear within seconds; other 4xx are deterministic (auth, bad request) and must not
@@ -68,6 +68,19 @@ try:
 except ValueError:
     _DEFAULT_MAX_RPM = 0
 
+# Optional cap on a reasoning model's thinking budget, passed through verbatim as
+# `reasoning_effort` (e.g. "low"/"medium"/"high") when the provider supports it.
+# Empty = not sent, so the provider's own default applies. HALIA_REASONING_EFFORT.
+_DEFAULT_REASONING_EFFORT = os.environ.get("HALIA_REASONING_EFFORT", "").strip() or None
+
+# Retry a 200 response that carried no content AND no tool calls ("empty completion").
+# Common on free/flaky endpoints (truncated stream, soft rate-limit). 0 = hard error.
+# HALIA_EMPTY_RETRIES.
+try:
+    _DEFAULT_EMPTY_RETRIES = int(os.environ.get("HALIA_EMPTY_RETRIES", "2"))
+except ValueError:
+    _DEFAULT_EMPTY_RETRIES = 2
+
 
 class _RetryableResponse(Exception):
     """A 429/5xx received BEFORE any streamed token — safe to retry the whole request."""
@@ -76,6 +89,10 @@ class _RetryableResponse(Exception):
         super().__init__(message)
         self.message = message
         self.response = response
+
+
+class _EmptyCompletion(Exception):
+    """A 200 response with no content and no tool calls — retryable (flaky endpoints)."""
 
 
 class OpenAICompatProvider:
@@ -90,7 +107,7 @@ class OpenAICompatProvider:
         base_url: str,
         api_key: str,
         model: str,
-        timeout: float = _DEFAULT_TIMEOUT,
+        timeout: float | None = _DEFAULT_TIMEOUT,
         generation_timeout: float = _GENERATION_TIMEOUT,
         client: httpx.Client | None = None,
         auth_header: str = "Bearer",
@@ -98,6 +115,8 @@ class OpenAICompatProvider:
         retry_base: float = _DEFAULT_RETRY_BASE,
         retry_cap: float = _DEFAULT_RETRY_CAP,
         max_rpm: int = _DEFAULT_MAX_RPM,
+        reasoning_effort: str | None = _DEFAULT_REASONING_EFFORT,
+        empty_retries: int = _DEFAULT_EMPTY_RETRIES,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
@@ -107,6 +126,8 @@ class OpenAICompatProvider:
         self._max_retries = max_retries
         self._retry_base = retry_base
         self._retry_cap = retry_cap
+        self._reasoning_effort = reasoning_effort
+        self._empty_retries = empty_retries
         # Optional client-side RPM throttle (0 = disabled).
         self._min_interval = 60.0 / max_rpm if max_rpm > 0 else 0.0
         self._last_request_ts = 0.0
@@ -160,6 +181,11 @@ class OpenAICompatProvider:
         delay = base * jitter
         return delay if delay < self._retry_cap else self._retry_cap
 
+    def _empty_backoff(self, attempt: int) -> float:
+        """Delay before retrying an empty completion (no Retry-After header to honor)."""
+        delay = self._retry_base * (2 ** (attempt - 1))
+        return delay if delay < self._retry_cap else self._retry_cap
+
     def _chat_once(
         self, messages: list[Message], tools: list[dict[str, Any]] | None
     ) -> ChatResult:
@@ -167,37 +193,48 @@ class OpenAICompatProvider:
         payload: dict[str, Any] = {"model": self._model, "messages": messages, "stream": False}
         if tools:
             payload["tools"] = tools
+        if self._reasoning_effort:
+            payload["reasoning_effort"] = self._reasoning_effort
 
         attempt = 0
+        empty_tries = 0
         while True:
             try:
                 resp = self._client.post(url, json=payload, headers=headers)
             except httpx.HTTPError as exc:
                 raise ProviderError(f"request to {url} failed: {exc}") from exc
-            if resp.status_code == 200:
-                break
-            if resp.status_code in _RETRYABLE_STATUSES and attempt < self._max_retries:
-                attempt += 1
-                time.sleep(self._backoff_delay(resp, attempt))
-                continue
-            raise ProviderError(f"HTTP {resp.status_code} from {url}: {resp.text}")
+            if resp.status_code != 200:
+                if resp.status_code in _RETRYABLE_STATUSES and attempt < self._max_retries:
+                    attempt += 1
+                    time.sleep(self._backoff_delay(resp, attempt))
+                    continue
+                raise ProviderError(f"HTTP {resp.status_code} from {url}: {resp.text}")
 
-        data = resp.json()
-        try:
-            message = data["choices"][0]["message"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise ProviderError(f"unexpected response shape: {data!r}") from exc
+            data = resp.json()
+            try:
+                message = data["choices"][0]["message"]
+            except (KeyError, IndexError, TypeError) as exc:
+                raise ProviderError(f"unexpected response shape: {data!r}") from exc
 
-        content = message.get("content")
-        tool_calls = _parse_tool_calls(message.get("tool_calls"))
+            content = message.get("content")
+            tool_calls = _parse_tool_calls(message.get("tool_calls"))
 
-        # A reply with neither content nor tool calls is a failure (e.g. a reasoning
-        # model that spent its whole budget before answering — the agenta lesson).
-        if content is None and not tool_calls:
-            raise ProviderError(f"model returned no content and no tool calls: {message!r}")
+            # A reply with neither content nor tool calls is a failure (e.g. a reasoning
+            # model that spent its whole budget before answering, or a flaky free endpoint
+            # returning an empty body). Retry a few times before giving up.
+            if content is None and not tool_calls:
+                if empty_tries < self._empty_retries:
+                    empty_tries += 1
+                    time.sleep(self._empty_backoff(empty_tries))
+                    continue
+                raise ProviderError(
+                    "model returned no content and no tool calls "
+                    f"(endpoint may be throttled/truncated) — retried "
+                    f"{self._empty_retries}× and gave up"
+                )
 
-        usage = _parse_usage(data.get("usage"))
-        return ChatResult(content=content, tool_calls=tool_calls, usage=usage)
+            usage = _parse_usage(data.get("usage"))
+            return ChatResult(content=content, tool_calls=tool_calls, usage=usage)
 
     def _chat_stream(
         self,
@@ -212,8 +249,11 @@ class OpenAICompatProvider:
             payload["tools"] = tools
         # Request usage in the final streaming chunk (OpenAI, DeepSeek, OpenRouter support this).
         payload["stream_options"] = {"include_usage": True}
+        if self._reasoning_effort:
+            payload["reasoning_effort"] = self._reasoning_effort
 
         attempt = 0
+        empty_tries = 0
         while True:
             try:
                 return self._chat_stream_attempt(url, payload, headers, on_delta)
@@ -222,6 +262,15 @@ class OpenAICompatProvider:
                     raise ProviderError(exc.message) from exc
                 attempt += 1
                 time.sleep(self._backoff_delay(exc.response, attempt))
+            except _EmptyCompletion:
+                if empty_tries >= self._empty_retries:
+                    raise ProviderError(
+                        "model stream returned no content and no tool calls "
+                        f"(endpoint may be throttled/truncated) — retried "
+                        f"{self._empty_retries}× and gave up"
+                    ) from None
+                empty_tries += 1
+                time.sleep(self._empty_backoff(empty_tries))
 
     def _chat_stream_attempt(
         self,
@@ -292,7 +341,7 @@ class OpenAICompatProvider:
             for _, e in sorted(acc.items())
         ]
         if content is None and not tool_calls:
-            raise ProviderError("stream returned no content and no tool calls")
+            raise _EmptyCompletion()
         return ChatResult(content=content, tool_calls=tool_calls, usage=stream_usage)
 
 

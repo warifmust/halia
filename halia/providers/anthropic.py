@@ -27,15 +27,16 @@ from halia.providers.base import (
 _ANTHROPIC_VERSION = "2023-06-01"
 
 try:
-    _DEFAULT_TIMEOUT = float(os.environ.get("HALIA_TIMEOUT", "180"))
+    _raw_timeout = os.environ.get("HALIA_TIMEOUT", "").strip()
+    _DEFAULT_TIMEOUT: float | None = float(_raw_timeout) if _raw_timeout else None
 except ValueError:
-    _DEFAULT_TIMEOUT = 180.0
+    _DEFAULT_TIMEOUT = None
 
-# Absolute cap on a single model generation (0 = no cap). See openai_compat.
+# Absolute cap on a single model generation (0 = no cap, the default). See openai_compat.
 try:
-    _GENERATION_TIMEOUT = float(os.environ.get("HALIA_GENERATION_TIMEOUT", "600"))
+    _GENERATION_TIMEOUT = float(os.environ.get("HALIA_GENERATION_TIMEOUT", "0"))
 except ValueError:
-    _GENERATION_TIMEOUT = 600.0
+    _GENERATION_TIMEOUT = 0.0
 
 # Anthropic requires an explicit max_tokens on every request (unlike OpenAI). Default is
 # generous for report/QA-doc generation; override with HALIA_MAX_TOKENS.
@@ -53,7 +54,7 @@ class AnthropicProvider:
         base_url: str,
         api_key: str,
         model: str,
-        timeout: float = _DEFAULT_TIMEOUT,
+        timeout: float | None = _DEFAULT_TIMEOUT,
         generation_timeout: float = _GENERATION_TIMEOUT,
         client: httpx.Client | None = None,
         max_tokens: int = _DEFAULT_MAX_TOKENS,
