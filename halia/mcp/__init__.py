@@ -105,10 +105,7 @@ def register_mcp_skills(registry: SkillRegistry, console: Any = None) -> McpStat
     if not servers:
         return status
     if not mcp_available():
-        detail = (
-            "error: `mcp` package missing — run `uv tool install --force "
-            "'git+https://github.com/warifmust/halia.git@main' --with mcp`"
-        )
+        detail = "error: `mcp` package not installed"
         for spec in servers:
             status.add(spec.name, detail)
     elif load_mode() == "lazy":

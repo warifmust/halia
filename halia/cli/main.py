@@ -890,31 +890,46 @@ def _make_approver() -> Any:
 
 def _register_mcp(registry: Any) -> tuple[str, str]:
     """Connect/register MCP. Returns (system_block, banner_line) — no printing."""
-    from halia.mcp import mcp_system_block, register_mcp_skills
+    from halia.mcp import mcp_available, mcp_system_block, register_mcp_skills
 
     status = register_mcp_skills(registry, console=console)
     block = mcp_system_block()
     banner = ""
     if status.announce and status.servers:
-        parts: list[str] = []
-        for name, detail in status.servers.items():
-            if detail == "ok":
-                parts.append(f"[green]{name}[/green]")
-            elif detail == "lazy":
-                parts.append(f"[yellow]{name}[/yellow]")
-            else:
-                reason = detail.removeprefix("error: ")
-                parts.append(f"[red]{name}[/red] ✗ [dim]({reason})[/dim]")
-        if block:
+        if not mcp_available():
+            # The optional `mcp` package is absent: say it once, not once per server.
             n = len(status.servers)
+            label = "server" if n == 1 else "servers"
+            names = " · ".join(f"[red]{name}[/red]" for name in status.servers)
+            install = (
+                "uv tool install --force "
+                "'git+https://github.com/warifmust/halia.git@main' --with mcp"
+            )
             banner = (
-                f"🌐 MCP: {' · '.join(parts)} "
-                f"[dim]({n} server{'s' if n != 1 else ''} — connect on use)[/dim]"
+                f"🌐 MCP: {names} [dim]({n} {label})[/dim]\n"
+                f"[dim]`mcp` package not installed — run:[/dim]\n"
+                f"[dim]{install}[/dim]"
             )
         else:
-            tools = status.tool_count
-            label = "tool" if tools == 1 else "tools"
-            banner = f"🌐 MCP: {' · '.join(parts)} [dim]({tools} {label})[/dim]"
+            parts: list[str] = []
+            for name, detail in status.servers.items():
+                if detail == "ok":
+                    parts.append(f"[green]{name}[/green]")
+                elif detail == "lazy":
+                    parts.append(f"[yellow]{name}[/yellow]")
+                else:
+                    reason = detail.removeprefix("error: ")
+                    parts.append(f"[red]{name}[/red] ✗ [dim]({reason})[/dim]")
+            if block:
+                n = len(status.servers)
+                banner = (
+                    f"🌐 MCP: {' · '.join(parts)} "
+                    f"[dim]({n} server{'s' if n != 1 else ''} — connect on use)[/dim]"
+                )
+            else:
+                tools = status.tool_count
+                label = "tool" if tools == 1 else "tools"
+                banner = f"🌐 MCP: {' · '.join(parts)} [dim]({tools} {label})[/dim]"
     return block, banner
 
 
