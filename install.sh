@@ -40,14 +40,37 @@ else
   echo "→ installing the halia command from ${REPO_URL}@${REF} …"
 fi
 
-# 3. Install (or update) halia as an isolated uv tool — its own venv, `halia` on PATH.
-#    --force re-pulls the latest, so re-running this script updates an existing install.
-uv tool install --force "$TARGET"
+# 3. Preserve the extras an existing install already had. `uv tool install --force`
+#    rebuilds the venv from THIS command line alone and rewrites the receipt to
+#    match, so a re-run used to silently drop `mcp` and the pinned `cua-driver` —
+#    leaving "mcp not installed" and the `cursor_motion` CUA failure behind. The
+#    previous install knows what it had: halia records the specs in its own config
+#    (~/.halia/config.json, which uv never touches) as well as the receipt, so ask
+#    it. An install predating this helper behaves exactly as it did before.
+WITH_ARGS=()
+TOOL_DIR="$(uv tool dir 2>/dev/null || true)"
+TOOL_PY="${TOOL_DIR:+${TOOL_DIR}/halia/bin/python}"
+if [ -n "$TOOL_PY" ] && [ -x "$TOOL_PY" ]; then
+  EXTRAS="$("$TOOL_PY" -c 'from halia.upgrade import upgrade_with_requirements as f; print("\n".join(f()))' 2>/dev/null || true)"
+  while IFS= read -r spec; do
+    if [ -n "$spec" ]; then
+      WITH_ARGS+=(--with "$spec")
+    fi
+  done <<< "$EXTRAS"
+  if [ "${#WITH_ARGS[@]}" -gt 0 ]; then
+    echo "→ keeping installed extras: ${EXTRAS//$'\n'/ }"
+  fi
+fi
 
-# 4. Make sure uv's tool-bin dir is on PATH for future shells.
+# 4. Install (or update) halia as an isolated uv tool — its own venv, `halia` on PATH.
+#    --force re-pulls the latest, so re-running this script updates an existing install.
+#    ${WITH_ARGS[@]+…} keeps this safe under `set -u` when the array is empty (bash 3.2).
+uv tool install --force "$TARGET" ${WITH_ARGS[@]+"${WITH_ARGS[@]}"}
+
+# 5. Make sure uv's tool-bin dir is on PATH for future shells.
 uv tool update-shell >/dev/null 2>&1 || true
 
-# 5. Confirm the version that landed (best-effort — PATH may only apply to new shells).
+# 6. Confirm the version that landed (best-effort — PATH may only apply to new shells).
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 VERSION="$(halia --version 2>/dev/null || true)"
 

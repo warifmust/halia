@@ -92,12 +92,111 @@ def _prune_screenshots() -> None:
         pass
 
 
-def _format_window_state(raw: str) -> str:
-    """Turn a get_window_state JSON payload into a clickable element listing.
+def _window_target_schema() -> dict[str, Any]:
+    """Schema properties that let an action address a window instead of the desktop."""
+    return {
+        "pid": {
+            "type": "integer",
+            "description": "Process id of the target window's app — with window_id.",
+        },
+        "window_id": {
+            "type": "integer",
+            "description": "Window id from cua_desktop — with pid.",
+        },
+        "element_token": {
+            "type": "string",
+            "description": (
+                "Element token from cua_window. Preferred over pixel coordinates: "
+                "it needs no pixel maths and works on backgrounded, minimized, "
+                "hidden and off-Space windows."
+            ),
+        },
+        "element_index": {
+            "type": "integer",
+            "description": "Element index from cua_window — use with snapshot_id.",
+        },
+        "snapshot_id": {
+            "type": "string",
+            "description": "Snapshot id from cua_window — required with element_index.",
+        },
+    }
 
-    Each element becomes `[index] role "label" -> click (cx, cy)` where the center
-    is given in the LAST cua_screenshot's pixel space (divided by CuaScreenshot._scale),
-    so the model can pass those numbers straight to cua_click.
+
+def _as_int(value: Any, field: str) -> int:
+    """Coerce a tool argument to int, naming the field when it cannot be."""
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"'{field}' must be an integer, got {value!r}") from exc
+
+
+def _window_target_args(args: dict[str, Any]) -> dict[str, Any]:
+    """Collect the window-scoped addressing fields from a tool call's arguments.
+
+    Both `pid` and `window_id` are needed to address a window, so a lone one is
+    ignored and the call falls back to the desktop path rather than failing.
+    """
+    target: dict[str, Any] = {}
+    raw_pid = args.get("pid")
+    raw_window = args.get("window_id")
+    if raw_pid is None or raw_window is None:
+        return {}
+    target["pid"] = _as_int(raw_pid, "pid")
+    target["window_id"] = _as_int(raw_window, "window_id")
+    for key in ("element_token", "snapshot_id"):
+        value = args.get(key)
+        if value:
+            target[key] = str(value)
+    if args.get("element_index") is not None:
+        target["element_index"] = _as_int(args.get("element_index"), "element_index")
+    return target
+
+
+def _short_num(value: Any) -> str:
+    """Format a coordinate without a trailing `.0`."""
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return str(int(num)) if num.is_integer() else f"{num:g}"
+
+
+def _window_header(data: dict[str, Any]) -> str:
+    """Identity line for a get_window_state payload: window, title, pid, bounds."""
+    head = f"window {data.get('window_id')}"
+    title = str(data.get("window_title") or data.get("app_name") or "").strip()
+    if title:
+        head += f' "{title[:80]}"'
+    if data.get("pid") is not None:
+        head += f" (pid {data.get('pid')})"
+    bounds = data.get("window_bounds")
+    if isinstance(bounds, dict):
+        width = bounds.get("width")
+        height = bounds.get("height")
+        if width is not None and height is not None:
+            head += f" {_short_num(width)}x{_short_num(height)}"
+            if bounds.get("x") is not None and bounds.get("y") is not None:
+                head += (
+                    f" at ({_short_num(bounds.get('x'))},"
+                    f"{_short_num(bounds.get('y'))})"
+                )
+    snapshot = data.get("snapshot_id")
+    if snapshot:
+        head += f" snapshot={snapshot}"
+    return head
+
+
+def _format_window_state(raw: str) -> str:
+    """Turn a get_window_state JSON payload into an actionable element listing.
+
+    Each element becomes `[index] role "label" (x,y wxh) token=…`. Frames are left
+    in the window's own coordinate space exactly as the driver reports them — never
+    rescaled against `CuaScreenshot._scale`, which belongs to the desktop capture
+    and would silently misplace every click aimed at a window.
+
+    `token` is the driver's element handle: pass it to cua_click to act on that
+    element with no coordinates at all, which also works while the window is
+    backgrounded, minimized, hidden or on another Space.
     """
     try:
         data = json.loads(raw)
@@ -107,56 +206,64 @@ def _format_window_state(raw: str) -> str:
     if not isinstance(data, dict):
         return raw
 
-    total = data.get("element_count")
     elements = data.get("elements")
     if not isinstance(elements, list):
         return raw
 
-    scale = CuaScreenshot._scale
     lines: list[str] = []
     for el in elements:
         if not isinstance(el, dict):
             continue
-        frame = el.get("frame")
-        if not isinstance(frame, dict):
-            continue
-        fx = frame.get("x")
-        fy = frame.get("y")
-        fw = frame.get("w", frame.get("width"))
-        fh = frame.get("h", frame.get("height"))
-        if fx is None or fy is None or fw is None or fh is None:
-            continue
-        try:
-            x = float(fx)
-            y = float(fy)
-            w = float(fw)
-            h = float(fh)
-        except (TypeError, ValueError):
-            continue
-        cx = round((x + w / 2) / scale, 1)
-        cy = round((y + h / 2) / scale, 1)
         idx = el.get("element_index")
+        if idx is None:
+            continue
         role = el.get("role") or "element"
         label = el.get("label")
         label_part = f' "{label}"' if label else ""
-        lines.append(f"[{idx}] {role}{label_part} -> click ({cx}, {cy})")
+        frame_part = ""
+        frame = el.get("frame")
+        if isinstance(frame, dict):
+            fx = frame.get("x")
+            fy = frame.get("y")
+            fw = frame.get("w", frame.get("width"))
+            fh = frame.get("h", frame.get("height"))
+            if None not in (fx, fy, fw, fh):
+                frame_part = (
+                    f" ({_short_num(fx)},{_short_num(fy)}"
+                    f" {_short_num(fw)}x{_short_num(fh)})"
+                )
+        token = el.get("element_token")
+        token_part = f" token={token}" if token else ""
+        lines.append(f"[{idx}] {role}{label_part}{frame_part}{token_part}")
 
-    header = f"window elements: {len(lines)} returned"
+    header = _window_header(data)
+    # The driver returns an EMPTY tree on purpose when it cannot prove which
+    # accessibility surface belongs to this window, and refuses background input
+    # while that holds — say so, or an empty listing reads as "no controls here".
+    if data.get("degraded"):
+        reason = str(
+            data.get("degraded_reason") or "the accessibility surface is unresolved"
+        )
+        if len(reason) > 180:
+            reason = reason[:180].rstrip() + "…"
+        header += f"\n⚠ degraded: {reason}"
+
+    header += f"\nelements: {len(lines)} returned"
+    total = data.get("element_count")
     if total is not None:
         header += f" (of {total})"
-    if scale != 1.0:
-        header += f" — coords are in your last screenshot's pixel space (scale x{scale:.2f})"
     if not lines:
-        return header + "\n(no elements with a frame)"
+        return header + "\n(no elements returned)"
     return header + "\n" + "\n".join(lines)
 
 
-def _summarize_desktop_tree(tree: str, max_chars: int = 2400) -> str:
-    """Compact the get_accessibility_tree payload into app/window name+id lines.
+def _summarize_apps(tree: str, max_chars: int = 2400) -> str:
+    """Compact the get_accessibility_tree payload into a running-app inventory.
 
-    The raw tree lists every running app (and its windows) as JSON — large and
-    mostly redundant. Keep the parts the model needs (app name, pid, window_id)
-    and drop the bulk, so cua_desktop stays cheap enough to call repeatedly.
+    Only app names and pids are kept. Window ids deliberately come from
+    `_summarize_windows` instead: this tree lists only windows that are currently
+    on screen, and its records are not a reliable source of a real window-server
+    id — acting on one taken from here can silently target the wrong window.
 
     Apps are ordered frontmost-first when the tree exposes a frontmost/active
     flag, so the app the user is actually working in is never truncated away.
@@ -194,22 +301,6 @@ def _summarize_desktop_tree(tree: str, max_chars: int = 2400) -> str:
         pid = app.get("pid")
         if pid is not None:
             head += f" (pid {pid})"
-        windows = app.get("windows")
-        if isinstance(windows, list):
-            wins: list[str] = []
-            for w in windows:
-                if not isinstance(w, dict):
-                    continue
-                wid = w.get("window_id")
-                if wid is None:
-                    wid = w.get("id")
-                title = w.get("title") or ""
-                if wid is not None:
-                    wins.append(f"win {wid} {title}".strip())
-                elif title:
-                    wins.append(str(title))
-            if wins:
-                head += ": " + ", ".join(wins[:8])
         # Stop before adding a line that would overflow the budget.
         if sum(len(line) + 1 for line in lines) + len(head) + 1 > max_chars:
             omitted = len(apps) - idx
@@ -219,11 +310,76 @@ def _summarize_desktop_tree(tree: str, max_chars: int = 2400) -> str:
     body = "\n".join(lines)
     summary = f"running apps ({len(apps)}):\n{_trunc(body)}"
     if omitted > 0:
-        summary += (
-            f"\n(… {omitted} app(s) omitted — the list was truncated. If the app "
-            "you need isn't shown, call cua_desktop again or ask for its pid/"
-            "window_id.)"
-        )
+        summary += f"\n(… {omitted} app(s) omitted — the list was truncated.)"
+    return summary
+
+
+def _summarize_windows(raw: str, max_chars: int = 2400) -> str:
+    """Compact the list_windows payload into one line per app, with window ids.
+
+    These are the authoritative window ids. `list_windows` reports every top-level
+    window the window server knows about — including ones that are off-screen,
+    minimized, hidden or on another Space or display — so a window id from here
+    can be handed straight to cua_window or to a window-scoped cua_click even when
+    the desktop capture cannot see that window.
+    """
+    def _trunc(text: str) -> str:
+        return text if len(text) <= max_chars else text[:max_chars].rstrip() + "…"
+
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return _trunc(raw)
+    if not isinstance(data, dict):
+        return _trunc(raw)
+    windows = data.get("windows")
+    if not isinstance(windows, list):
+        return _trunc(raw)
+
+    def _sort_key(w: dict[str, Any]) -> tuple[int, int]:
+        """On-screen windows first, then front-to-back by z-order."""
+        return (0 if w.get("is_on_screen") else 1, -(w.get("z_index") or 0))
+
+    by_app: dict[str, list[dict[str, Any]]] = {}
+    for w in windows:
+        if isinstance(w, dict):
+            by_app.setdefault(str(w.get("app_name") or "app"), []).append(w)
+
+    ordered = sorted(by_app.items(), key=lambda kv: min(_sort_key(w) for w in kv[1]))
+    lines: list[str] = []
+    omitted_apps = 0
+    for idx, (app, wins) in enumerate(ordered):
+        wins.sort(key=_sort_key)
+        pid = wins[0].get("pid")
+        head = f"{app}" + (f" (pid {pid})" if pid is not None else "")
+        parts: list[str] = []
+        for w in wins[:8]:
+            bounds = w.get("bounds")
+            size = ""
+            if isinstance(bounds, dict):
+                width = bounds.get("width")
+                height = bounds.get("height")
+                if width is not None and height is not None:
+                    size = f" {_short_num(width)}x{_short_num(height)}"
+            title = str(w.get("title") or "").strip()
+            title_part = f' "{title[:60]}"' if title else ""
+            state = "on-screen" if w.get("is_on_screen") else "off-screen"
+            parts.append(f"[{w.get('window_id')}]{title_part}{size} {state}")
+        if len(wins) > 8:
+            parts.append(f"(+{len(wins) - 8} more)")
+        head += ": " + "; ".join(parts)
+        if sum(len(line) + 1 for line in lines) + len(head) + 1 > max_chars:
+            omitted_apps = len(ordered) - idx
+            break
+        lines.append(head)
+
+    body = _trunc("\n".join(lines))
+    summary = (
+        f"windows ({len(windows)} total,"
+        f" {sum(1 for w in windows if w.get('is_on_screen'))} on screen):\n{body}"
+    )
+    if omitted_apps > 0:
+        summary += f"\n(… {omitted_apps} app(s) omitted — the list was truncated.)"
     return summary
 
 
@@ -389,7 +545,10 @@ class CuaOpenUrl(Skill):
 class CuaScreenshot(Skill):
     name = "cua_screenshot"
     description = (
-        "Take a screenshot of the desktop. Captures the full screen via CUA driver. "
+        "Take a screenshot of the PRIMARY display via CUA driver. Captures that "
+        "display at full screen size — windows living on another display, or "
+        "minimized or hidden, are not in frame; use cua_desktop to find them and "
+        "cua_window(screenshot=true) to see one. "
         "The screenshot is returned as an image the model can analyze visually, "
         "with a faint coordinate grid overlay so elements can be targeted "
         "precisely. The full-resolution PNG is also saved to the screenshots "
@@ -533,9 +692,11 @@ class CuaScreenshot(Skill):
 class CuaClick(Skill):
     name = "cua_click"
     description = (
-        "Click at coordinates on the desktop via CUA driver. "
-        "Works on any desktop element — native apps, browser, system UI. "
-        "Use cua_screenshot first to see where to click."
+        "Click via the CUA driver. Window-scoped: pass pid + window_id with an "
+        "element_token from cua_window (preferred — no coordinates needed), or x/y "
+        "in that window's screenshot space; this also reaches windows on another "
+        "display or Space. Desktop-scoped: pass x/y only, in your last "
+        "cua_screenshot's pixel space."
     )
     dangerous = True  # clicking on desktop can be risky
     untrusted = False
@@ -550,8 +711,8 @@ class CuaClick(Skill):
                 "enum": ["left", "right", "middle"],
                 "description": "Mouse button (default: left).",
             },
+            **_window_target_schema(),
         },
-        "required": ["x", "y"],
     }
 
     def run(self, args: dict[str, Any]) -> str:
@@ -562,15 +723,28 @@ class CuaClick(Skill):
         y = args.get("y")
         button = args.get("button", "left")
 
-        if x is None or y is None:
-            return "error: 'x' and 'y' coordinates are required"
-
         try:
+            cua = _get_cua()
+            target = _window_target_args(args)
+            if target:
+                if not (target.get("element_token") or target.get("element_index")):
+                    if x is None or y is None:
+                        return (
+                            "error: a window click needs element_token, "
+                            "element_index, or both x and y"
+                        )
+                return str(cua.click(
+                    None if x is None else float(x),
+                    None if y is None else float(y),
+                    button,
+                    **target,
+                ))
+            if x is None or y is None:
+                return "error: 'x' and 'y' coordinates are required"
             # Map from the (resized) image the model saw to real screen pixels.
             scale = CuaScreenshot._scale
             rx = float(x) * scale
             ry = float(y) * scale
-            cua = _get_cua()
             result = cua.click(rx, ry, button)
             if scale != 1.0:
                 result += f" [image {x},{y} -> screen {rx:.0f},{ry:.0f}]"
@@ -600,8 +774,8 @@ class CuaDoubleClick(Skill):
                 "enum": ["left", "right", "middle"],
                 "description": "Mouse button (default: left).",
             },
+            **_window_target_schema(),
         },
-        "required": ["x", "y"],
     }
 
     def run(self, args: dict[str, Any]) -> str:
@@ -612,14 +786,27 @@ class CuaDoubleClick(Skill):
         y = args.get("y")
         button = args.get("button", "left")
 
-        if x is None or y is None:
-            return "error: 'x' and 'y' coordinates are required"
-
         try:
+            cua = _get_cua()
+            target = _window_target_args(args)
+            if target:
+                if not (target.get("element_token") or target.get("element_index")):
+                    if x is None or y is None:
+                        return (
+                            "error: a window double-click needs element_token, "
+                            "element_index, or both x and y"
+                        )
+                return str(cua.double_click(
+                    None if x is None else float(x),
+                    None if y is None else float(y),
+                    button,
+                    **target,
+                ))
+            if x is None or y is None:
+                return "error: 'x' and 'y' coordinates are required"
             scale = CuaScreenshot._scale
             rx = float(x) * scale
             ry = float(y) * scale
-            cua = _get_cua()
             result = cua.double_click(rx, ry, button)
             if scale != 1.0:
                 result += f" [image {x},{y} -> screen {rx:.0f},{ry:.0f}]"
@@ -663,6 +850,7 @@ class CuaDrag(Skill):
                 "description": "Intermediate points along the path — more steps make "
                 "the stroke smoother (optional).",
             },
+            **_window_target_schema(),
         },
         "required": ["from_x", "from_y", "to_x", "to_y"],
     }
@@ -687,12 +875,22 @@ class CuaDrag(Skill):
             return "error: 'from_x', 'from_y', 'to_x' and 'to_y' are required"
 
         try:
+            cua = _get_cua()
+            target = _window_target_args(args)
+            if target:
+                # Window coordinates are passed through untouched: they are already
+                # in the target window's screenshot space, not the desktop's.
+                return str(cua.drag(
+                    float(from_x), float(from_y), float(to_x), float(to_y),
+                    button=button,
+                    duration_ms=duration_ms, steps=steps,
+                    **target,
+                ))
             scale = CuaScreenshot._scale
             rfx = float(from_x) * scale
             rfy = float(from_y) * scale
             rtx = float(to_x) * scale
             rty = float(to_y) * scale
-            cua = _get_cua()
             result = cua.drag(
                 rfx, rfy, rtx, rty,
                 button=button,
@@ -1149,8 +1347,10 @@ class CuaType(Skill):
     dangerous = True  # typing can interact with any app
     untrusted = False  # text comes from the model/user, not an external source
     description = (
-        "Type text into the currently focused element. "
-        "Click the field first to focus it, then type. "
+        "Type text into a field. Window-scoped: pass pid + window_id (with an "
+        "element_token from cua_window to pick the field) to type into a window on "
+        "any display, even backgrounded. Desktop-scoped: click the field first to "
+        "focus it, then type. "
         "Set clear=true to select-all + delete the field's existing "
         "content before typing — use this whenever you are re-filling or "
         "correcting a field that already has text, so you replace instead "
@@ -1172,6 +1372,7 @@ class CuaType(Skill):
                     "to replace."
                 ),
             },
+            **_window_target_schema(),
         },
         "required": ["text"],
     }
@@ -1187,6 +1388,17 @@ class CuaType(Skill):
 
         try:
             cua = _get_cua()
+            target = _window_target_args(args)
+            if target:
+                if clear:
+                    return (
+                        "error: clear=true is not supported for a window target — "
+                        "select-all would act on whatever the desktop has focused, "
+                        "not on window "
+                        f"{target.get('window_id')}. Clear the field first (focus "
+                        "it, cua_hotkey cmd+a, cua_press_key delete), then type."
+                    )
+                return str(cua.type_text(text, **target))
             if clear:
                 cua.clear_field()
             cua.type_text(text)
@@ -1200,8 +1412,11 @@ class CuaType(Skill):
 class CuaScroll(Skill):
     name = "cua_scroll"
     description = (
-        "Scroll the desktop at coordinates via CUA driver. "
-        "Works on any scrollable element — browser, document viewer, etc."
+        "Scroll via the CUA driver. Window-scoped: pass pid + window_id, with an "
+        "element_token from cua_window or x/y in that window's screenshot space — "
+        "this is how you scroll a specific window, including one on another "
+        "display or in the background. Desktop-scoped: pass x/y only, scrolling "
+        "whatever the desktop has focused."
     )
     dangerous = False
     untrusted = False
@@ -1220,8 +1435,8 @@ class CuaScroll(Skill):
                 "type": "integer",
                 "description": "Scroll amount (default: 3).",
             },
+            **_window_target_schema(),
         },
-        "required": ["x", "y"],
     }
 
     def run(self, args: dict[str, Any]) -> str:
@@ -1233,15 +1448,28 @@ class CuaScroll(Skill):
         direction = args.get("direction", "down")
         amount = args.get("amount", 3)
 
-        if x is None or y is None:
-            return "error: 'x' and 'y' coordinates are required"
-
         try:
+            cua = _get_cua()
+            target = _window_target_args(args)
+            if target:
+                if not target.get("element_token") and (x is None or y is None):
+                    return (
+                        "error: a window scroll needs element_token, or both x "
+                        "and y (in that window's screenshot space)"
+                    )
+                return str(cua.scroll(
+                    None if x is None else float(x),
+                    None if y is None else float(y),
+                    direction,
+                    int(amount),
+                    **target,
+                ))
+            if x is None or y is None:
+                return "error: 'x' and 'y' coordinates are required"
             # Map from the (resized) image the model saw to real screen pixels.
             scale = CuaScreenshot._scale
             rx = float(x) * scale
             ry = float(y) * scale
-            cua = _get_cua()
             result = cua.scroll(rx, ry, direction, amount)
             if scale != 1.0:
                 result += f" [image {x},{y} -> screen {rx:.0f},{ry:.0f}]"
@@ -1253,10 +1481,11 @@ class CuaScroll(Skill):
 class CuaDesktopState(Skill):
     name = "cua_desktop"
     description = (
-        "Get the current desktop state: screen size, running apps, and visible "
-        "windows (each with its pid and window_id). Then use cua_window(pid, "
-        "window_id) to get a window's UI elements with clickable coordinates. "
-        "Use this for precise targeting when pixel-guessing keeps missing."
+        "Get the current desktop state: screen size, running apps, and every "
+        "top-level window with its pid and window_id. Includes off-screen windows "
+        "— minimized, hidden, or on another Space or display — so this is how you "
+        "find a window cua_screenshot cannot show. Then use cua_window(pid, "
+        "window_id) for that window's controls."
     )
     dangerous = False
     untrusted = False
@@ -1273,9 +1502,12 @@ class CuaDesktopState(Skill):
         try:
             cua = _get_cua()
             parts = [str(cua.desktop_state())]
+            windows = cua.list_windows()
+            if windows:
+                parts.append(_summarize_windows(windows))
             tree = cua.accessibility_tree()
             if tree:
-                parts.append(_summarize_desktop_tree(tree))
+                parts.append(_summarize_apps(tree))
                 hint = _security_dialog_hint(tree)
                 if hint:
                     parts.append(hint)
@@ -1287,14 +1519,21 @@ class CuaDesktopState(Skill):
 class CuaWindow(Skill):
     name = "cua_window"
     description = (
-        "Get a window's UI elements with their clickable coordinates (from the "
-        "macOS accessibility tree). Pass the pid and window_id returned by "
-        "cua_desktop. Each element lists its index, role, label, and click center "
-        "— in the same pixel space as the last cua_screenshot, so the centers can "
-        "be passed straight to cua_click. Use this instead of pixel-guessing."
+        "Get one window's UI controls from the macOS accessibility tree. Pass the "
+        "pid and window_id from cua_desktop. Each element lists its index, role, "
+        "label, frame and token — pass the token to cua_click to act on that "
+        "element with no coordinates. Works on windows the desktop capture cannot "
+        "show (minimized, hidden, another Space or display). Add screenshot=true to "
+        "also see the window itself."
     )
     dangerous = False
     untrusted = False
+    # Multi-modal: `screenshot=true` stages a window image for the agent loop
+    multi_modal = True
+    _pending_image: str | None = None
+    _pending_detail: str | None = None
+    # Hash of the last staged window image, so an unchanged window is detected.
+    _last_hash: str | None = None
     parameters: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,
@@ -1308,6 +1547,14 @@ class CuaWindow(Skill):
             "max_depth": {
                 "type": "integer",
                 "description": "Cap the accessibility-tree depth (optional).",
+            },
+            "screenshot": {
+                "type": "boolean",
+                "description": (
+                    "Also capture this window and attach it as an image (default "
+                    "false). Use it to see a window cua_screenshot cannot show — "
+                    "one on another display or Space, or minimized."
+                ),
             },
         },
         "required": ["pid", "window_id"],
@@ -1329,13 +1576,16 @@ class CuaWindow(Skill):
         if max_depth is not None:
             max_depth = int(max_depth)
 
+        dest = _screenshot_dest() if args.get("screenshot") else None
+
         try:
             cua = _get_cua()
             raw = cua.window_state(
                 int(pid), int(window_id),
                 max_elements=max_elements, max_depth=max_depth,
+                screenshot_out_file=str(dest) if dest else None,
             )
-            return _format_window_state(raw)
+            listing = _format_window_state(raw)
         except Exception as exc:
             detail = str(exc)
             lowered = detail.lower()
@@ -1346,3 +1596,50 @@ class CuaWindow(Skill):
                     "window_id values, then retry cua_window with those."
                 )
             return f"error: {detail}"
+
+        if dest is None:
+            return listing
+        return f"{listing}\n{self._stage_window_image(dest)}"
+
+    @staticmethod
+    def _stage_window_image(dest: Path) -> str:
+        """Attach the captured window PNG to the model's next observation.
+
+        The image is passed through at the driver's own size — no halia-side
+        resize — so pixel coordinates read off it stay in the same space the
+        window's pixel actions expect.
+        """
+        import base64
+
+        try:
+            import io
+
+            from PIL import Image
+
+            _prune_screenshots()
+            if not dest.is_file():
+                return f"(no screenshot was written to {dest})"
+            img: Image.Image = Image.open(dest)
+            width, height = img.size
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            img = _overlay_grid(img, step=CuaScreenshot._GRID_STEP)
+            buf = io.BytesIO()
+            img.save(
+                buf,
+                format="JPEG",
+                quality=CuaScreenshot._JPEG_QUALITY,
+                optimize=True,
+            )
+            CuaWindow._pending_image = base64.b64encode(buf.getvalue()).decode("ascii")
+            CuaWindow._pending_detail = "high"
+            return f"Window screenshot attached ({width}x{height}). Saved to {dest}."
+        except ImportError:
+            _prune_screenshots()
+            if not dest.is_file():
+                return f"(no screenshot was written to {dest})"
+            CuaWindow._pending_image = base64.b64encode(dest.read_bytes()).decode("ascii")
+            CuaWindow._pending_detail = "high"
+            return f"Window screenshot attached. Saved to {dest}."
+        except Exception as exc:  # noqa: BLE001 — the listing alone is still useful
+            return f"(window screenshot unavailable: {exc})"

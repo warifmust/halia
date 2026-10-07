@@ -19,7 +19,12 @@ dependencies = [
 
 [project.optional-dependencies]
 cua = [
-    "cua-driver>=0.29",
+    # Pinned exactly, not as a range: 0.34.0 made `cursor_motion` a required field
+    # on StartSessionInput, which halia does not pass — every cua_* tool fails at
+    # session start there. The 0.30–0.33 line shares the compatible signature but
+    # has never been run, so installs stay on the validated build. Keep in step
+    # with CUA_DRIVER_SPEC in halia/computer/cua_backend.py.
+    "cua-driver==0.29.1",
 ]
 mcp = [
     "mcp>=1.0",

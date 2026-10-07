@@ -26,6 +26,81 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# The version halia installs and re-applies on every install/upgrade: the one that
+# has been validated end to end. Pinned EXACTLY rather than as a range so no
+# re-install can silently swap the driver for a build nobody has run — including
+# the newer-but-compatible 0.30–0.33 line, which shares the 3-field signature but
+# has never been exercised. Change this only after testing the new version.
+CUA_DRIVER_SPEC = "==0.29.1"
+
+# The band halia can still DRIVE, used by the session guard. Wider than the install
+# pin on purpose: a deliberately-installed in-band driver is accepted rather than
+# blocked, while 0.34.0+ is refused.
+CUA_DRIVER_MIN_VERSION = "0.29"
+CUA_DRIVER_MAX_VERSION = "0.34"  # exclusive
+CUA_DRIVER_RANGE = f">={CUA_DRIVER_MIN_VERSION},<{CUA_DRIVER_MAX_VERSION}"
+
+
+def _version_tuple(text: str) -> tuple[int, ...]:
+    """Parse a release version into comparable integers ('0.29.1' → (0, 29, 1))."""
+    parts: list[int] = []
+    for chunk in str(text).split("."):
+        digits = ""
+        for char in chunk:
+            if not char.isdigit():
+                break
+            digits += char
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts)
+
+
+def runtime_cua_driver_version() -> str | None:
+    """The installed cua-driver version, or None when it is not installed."""
+    import importlib.metadata as metadata
+
+    try:
+        return metadata.version("cua-driver")
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def cua_driver_supported(version: str) -> bool:
+    """Whether halia can start a session against this cua-driver version."""
+    parsed = _version_tuple(version)
+    return (
+        parsed >= _version_tuple(CUA_DRIVER_MIN_VERSION)
+        and parsed < _version_tuple(CUA_DRIVER_MAX_VERSION)
+    )
+
+
+def cua_driver_repair_hint() -> str:
+    """The command that pins cua-driver back into halia's supported range."""
+    return (
+        f"uv pip install --python {sys.executable} 'cua-driver{CUA_DRIVER_SPEC}'"
+    )
+
+
+def check_cua_driver_version() -> str | None:
+    """Return a repair-oriented message when the installed driver is unsupported.
+
+    The pin is what keeps halia working: 0.34.0 requires a `cursor_motion` field
+    halia never passes, so an upgraded driver breaks every cua_* tool with an
+    opaque TypeError. Anything that re-resolves the environment (`uv tool install
+    --force`, a manual `uv pip install cua-driver`) can drift past the cap, so the
+    session refuses to start and says exactly how to get back.
+    """
+    version = runtime_cua_driver_version()
+    if version is None or cua_driver_supported(version):
+        return None
+    return (
+        f"cua-driver {version} is outside halia's supported range "
+        f"({CUA_DRIVER_RANGE}). Version {CUA_DRIVER_MAX_VERSION}.0 requires a "
+        "`cursor_motion` field halia does not pass, so every cua_* tool would fail "
+        "at session start. Pin it back:\n"
+        f"  {cua_driver_repair_hint()}\n"
+        "or reinstall with `halia setup --cua`, which installs a supported version."
+    )
+
 
 def cua_available() -> bool:
     """Whether CUA desktop automation can run in this environment.
@@ -249,6 +324,9 @@ class CuaComputer:
         driver = await self._ensure_driver()
         if self._session_started:
             return driver
+        problem = check_cua_driver_version()
+        if problem is not None:
+            raise RuntimeError(problem)
         from cua_driver import StartSessionInput
 
         await driver.start_session(
@@ -358,10 +436,81 @@ class CuaComputer:
 
         return str(screenshot_path)
 
+    @staticmethod
+    def _brief(result: str, limit: int = 300) -> str:
+        """Collapse a driver result into one short confirmation line."""
+        text = " ".join(str(result).split())
+        if not text:
+            return ""
+        return text if len(text) <= limit else text[:limit].rstrip() + "…"
+
+    async def _window_action_async(self, tool: str, arguments: dict[str, Any]) -> str:
+        """Run a window-scoped action through the driver's tool channel.
+
+        Window actions go through `call_tool` rather than the typed SDK inputs so
+        the argument names match the driver's published schemas and so element
+        addressing (`element_token`, or `element_index` + `snapshot_id`), which has
+        no typed equivalent, stays available.
+        """
+        payload: dict[str, Any] = {"session": self._session_name, **arguments}
+        result = await self._call_tool_async(tool, payload)
+        return self._brief(self._tool_result_to_str(result))
+
     async def _click_async(
-        self, x: float, y: float, button: str = "left", count: int = 1
+        self,
+        x: float | None = None,
+        y: float | None = None,
+        button: str = "left",
+        count: int = 1,
+        *,
+        pid: int | None = None,
+        window_id: int | None = None,
+        element_token: str | None = None,
+        element_index: int | None = None,
+        snapshot_id: str | None = None,
     ) -> str:
-        """Click at coordinates via cua-driver (count=2 for a double-click)."""
+        """Click via cua-driver (count=2 for a double-click).
+
+        Window-scoped when `pid` + `window_id` are given, which reaches windows
+        the desktop capture cannot: prefer `element_token`, because it needs no
+        coordinates and works while the window is backgrounded, minimized, hidden
+        or on another Space. `x`/`y` are then in that window's screenshot pixel
+        space. Without `pid`/`window_id` the click is desktop-scoped and `x`/`y`
+        are screen pixels on the primary display.
+        """
+        verb = "Double-clicked" if count >= 2 else "Clicked"
+
+        if pid is not None and window_id is not None:
+            arguments: dict[str, Any] = {
+                "pid": int(pid),
+                "window_id": int(window_id),
+                "button": button,
+                "count": count,
+            }
+            if element_token:
+                arguments["element_token"] = element_token
+                where = f"element {element_token}"
+            elif element_index is not None:
+                arguments["element_index"] = int(element_index)
+                if snapshot_id:
+                    arguments["snapshot_id"] = snapshot_id
+                where = f"element {element_index}"
+            elif x is not None and y is not None:
+                arguments["x"] = float(x)
+                arguments["y"] = float(y)
+                where = f"({x}, {y})"
+            else:
+                return (
+                    "error: a window click needs element_token, element_index, "
+                    "or x/y"
+                )
+            detail = await self._window_action_async("click", arguments)
+            result = f"{verb} {button} in window {window_id} at {where}"
+            return f"{result} — {detail}" if detail else result
+
+        if x is None or y is None:
+            return "error: a desktop click needs x and y"
+
         from cua_driver import (
             ActionTarget,
             ClickButton,
@@ -390,11 +539,43 @@ class CuaComputer:
             )
 
         await self._with_session_retry(_op)
-        verb = "Double-clicked" if count >= 2 else "Clicked"
         return f"{verb} {button} at ({x}, {y})"
 
-    async def _type_async(self, text: str) -> str:
-        """Type text via cua-driver."""
+    async def _type_async(
+        self,
+        text: str,
+        *,
+        pid: int | None = None,
+        window_id: int | None = None,
+        element_token: str | None = None,
+        element_index: int | None = None,
+        snapshot_id: str | None = None,
+    ) -> str:
+        """Type text via cua-driver.
+
+        Window-scoped when `pid` + `window_id` are given: the write goes to the
+        element named by `element_token`/`element_index`, or to that window's
+        focused field when neither is given. Without them it types into whatever
+        the desktop currently has focused.
+        """
+        preview = f"{text[:50]}{'...' if len(text) > 50 else ''}"
+
+        if pid is not None and window_id is not None:
+            arguments: dict[str, Any] = {
+                "pid": int(pid),
+                "window_id": int(window_id),
+                "text": text,
+            }
+            if element_token:
+                arguments["element_token"] = element_token
+            elif element_index is not None:
+                arguments["element_index"] = int(element_index)
+                if snapshot_id:
+                    arguments["snapshot_id"] = snapshot_id
+            detail = await self._window_action_async("type_text", arguments)
+            result = f"Typed into window {window_id}: {preview}"
+            return f"{result} — {detail}" if detail else result
+
         from cua_driver import DesktopScope, TypeTextInput
 
         async def _op(driver: Any) -> Any:
@@ -408,13 +589,47 @@ class CuaComputer:
             )
 
         await self._with_session_retry(_op)
-        return f"Typed: {text[:50]}{'...' if len(text) > 50 else ''}"
+        return f"Typed: {preview}"
 
     async def _scroll_async(
-        self, x: float, y: float, direction: str = "down", amount: int = 3
+        self,
+        x: float | None = None,
+        y: float | None = None,
+        direction: str = "down",
+        amount: int = 3,
+        *,
+        pid: int | None = None,
+        window_id: int | None = None,
+        element_token: str | None = None,
     ) -> str:
-        """Scroll at coordinates via cua-driver."""
+        """Scroll via cua-driver.
+
+        Window-scoped when `pid` + `window_id` are given, which is what scrolls a
+        specific window rather than whatever the desktop has focused: `element_token`
+        targets one element, or `x`/`y` roll the wheel at a point in that window's
+        screenshot space — the only way to scroll a nested scrollable region.
+        """
+        if pid is not None and window_id is not None:
+            arguments: dict[str, Any] = {
+                "pid": int(pid),
+                "window_id": int(window_id),
+                "direction": direction,
+                "amount": amount,
+                "by": "line",
+            }
+            if element_token:
+                arguments["element_token"] = element_token
+            elif x is not None and y is not None:
+                arguments["x"] = float(x)
+                arguments["y"] = float(y)
+            detail = await self._window_action_async("scroll", arguments)
+            result = f"Scrolled {direction} in window {window_id}"
+            return f"{result} — {detail}" if detail else result
+
         from cua_driver import DesktopScope, ScrollBy, ScrollDirection, ScrollInput
+
+        if x is None or y is None:
+            x = y = 0.0
 
         async def _op(driver: Any) -> Any:
             return await driver.scroll(
@@ -445,13 +660,43 @@ class CuaComputer:
         duration_ms: int | None = None,
         steps: int | None = None,
         modifier: list[str] | None = None,
+        *,
+        pid: int | None = None,
+        window_id: int | None = None,
     ) -> str:
         """Drag from (from_x, from_y) to (to_x, to_y) via cua-driver.
 
         Presses the button at the start point, moves through `steps` intermediate
         points over `duration_ms`, then releases — a continuous stroke. This is how
         you DRAW: one drag = one line segment; chain several to sketch shapes.
+
+        Window-scoped when `pid` + `window_id` are given, where all four
+        coordinates are in that window's screenshot pixel space; otherwise the
+        drag runs against the primary display.
         """
+        if pid is not None and window_id is not None:
+            arguments: dict[str, Any] = {
+                "pid": int(pid),
+                "window_id": int(window_id),
+                "from_x": from_x,
+                "from_y": from_y,
+                "to_x": to_x,
+                "to_y": to_y,
+                "button": button,
+            }
+            if duration_ms is not None:
+                arguments["duration_ms"] = duration_ms
+            if steps is not None:
+                arguments["steps"] = steps
+            if modifier:
+                arguments["modifier"] = modifier
+            detail = await self._window_action_async("drag", arguments)
+            result = (
+                f"Dragged in window {window_id} from ({from_x}, {from_y}) "
+                f"to ({to_x}, {to_y})"
+            )
+            return f"{result} — {detail}" if detail else result
+
         from cua_driver import ActionTarget, ClickButton, DragInput
 
         btn_map = {
@@ -560,19 +805,42 @@ class CuaComputer:
         result = await self._call_tool_async("get_accessibility_tree", {})
         return self._tool_result_to_str(result)
 
+    async def _list_windows_async(self) -> str:
+        """Enumerate every top-level window the window server knows about.
+
+        Unlike `get_accessibility_tree`, this includes off-screen windows —
+        minimized, hidden-launched, and on another Space or display — and gives
+        the real window-server id needed to target one. That makes it the only
+        reliable source of the `pid`/`window_id` pair `_window_state_async` takes.
+        """
+        result = await self._call_tool_async("list_windows", {})
+        return self._tool_result_to_str(result)
+
     async def _window_state_async(
         self,
         pid: int,
         window_id: int,
         max_elements: int | None = None,
         max_depth: int | None = None,
+        screenshot_out_file: str | None = None,
     ) -> str:
-        """Return a window's UI element tree (roles, labels, frames) as JSON."""
+        """Return a window's UI element tree (roles, labels, frames) as JSON.
+
+        Pass `screenshot_out_file` to have the driver write the window's own PNG
+        there. A window capture resolves by window id, so it works for windows the
+        desktop capture cannot reach — another display, another Space, or hidden.
+        """
         arguments: dict[str, Any] = {"pid": pid, "window_id": window_id}
         if max_elements is not None:
             arguments["max_elements"] = max_elements
         if max_depth is not None:
             arguments["max_depth"] = max_depth
+        # Never take the inline base64 PNG — it is ~1 MB per call. A caller that
+        # wants the image passes `screenshot_out_file` and the driver writes it
+        # to disk instead.
+        arguments["include_screenshot"] = False
+        if screenshot_out_file is not None:
+            arguments["screenshot_out_file"] = screenshot_out_file
         result = await self._call_tool_async("get_window_state", arguments)
         return self._tool_result_to_str(result)
 
@@ -624,21 +892,88 @@ class CuaComputer:
         """Take a desktop screenshot (sync wrapper)."""
         return str(self._run_async(self._screenshot_async(path)))
 
-    def click(self, x: float, y: float, button: str = "left") -> str:
-        """Click at coordinates (sync wrapper)."""
-        return str(self._run_async(self._click_async(x, y, button)))
+    def click(
+        self,
+        x: float | None = None,
+        y: float | None = None,
+        button: str = "left",
+        *,
+        pid: int | None = None,
+        window_id: int | None = None,
+        element_token: str | None = None,
+        element_index: int | None = None,
+        snapshot_id: str | None = None,
+    ) -> str:
+        """Click (sync wrapper). Window-scoped when `pid` + `window_id` are given."""
+        return str(self._run_async(self._click_async(
+            x, y, button,
+            pid=pid,
+            window_id=window_id,
+            element_token=element_token,
+            element_index=element_index,
+            snapshot_id=snapshot_id,
+        )))
 
-    def double_click(self, x: float, y: float, button: str = "left") -> str:
-        """Double-click at coordinates (sync wrapper)."""
-        return str(self._run_async(self._click_async(x, y, button, count=2)))
+    def double_click(
+        self,
+        x: float | None = None,
+        y: float | None = None,
+        button: str = "left",
+        *,
+        pid: int | None = None,
+        window_id: int | None = None,
+        element_token: str | None = None,
+        element_index: int | None = None,
+        snapshot_id: str | None = None,
+    ) -> str:
+        """Double-click (sync wrapper). Window-scoped when `pid` + `window_id` are given."""
+        return str(self._run_async(self._click_async(
+            x, y, button, count=2,
+            pid=pid,
+            window_id=window_id,
+            element_token=element_token,
+            element_index=element_index,
+            snapshot_id=snapshot_id,
+        )))
 
-    def type_text(self, text: str) -> str:
-        """Type text (sync wrapper)."""
-        return str(self._run_async(self._type_async(text)))
+    def type_text(
+        self,
+        text: str,
+        *,
+        pid: int | None = None,
+        window_id: int | None = None,
+        element_token: str | None = None,
+        element_index: int | None = None,
+        snapshot_id: str | None = None,
+    ) -> str:
+        """Type text (sync wrapper). Window-scoped when `pid` + `window_id` are given."""
+        return str(self._run_async(self._type_async(
+            text,
+            pid=pid,
+            window_id=window_id,
+            element_token=element_token,
+            element_index=element_index,
+            snapshot_id=snapshot_id,
+        )))
 
-    def scroll(self, x: float, y: float, direction: str = "down", amount: int = 3) -> str:
-        """Scroll at coordinates (sync wrapper)."""
-        return str(self._run_async(self._scroll_async(x, y, direction, amount)))
+    def scroll(
+        self,
+        x: float | None = None,
+        y: float | None = None,
+        direction: str = "down",
+        amount: int = 3,
+        *,
+        pid: int | None = None,
+        window_id: int | None = None,
+        element_token: str | None = None,
+    ) -> str:
+        """Scroll (sync wrapper). Window-scoped when `pid` + `window_id` are given."""
+        return str(self._run_async(self._scroll_async(
+            x, y, direction, amount,
+            pid=pid,
+            window_id=window_id,
+            element_token=element_token,
+        )))
 
     def drag(
         self,
@@ -650,11 +985,16 @@ class CuaComputer:
         duration_ms: int | None = None,
         steps: int | None = None,
         modifier: list[str] | None = None,
+        *,
+        pid: int | None = None,
+        window_id: int | None = None,
     ) -> str:
         """Drag from one point to another (sync wrapper)."""
         return str(self._run_async(
             self._drag_async(
-                from_x, from_y, to_x, to_y, button, duration_ms, steps, modifier
+                from_x, from_y, to_x, to_y, button, duration_ms, steps, modifier,
+                pid=pid,
+                window_id=window_id,
             )
         ))
 
@@ -670,16 +1010,23 @@ class CuaComputer:
         """Get the accessibility-tree summary (apps + visible windows) — sync wrapper."""
         return str(self._run_async(self._accessibility_tree_async()))
 
+    def list_windows(self) -> str:
+        """Enumerate all top-level windows, including off-screen ones — sync wrapper."""
+        return str(self._run_async(self._list_windows_async()))
+
     def window_state(
         self,
         pid: int,
         window_id: int,
         max_elements: int | None = None,
         max_depth: int | None = None,
+        screenshot_out_file: str | None = None,
     ) -> str:
         """Get a window's UI element tree as JSON — sync wrapper."""
         return str(self._run_async(
-            self._window_state_async(pid, window_id, max_elements, max_depth)
+            self._window_state_async(
+                pid, window_id, max_elements, max_depth, screenshot_out_file
+            )
         ))
 
     def hotkey(self, keys: list[str]) -> str:

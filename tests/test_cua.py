@@ -555,7 +555,8 @@ def test_cua_window_requires_pid_and_window_id(monkeypatch: Any) -> None:
     assert "required" in out
 
 
-def test_cua_window_formats_elements_and_scales(monkeypatch: Any) -> None:
+def test_cua_window_keeps_frames_in_the_window_s_own_space(monkeypatch: Any) -> None:
+    """Window element frames must not be rescaled by the desktop screenshot's scale."""
     from halia.skills.cua import CuaScreenshot, CuaWindow
 
     monkeypatch.setattr("halia.skills.cua._is_cua_enabled", lambda: True)
@@ -564,22 +565,52 @@ def test_cua_window_formats_elements_and_scales(monkeypatch: Any) -> None:
         def window_state(
             self, pid: int, window_id: int,
             max_elements: Any = None, max_depth: Any = None,
+            screenshot_out_file: Any = None,
         ) -> str:
             return (
-                '{"element_count": 2, "elements": ['
-                '{"element_index": 0, "role": "AXWindow", "label": "Win", '
-                '"frame": {"x": 0, "y": 30, "w": 1920, "h": 1050}},'
-                '{"element_index": 1, "role": "AXButton", '
-                '"frame": {"x": 10, "y": 39, "w": 16, "h": 16}}]}'
+                '{"window_id": 68, "window_title": "Doc", "pid": 662,'
+                ' "window_bounds": {"x": 0, "y": 30, "width": 1920, "height": 1050},'
+                ' "element_count": 2, "elements": ['
+                '{"element_index": 0, "role": "AXWindow", "label": "Win",'
+                ' "frame": {"x": 0, "y": 30, "w": 1920, "h": 1050},'
+                ' "element_token": "tok-0"},'
+                '{"element_index": 1, "role": "AXButton",'
+                ' "frame": {"x": 10, "y": 39, "w": 16, "h": 16}}]}'
             )
 
     monkeypatch.setattr("halia.skills.cua._get_cua", lambda: FakeCua())
+    # A desktop screenshot with a non-1.0 scale must not leak into window frames.
     monkeypatch.setattr(CuaScreenshot, "_scale", 2.0)
 
-    out = CuaWindow().run({"pid": 123, "window_id": 456})
-    assert 'AXWindow "Win" -> click (480.0, 277.5)' in out
-    assert "AXButton -> click (9.0, 23.5)" in out
+    out = CuaWindow().run({"pid": 662, "window_id": 68})
+    assert '[0] AXWindow "Win" (0,30 1920x1050) token=tok-0' in out
+    assert "[1] AXButton (10,39 16x16)" in out
+    assert 'window 68 "Doc" (pid 662) 1920x1050 at (0,30)' in out
     assert "of 2" in out
+
+
+def test_cua_window_surfaces_a_degraded_tree(monkeypatch: Any) -> None:
+    """An empty degraded tree must say why, not read as 'no controls here'."""
+    from halia.skills.cua import CuaWindow
+
+    monkeypatch.setattr("halia.skills.cua._is_cua_enabled", lambda: True)
+
+    class FakeCua:
+        def window_state(
+            self, pid: int, window_id: int,
+            max_elements: Any = None, max_depth: Any = None,
+            screenshot_out_file: Any = None,
+        ) -> str:
+            return (
+                '{"window_id": 68, "degraded": true,'
+                ' "degraded_reason": "ax_window_unresolved: no AXWindow matches",'
+                ' "element_count": 0, "elements": []}'
+            )
+
+    monkeypatch.setattr("halia.skills.cua._get_cua", lambda: FakeCua())
+    out = CuaWindow().run({"pid": 662, "window_id": 68})
+    assert "degraded" in out
+    assert "ax_window_unresolved" in out
 
 
 def test_cua_window_passes_bounds_to_driver(monkeypatch: Any) -> None:
@@ -592,11 +623,13 @@ def test_cua_window_passes_bounds_to_driver(monkeypatch: Any) -> None:
         def window_state(
             self, pid: int, window_id: int,
             max_elements: Any = None, max_depth: Any = None,
+            screenshot_out_file: Any = None,
         ) -> str:
             calls["pid"] = pid
             calls["window_id"] = window_id
             calls["max_elements"] = max_elements
             calls["max_depth"] = max_depth
+            calls["screenshot_out_file"] = screenshot_out_file
             return '{"elements": []}'
 
     monkeypatch.setattr("halia.skills.cua._get_cua", lambda: FakeCua())
@@ -605,6 +638,39 @@ def test_cua_window_passes_bounds_to_driver(monkeypatch: Any) -> None:
     assert calls["window_id"] == 34
     assert calls["max_elements"] == 50
     assert calls["max_depth"] == 6
+    # No screenshot requested: the element tree is the point, and the inline PNG
+    # would be ~1 MB of base64.
+    assert calls["screenshot_out_file"] is None
+
+
+def test_cua_window_screenshot_writes_and_stages_the_window_image(
+    monkeypatch: Any, tmp_path: Any
+) -> None:
+    """screenshot=true captures the window itself, for windows no desktop grab can show."""
+    from halia.skills.cua import CuaWindow
+
+    monkeypatch.setattr("halia.skills.cua._is_cua_enabled", lambda: True)
+    dest = tmp_path / "window.png"
+
+    class FakeCua:
+        def window_state(
+            self, pid: int, window_id: int,
+            max_elements: Any = None, max_depth: Any = None,
+            screenshot_out_file: Any = None,
+        ) -> str:
+            assert screenshot_out_file == str(dest)
+            Image.new("RGB", (40, 20), "white").save(screenshot_out_file)
+            return '{"window_id": 7, "elements": []}'
+
+    monkeypatch.setattr("halia.skills.cua._get_cua", lambda: FakeCua())
+    monkeypatch.setattr("halia.skills.cua._screenshot_dest", lambda: dest)
+    monkeypatch.setattr("halia.skills.cua._prune_screenshots", lambda: None)
+    CuaWindow._pending_image = None
+
+    out = CuaWindow().run({"pid": 1, "window_id": 7, "screenshot": True})
+    assert "Window screenshot attached (40x20)" in out
+    assert CuaWindow._pending_image
+    CuaWindow._pending_image = None
 
 
 def test_cua_window_stale_id_error_hints_to_rerun_desktop(monkeypatch: Any) -> None:
@@ -630,8 +696,8 @@ def test_cua_window_stale_id_error_hints_to_rerun_desktop(monkeypatch: Any) -> N
 # ── cua_desktop: compact accessibility-tree summary ──────────────────────
 
 
-def test_summarize_desktop_tree_keeps_app_names_and_window_ids() -> None:
-    from halia.skills.cua import _summarize_desktop_tree
+def test_summarize_apps_keeps_app_names_and_pids() -> None:
+    from halia.skills.cua import _summarize_apps
 
     tree = json.dumps({
         "apps": [
@@ -641,24 +707,26 @@ def test_summarize_desktop_tree_keeps_app_names_and_window_ids() -> None:
              "windows": [{"window_id": 2, "title": "AutoDraw"}]},
         ]
     })
-    out = _summarize_desktop_tree(tree)
+    out = _summarize_apps(tree)
     assert "Slack" in out
     assert "Arc" in out
     assert "pid 2104" in out
-    assert "win 2 AutoDraw" in out
+    # Window ids come from list_windows instead: this tree only lists on-screen
+    # windows and is not a reliable source of a real window-server id.
+    assert "win 2" not in out
 
 
-def test_summarize_desktop_tree_truncates_unparseable_tree() -> None:
-    from halia.skills.cua import _summarize_desktop_tree
+def test_summarize_apps_truncates_unparseable_tree() -> None:
+    from halia.skills.cua import _summarize_apps
 
     raw = "x" * 5000
-    out = _summarize_desktop_tree(raw)
+    out = _summarize_apps(raw)
     assert len(out) <= 2500
     assert out.endswith("…")
 
 
-def test_summarize_desktop_tree_orders_frontmost_first() -> None:
-    from halia.skills.cua import _summarize_desktop_tree
+def test_summarize_apps_orders_frontmost_first() -> None:
+    from halia.skills.cua import _summarize_apps
 
     tree = json.dumps({
         "apps": [
@@ -667,12 +735,12 @@ def test_summarize_desktop_tree_orders_frontmost_first() -> None:
              "windows": [{"window_id": 9, "title": "Canva"}]},
         ]
     })
-    out = _summarize_desktop_tree(tree)
+    out = _summarize_apps(tree)
     assert out.index("Arc") < out.index("Slack")
 
 
-def test_summarize_desktop_tree_notes_omitted_apps() -> None:
-    from halia.skills.cua import _summarize_desktop_tree
+def test_summarize_apps_notes_omitted_apps() -> None:
+    from halia.skills.cua import _summarize_apps
 
     tree = json.dumps({
         "apps": [
@@ -681,8 +749,80 @@ def test_summarize_desktop_tree_notes_omitted_apps() -> None:
             {"name": "Gamma", "pid": 3, "windows": []},
         ]
     })
-    out = _summarize_desktop_tree(tree, max_chars=40)
+    out = _summarize_apps(tree, max_chars=40)
     assert "omitted" in out
+
+
+# ── cua_desktop: the window list ─────────────────────────────────────────
+
+
+def test_summarize_windows_lists_off_screen_windows_with_real_ids() -> None:
+    from halia.skills.cua import _summarize_windows
+
+    raw = json.dumps({
+        "current_space_id": 3,
+        "windows": [
+            {"window_id": 68, "pid": 662, "app_name": "Arc", "title": "News",
+             "bounds": {"x": 0, "y": 30, "width": 1920, "height": 1050},
+             "is_on_screen": True, "z_index": 44},
+            {"window_id": 85, "pid": 662, "app_name": "Arc", "title": "",
+             "bounds": {"x": 0, "y": 0, "width": 1920, "height": 30},
+             "is_on_screen": False, "z_index": 56},
+        ],
+    })
+    out = _summarize_windows(raw)
+    assert "2 total, 1 on screen" in out
+    assert 'Arc (pid 662): [68] "News" 1920x1050 on-screen' in out
+    assert "[85]" in out and "off-screen" in out
+
+
+def test_summarize_windows_puts_on_screen_windows_first() -> None:
+    from halia.skills.cua import _summarize_windows
+
+    raw = json.dumps({
+        "windows": [
+            {"window_id": 2, "pid": 1, "app_name": "Beta", "title": "",
+             "is_on_screen": False, "z_index": 5},
+            {"window_id": 1, "pid": 2, "app_name": "Alpha", "title": "",
+             "is_on_screen": True, "z_index": 1},
+        ],
+    })
+    out = _summarize_windows(raw)
+    assert out.index("Alpha") < out.index("Beta")
+
+
+def test_summarize_windows_falls_back_to_raw_text() -> None:
+    from halia.skills.cua import _summarize_windows
+
+    assert _summarize_windows("not json") == "not json"
+
+
+def test_cua_desktop_includes_the_window_list(monkeypatch: Any) -> None:
+    """cua_desktop must source window ids from list_windows, not the AX tree."""
+    from halia.skills.cua import CuaDesktopState
+
+    monkeypatch.setattr("halia.skills.cua._is_cua_enabled", lambda: True)
+
+    class FakeCua:
+        def desktop_state(self) -> str:
+            return "Desktop state:"
+
+        def list_windows(self) -> str:
+            return json.dumps({
+                "windows": [
+                    {"window_id": 877, "pid": 47749, "app_name": "Code",
+                     "title": "halia", "bounds": {"width": 1920, "height": 1050},
+                     "is_on_screen": False, "z_index": 3},
+                ],
+            })
+
+        def accessibility_tree(self) -> str:
+            return json.dumps({"apps": [{"name": "Code", "pid": 47749}]})
+
+    monkeypatch.setattr("halia.skills.cua._get_cua", lambda: FakeCua())
+    out = CuaDesktopState().run({})
+    assert 'Code (pid 47749): [877] "halia" 1920x1050 off-screen' in out
+    assert "running apps (1)" in out
 
 
 def test_security_dialog_hint_detects_system_prompts() -> None:
@@ -704,3 +844,276 @@ def test_security_dialog_hint_detects_system_prompts() -> None:
     })
     assert _security_dialog_hint(benign) is None
     assert _security_dialog_hint("not json") is None
+
+
+# ── window-scoped actions ─────────────────────────────────────────────────
+
+
+class _FakeToolResult:
+    """Minimal stand-in for the driver's ToolResult."""
+
+    def __init__(self, structured: str = '{"ok": true}', text: str = "") -> None:
+        self.structured_json = structured
+        self.text = text
+
+
+class _FakeToolDriver:
+    """Records what goes through the driver's generic tool channel."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def call_tool(self, name: str, arguments_json: str) -> _FakeToolResult:
+        self.calls.append((name, json.loads(arguments_json)))
+        return _FakeToolResult()
+
+
+def _backend_with(driver: Any) -> Any:
+    """A CuaComputer wired to a fake driver, bypassing the embedded host launch."""
+    from halia.computer.cua_backend import CuaComputer
+
+    cua = CuaComputer()
+    cua._driver = driver
+    cua._session_started = True
+    return cua
+
+
+def test_cua_click_window_target_uses_the_tool_channel() -> None:
+    """A window click must address pid/window_id + token, never the desktop target."""
+    driver = _FakeToolDriver()
+    cua = _backend_with(driver)
+
+    out = cua.click(pid=662, window_id=68, element_token="tok-1")
+
+    assert [name for name, _ in driver.calls] == ["click"]
+    payload = driver.calls[0][1]
+    assert payload["pid"] == 662
+    assert payload["window_id"] == 68
+    assert payload["element_token"] == "tok-1"
+    assert payload["session"] == cua._session_name
+    assert "window 68" in out
+
+
+def test_cua_click_window_target_accepts_element_index_and_snapshot() -> None:
+    driver = _FakeToolDriver()
+    cua = _backend_with(driver)
+
+    cua.click(pid=1, window_id=2, element_index=7, snapshot_id="sabc1234")
+
+    payload = driver.calls[0][1]
+    assert payload["element_index"] == 7
+    assert payload["snapshot_id"] == "sabc1234"
+    assert "element_token" not in payload
+
+
+def test_cua_click_window_target_accepts_coordinates() -> None:
+    driver = _FakeToolDriver()
+    cua = _backend_with(driver)
+
+    cua.click(100, 250, pid=1, window_id=2)
+
+    name, payload = driver.calls[0]
+    assert name == "click"
+    assert payload["x"] == 100
+    assert payload["y"] == 250
+    # No scope override: the driver's own default already means window-local pixels.
+    assert "scope" not in payload
+
+
+def test_cua_click_window_target_without_any_address_errors() -> None:
+    driver = _FakeToolDriver()
+    cua = _backend_with(driver)
+
+    out = cua.click(pid=1, window_id=2)
+
+    assert out.startswith("error:")
+    assert not driver.calls
+
+
+def test_cua_type_window_target_carries_the_element() -> None:
+    driver = _FakeToolDriver()
+    cua = _backend_with(driver)
+
+    out = cua.type_text("hello", pid=662, window_id=68, element_index=3, snapshot_id="s1")
+
+    name, payload = driver.calls[0]
+    assert name == "type_text"
+    assert payload["text"] == "hello"
+    assert payload["element_index"] == 3
+    assert payload["window_id"] == 68
+    assert "window 68" in out
+
+
+def test_cua_scroll_window_target_rolls_at_the_point() -> None:
+    driver = _FakeToolDriver()
+    cua = _backend_with(driver)
+
+    cua.scroll(10, 20, "down", 5, pid=1, window_id=2)
+
+    name, payload = driver.calls[0]
+    assert name == "scroll"
+    assert (payload["x"], payload["y"]) == (10, 20)
+    assert payload["direction"] == "down"
+    assert payload["amount"] == 5
+
+
+def test_cua_drag_window_target_passes_coordinates_unchanged() -> None:
+    driver = _FakeToolDriver()
+    cua = _backend_with(driver)
+
+    cua.drag(1, 2, 3, 4, pid=9, window_id=8)
+
+    name, payload = driver.calls[0]
+    assert name == "drag"
+    assert (payload["from_x"], payload["from_y"]) == (1, 2)
+    assert (payload["to_x"], payload["to_y"]) == (3, 4)
+    assert payload["window_id"] == 8
+
+
+def test_cua_window_state_skips_the_inline_screenshot() -> None:
+    """The element tree is the point; the inline PNG is ~1 MB of wasted base64."""
+    driver = _FakeToolDriver()
+    cua = _backend_with(driver)
+
+    cua.window_state(662, 68)
+
+    name, payload = driver.calls[0]
+    assert name == "get_window_state"
+    assert payload["include_screenshot"] is False
+    assert "screenshot_out_file" not in payload
+
+
+def test_cua_window_state_asks_for_a_file_when_given_one() -> None:
+    driver = _FakeToolDriver()
+    cua = _backend_with(driver)
+
+    cua.window_state(662, 68, screenshot_out_file="/tmp/win.png")
+
+    payload = driver.calls[0][1]
+    assert payload["screenshot_out_file"] == "/tmp/win.png"
+    assert payload["include_screenshot"] is False
+
+
+def test_cua_list_windows_uses_the_tool_channel() -> None:
+    driver = _FakeToolDriver()
+    cua = _backend_with(driver)
+
+    cua.list_windows()
+
+    name, payload = driver.calls[0]
+    assert name == "list_windows"
+    # No pid filter and no on_screen_only: every window, including off-screen ones.
+    assert "pid" not in payload
+    assert "on_screen_only" not in payload
+
+
+def test_cua_click_forwards_a_window_target_from_skill_args(monkeypatch: Any) -> None:
+    from halia.skills.cua import CuaClick
+
+    monkeypatch.setattr("halia.skills.cua._is_cua_enabled", lambda: True)
+    seen: dict[str, Any] = {}
+
+    class FakeCua:
+        def click(self, x: Any, y: Any, button: str, **kwargs: Any) -> str:
+            seen.update(x=x, y=y, button=button, **kwargs)
+            return "Clicked"
+
+    monkeypatch.setattr("halia.skills.cua._get_cua", lambda: FakeCua())
+    out = CuaClick().run({"pid": 662, "window_id": 68, "element_token": "tok-9"})
+
+    assert seen["pid"] == 662
+    assert seen["window_id"] == 68
+    assert seen["element_token"] == "tok-9"
+    assert seen["x"] is None and seen["y"] is None
+    assert out == "Clicked"
+
+
+def test_cua_click_ignores_window_fields_without_both_ids(monkeypatch: Any) -> None:
+    """A lone pid must not silently drop the coordinate scaling path."""
+    from halia.skills.cua import CuaClick, CuaScreenshot
+
+    monkeypatch.setattr("halia.skills.cua._is_cua_enabled", lambda: True)
+    seen: dict[str, Any] = {}
+
+    class FakeCua:
+        def click(self, x: Any, y: Any, button: str, **kwargs: Any) -> str:
+            seen.update(x=x, y=y, **kwargs)
+            return "Clicked"
+
+    monkeypatch.setattr("halia.skills.cua._get_cua", lambda: FakeCua())
+    monkeypatch.setattr(CuaScreenshot, "_scale", 2.0)
+
+    CuaClick().run({"x": 10, "y": 20, "pid": 662})
+    assert seen["x"] == 20.0 and seen["y"] == 40.0
+
+
+def test_cua_type_window_target_rejects_clear(monkeypatch: Any) -> None:
+    """clear=true cannot target a window, so it must refuse rather than clear the wrong field."""
+    from halia.skills.cua import CuaType
+
+    monkeypatch.setattr("halia.skills.cua._is_cua_enabled", lambda: True)
+    called: list[Any] = []
+
+    class FakeCua:
+        def type_text(self, *a: Any, **k: Any) -> str:
+            called.append((a, k))
+            return "Typed"
+
+    monkeypatch.setattr("halia.skills.cua._get_cua", lambda: FakeCua())
+    out = CuaType().run({"text": "hi", "clear": True, "pid": 1, "window_id": 2})
+
+    assert out.startswith("error:")
+    assert not called
+
+
+def test_cua_scroll_window_target_needs_a_token_or_coordinates(monkeypatch: Any) -> None:
+    from halia.skills.cua import CuaScroll
+
+    monkeypatch.setattr("halia.skills.cua._is_cua_enabled", lambda: True)
+    called: list[Any] = []
+
+    class FakeCua:
+        def scroll(self, *a: Any, **k: Any) -> str:
+            called.append((a, k))
+            return "Scrolled"
+
+    monkeypatch.setattr("halia.skills.cua._get_cua", lambda: FakeCua())
+    out = CuaScroll().run({"pid": 1, "window_id": 2, "direction": "down"})
+
+    assert out.startswith("error:")
+    assert not called
+
+
+def test_window_target_args_coerces_strings_and_names_bad_input() -> None:
+    from halia.skills.cua import _window_target_args
+
+    # Models routinely stringify numbers; that must still address the window.
+    assert _window_target_args({"pid": "662", "window_id": "68"}) == {
+        "pid": 662,
+        "window_id": 68,
+    }
+    # A lone id cannot address a window, so the desktop path is used instead.
+    assert _window_target_args({"pid": 662}) == {}
+    assert _window_target_args({"window_id": 68}) == {}
+    # Garbage is reported against the field, not as a bare int() traceback.
+    try:
+        _window_target_args({"pid": 662, "window_id": "the window"})
+    except ValueError as exc:
+        assert "window_id" in str(exc)
+    else:
+        raise AssertionError("expected a ValueError naming window_id")
+
+
+def test_cua_click_reports_a_bad_window_id_as_an_error(monkeypatch: Any) -> None:
+    from halia.skills.cua import CuaClick
+
+    monkeypatch.setattr("halia.skills.cua._is_cua_enabled", lambda: True)
+
+    class FakeCua:
+        def click(self, *a: Any, **k: Any) -> str:  # pragma: no cover - must not run
+            raise AssertionError("click must not be reached with a bad window_id")
+
+    monkeypatch.setattr("halia.skills.cua._get_cua", lambda: FakeCua())
+    out = CuaClick().run({"pid": 1, "window_id": "oops", "element_token": "t"})
+    assert out.startswith("error:")
+    assert "window_id" in out

@@ -35,7 +35,7 @@ def test_run_checks_returns_all_checks() -> None:
     names = {c.name for c in results}
     assert names == {
         "config", "secrets perms", "database", "fs floor",
-        "egress floor", "scheduled jobs", "snapshots",
+        "egress floor", "scheduled jobs", "snapshots", "extras", "cua-driver",
     }
 
 

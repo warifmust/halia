@@ -132,6 +132,21 @@ def upgrade(
         raise typer.Exit(1) from exc
 
     if not is_newer(latest, __version__):
+        # Matching versions are not the same as a healthy environment: a
+        # `uv tool install --force` can strip a recorded extra without touching
+        # halia's version, so restore anything missing before reporting success.
+        if not check:
+            from halia.upgrade import missing_declared_extras, repair_extras
+
+            missing = missing_declared_extras()
+            if missing:
+                names = ", ".join(missing)
+                console.print(f"[yellow]Restoring missing extras:[/yellow] {names}…")
+                ok, detail = repair_extras()
+                if not ok:
+                    console.print(f"[red]Could not restore {names}:[/red] {detail}")
+                    raise typer.Exit(1)
+                console.print(f"[green]✓[/green] restored {detail}")
         console.print(f"[green]✓[/green] Already up to date ({__version__}).")
         return
 
@@ -901,14 +916,9 @@ def _register_mcp(registry: Any) -> tuple[str, str]:
             n = len(status.servers)
             label = "server" if n == 1 else "servers"
             names = " · ".join(f"[red]{name}[/red]" for name in status.servers)
-            install = (
-                "uv tool install --force "
-                "'git+https://github.com/warifmust/halia.git@main' --with mcp"
-            )
             banner = (
                 f"🌐 MCP: {names} [dim]({n} {label})[/dim]\n"
-                f"[dim]`mcp` package not installed — run:[/dim]\n"
-                f"[dim]{install}[/dim]"
+                "[dim]`mcp` package not installed — `halia mcp` will install it[/dim]"
             )
         else:
             parts: list[str] = []
@@ -2450,6 +2460,29 @@ mcp_app = typer.Typer(help="Configure MCP servers (Model Context Protocol tools)
 app.add_typer(mcp_app, name="mcp")
 
 
+def _ensure_mcp(console: Console) -> bool:
+    """Make the optional ``mcp`` extra available, installing it if needed.
+
+    ``halia mcp …`` is the user asking for MCP, so halia provides the package
+    rather than printing a ``uv tool install`` line for them to run — and records
+    it (see ``upgrade.add_extras``) so no later reinstall can silently drop it.
+    """
+    from halia.mcp import mcp_available
+
+    if mcp_available():
+        return True
+
+    from halia.upgrade import add_extras
+
+    with console.status("[dim]Installing the `mcp` package…[/dim]"):
+        ok, detail = add_extras(["mcp"])
+    if not ok:
+        console.print(f"[yellow]could not install the `mcp` package:[/yellow] {detail}")
+        return False
+    console.print("[green]✓[/green] installed the `mcp` package")
+    return True
+
+
 @mcp_app.command("list")
 def mcp_list() -> None:
     """Show configured MCP servers and their connection status."""
@@ -2458,7 +2491,6 @@ def mcp_list() -> None:
         has_tokens,
         load_mode,
         load_servers,
-        mcp_available,
         servers_file,
     )
 
@@ -2470,12 +2502,7 @@ def mcp_list() -> None:
             "(stdio: command+args · http: url+headers)."
         )
         return
-    if not mcp_available():
-        console.print(
-            "[yellow]`mcp` package not installed — run "
-            "`uv tool install --force "
-            "'git+https://github.com/warifmust/halia.git@main' --with mcp`[/yellow]"
-        )
+    if not _ensure_mcp(console):
         return
     by_name = {s.name: s for s in servers}
     if load_mode() == "lazy":
@@ -2506,19 +2533,14 @@ def mcp_list() -> None:
 @mcp_app.command("login")
 def mcp_login(name: Annotated[str, typer.Argument(help="Server name to authenticate.")]) -> None:
     """Connect to a server, running its OAuth login flow if needed."""
-    from halia.mcp import get_manager, load_servers, mcp_available
+    from halia.mcp import get_manager, load_servers
 
     servers = load_servers()
     spec = next((s for s in servers if s.name == name), None)
     if spec is None:
         console.print(f"[yellow]no MCP server named '{name}'.[/yellow]")
         return
-    if not mcp_available():
-        console.print(
-            "[yellow]`mcp` package not installed — run "
-            "`uv tool install --force "
-            "'git+https://github.com/warifmust/halia.git@main' --with mcp`[/yellow]"
-        )
+    if not _ensure_mcp(console):
         return
     if spec.auth == "oauth":
         console.print(f"[cyan]🌐 MCP OAuth[/cyan] — signing in to [bold]{name}[/bold]…")

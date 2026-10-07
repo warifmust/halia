@@ -154,7 +154,8 @@ _CUA_PROMPT = (
     "COORDINATES: the coordinate grid is drawn on each screenshot — give cua_click/"
     "cua_scroll/cua_drag coordinates in THAT screenshot's own pixel space (halia maps "
     "them to the real screen automatically). Re-derive coordinates from the latest "
-    "screenshot whenever you've scrolled or the screen changed. "
+    "screenshot whenever you've scrolled or the screen changed. This is the DESKTOP/"
+    "primary-display path: cua_screenshot captures the primary display only. "
     "ADAPTIVE DEPTH: choose how carefully to look. For routine navigation (opening a "
     "page, clicking a link/button, filling a form, logging in) use cua_screenshot("
     "detail:'low') and batch tightly — do NOT screenshot after every action, and do "
@@ -177,9 +178,14 @@ _CUA_PROMPT = (
     "setting — to the widest setting, then call cua_fill_path with the outline's "
     "corner points and spacing = the brush width or less. A thick brush fills with "
     "far fewer strokes, so always widen it before filling. "
-    "PRECISE TARGETING: if clicks keep missing, use cua_desktop to list open windows "
-    "(pid + window_id), then cua_window(pid, window_id) for each element's role, label, "
-    "and click center — pass those centers straight to cua_click instead of guessing. "
+    "PRECISE TARGETING: cua_desktop lists every open window with its pid + window_id — "
+    "including windows that are off-screen, minimized, or on another display, which "
+    "cua_screenshot cannot show. Then cua_window(pid, window_id) lists that window's "
+    "elements, each with a token: click it with cua_click(pid, window_id, "
+    "element_token), no coordinates needed, and it works while the window stays in the "
+    "background. Add screenshot=true to cua_window to SEE a window the desktop capture "
+    "cannot reach. Prefer a token over pixel-guessing; pixel coordinates inside a "
+    "window are in that window's own screenshot space. "
     "MAP BEFORE CLICKING: on an unfamiliar app, read the WHOLE panel from one screenshot "
     "first and identify each control (tool icons, color swatch, sliders, canvas) before "
     "clicking. If a click doesn't open what you expected after TWO tries, STOP clicking "
@@ -198,13 +204,15 @@ _CUA_PROMPT = (
     "If a click keeps MISSING (the screen doesn't change after it), retry with a "
     "slightly adjusted coordinate a few times — drawing and UI probing need this. "
     "Only when it still won't land, switch approach: use cua_window for the element's "
-    "exact center, or navigate directly with cua_open_url (for a page). "
-    "MONITORS: the screenshot shows the FULL desktop — on a multi-monitor setup the "
-    "monitors appear side-by-side in one wide image, and click coordinates still map "
-    "correctly across them. Identify the target app/window visually and work there; "
-    "do NOT click into the terminal where halia is running, and NEVER type commands "
-    "into it to open apps or browsers. If it's unclear which "
-    "monitor or window to use, ask the user. "
+    "token (or its exact frame), or navigate directly with cua_open_url (for a page). "
+    "MONITORS: cua_screenshot captures the PRIMARY display only — a window on another "
+    "display is NOT in the image, so never click coordinates hoping to reach it. Find "
+    "such a window with cua_desktop (it lists every window, including ones that are "
+    "off-screen or on another display), then drive it by pid + window_id with "
+    "cua_window / cua_click / cua_type; cua_window(pid, window_id, screenshot=true) "
+    "shows that window's own image. Do NOT click into the terminal where halia is "
+    "running, and NEVER type commands into it to open apps or browsers. If it's "
+    "unclear which window to use, ask the user. "
 )
 
 _CLOSING_PROMPT = (
@@ -811,6 +819,9 @@ _COORD_CLICK_TOOLS = frozenset({"cua_click", "cua_double_click"})
 # backstop against a runaway run, not a token-cost control.
 _SCREENSHOT_TOOLS = frozenset({"cua_screenshot"})
 
+# Skills that stage an image on their own class for the loop to pick up.
+_IMAGE_TOOLS = frozenset({"cua_screenshot", "cua_window"})
+
 _SCREENSHOT_NUDGE = (
     "\n\nℹ️ You have taken {count} screenshots this run. That's fine for visual work, "
     "but batch when you can: derive several actions from one screenshot, then take "
@@ -1068,9 +1079,10 @@ def _execute_batch(
         _drop_old_screenshots(messages)
         img, detail, unchanged, shot_name = batch_image
         caption = (
-            "[System: desktop screenshot captured]"
-            if shot_name == "cua_screenshot"
-            else "[System: browser screenshot captured]"
+            "[System: screenshot of the target WINDOW only — not the desktop. "
+            "Coordinates read here are in this window's own space.]"
+            if shot_name == "cua_window"
+            else "[System: desktop screenshot captured]"
         )
         if unchanged:
             caption += (
@@ -1106,30 +1118,32 @@ def _execute_batch(
 
 
 def _take_pending_image(name: str) -> tuple[str | None, str, bool]:
-    """Consume a staged screenshot image from the screenshot skill.
+    """Consume a staged image from a CUA skill's side-channel.
 
-    The cua_screenshot skill stashes a base64 JPEG on the skill class; the agent
-    loop pulls it here to inject as a visual observation. Returns
-    (image_b64, detail, unchanged) — `unchanged` is True when this screenshot is
-    byte-identical to the previous one, i.e. the screen did not change.
+    `cua_screenshot` and `cua_window` stash a base64 JPEG on their own skill
+    class; the agent loop pulls it here to inject as a visual observation.
+    Returns (image_b64, detail, unchanged) — `unchanged` is True when this image
+    is byte-identical to the previous one from the same skill, i.e. that surface
+    did not change.
     """
+    if name not in _IMAGE_TOOLS:
+        return None, "low", False
     try:
-        if name == "cua_screenshot":
-            from halia.skills.cua import CuaScreenshot
+        from halia.skills.cua import CuaScreenshot, CuaWindow
 
-            img = CuaScreenshot._pending_image
-            detail = CuaScreenshot._pending_detail or "low"
-            CuaScreenshot._pending_image = None  # consume it
-            CuaScreenshot._pending_detail = None
-            if img is None:
-                return None, "low", False
-            digest = hashlib.sha256(img.encode("ascii")).hexdigest()
-            unchanged = CuaScreenshot._last_hash == digest
-            CuaScreenshot._last_hash = digest
-            return img, detail, unchanged
+        skill: Any = CuaScreenshot if name == "cua_screenshot" else CuaWindow
+        img = skill._pending_image
+        detail = skill._pending_detail or "low"
+        skill._pending_image = None  # consume it
+        skill._pending_detail = None
+        if img is None:
+            return None, "low", False
+        digest = hashlib.sha256(img.encode("ascii")).hexdigest()
+        unchanged = skill._last_hash == digest
+        skill._last_hash = digest
+        return img, detail, unchanged
     except ImportError:
         return None, "low", False
-    return None, "low", False
 
 
 def _drop_old_screenshots(messages: list[Message]) -> None:

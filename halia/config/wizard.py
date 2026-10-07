@@ -58,6 +58,8 @@ def run_setup(console: Console) -> None:
         default=1,
     )
     if choice.startswith("Yes"):
+        _enable_mcp(console)
+
         from halia.mcp.setup import mcp_setup
 
         mcp_setup(console)
@@ -219,28 +221,19 @@ def _install_python_package(
 ) -> bool:
     """Install a Python package into halia's own running environment.
 
-    Targets the interpreter halia is running under (``sys.executable``), so it
-    works whether halia was installed via ``uv tool install``, inside a venv,
-    or with plain pip — no active virtual environment is required.
+    Targets the interpreter halia is running under, so it works whether halia was
+    installed via ``uv tool install``, inside a venv, or with plain pip — no active
+    virtual environment is required. The spec is also recorded in halia's config
+    (see ``upgrade.add_extras``) so a later reinstall restores it instead of
+    silently dropping the capability.
     """
-    import shutil
-    import subprocess
-    import sys
-
-    uv = shutil.which("uv")
-    if uv:
-        # Explicitly target halia's interpreter; avoids the "No virtual
-        # environment found" failure when no venv is active (e.g. uv tools).
-        cmd = [uv, "pip", "install", "--python", sys.executable, package]
-    else:
-        cmd = [sys.executable, "-m", "pip", "install", package]
+    from halia.upgrade import add_extras
 
     with _Spinner(console, message or f"Installing {package}"):
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    if result.returncode != 0:
-        console.print(f"[red]  Failed to install {package}: {result.stderr}[/red]")
-        return False
-    return True
+        ok, detail = add_extras([package], timeout=timeout)
+    if not ok:
+        console.print(f"[red]  Failed to install {package}: {detail}[/red]")
+    return ok
 
 
 class _Spinner:
@@ -296,6 +289,17 @@ def _get_cua_binary_path() -> str:
         )
 
 
+def _cua_driver_pin() -> str:
+    """The cua-driver requirement halia can drive, from the backend's range.
+
+    Derived rather than hard-coded so the installer and the session-start guard
+    can never disagree about which driver versions are supported.
+    """
+    from halia.computer.cua_backend import CUA_DRIVER_SPEC
+
+    return f"cua-driver{CUA_DRIVER_SPEC}"
+
+
 def _setup_cua(console: Console) -> None:
     """Install cua-driver and enable CUA backend."""
     console.print(
@@ -322,16 +326,38 @@ def _setup_cua(console: Console) -> None:
     _install_cua_driver(console)
 
 
+def _enable_mcp(console: Console) -> None:
+    """Install the ``mcp`` extra if missing, and record it in halia's config.
+
+    Answering "Yes — configure MCP" used to write server definitions without ever
+    installing the package, so ``halia mcp`` then told the user to run
+    ``uv tool install … --with mcp`` themselves — and the next reinstall dropped it
+    again. halia installs the extra and remembers it instead.
+    """
+    from halia.mcp import mcp_available
+
+    if mcp_available():
+        return
+    if not _install_python_package(console, "mcp", message="Installing mcp"):
+        console.print(
+            "[yellow]⚠[/yellow] Could not install the `mcp` package — "
+            "MCP servers will be unavailable until it is."
+        )
+        return
+    console.print("[green]✓[/green] MCP support installed")
+
+
 def _install_cua_driver(console: Console) -> bool:
     """Install cua-driver into halia's environment and enable blended computer use."""
     # Install cua-driver into halia's own running environment
     if not _install_python_package(
-        console, "cua-driver", message="Installing cua-driver", timeout=300
+        console, _cua_driver_pin(), message="Installing cua-driver", timeout=300
     ):
         console.print("[dim]  You can try later with: halia setup --cua[/dim]")
         return False
 
     console.print("[green]✓[/green] CUA driver installed and enabled")
+
 
     # On headless systems the driver cannot run — warn before the user relies on it.
     from halia.computer.cua_backend import cua_available

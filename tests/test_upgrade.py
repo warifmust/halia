@@ -71,3 +71,50 @@ def test_upgrade_failure_exits_nonzero() -> None:
     assert result.exit_code == 1
     assert "Upgrade failed" in result.output
     assert "boom" in result.output
+
+
+def test_upgrade_restores_stripped_extras_when_already_latest() -> None:
+    """An up-to-date version can still have a stripped environment.
+
+    `uv tool install --force` drops extras without touching the version, so the
+    up-to-date path must repair rather than report success and change nothing.
+    """
+    with patch("halia.upgrade.fetch_latest_version", return_value=CURRENT_VERSION), \
+         patch("halia.upgrade.missing_declared_extras", return_value=["mcp"]), \
+         patch("halia.upgrade.repair_extras", return_value=(True, "mcp")) as mock_repair:
+        result = runner.invoke(app, ["upgrade"])
+    assert result.exit_code == 0
+    assert "Restoring missing extras" in result.output
+    assert "restored mcp" in result.output
+    assert "Already up to date" in result.output
+    mock_repair.assert_called_once()
+
+
+def test_upgrade_is_silent_when_nothing_is_missing() -> None:
+    with patch("halia.upgrade.fetch_latest_version", return_value=CURRENT_VERSION), \
+         patch("halia.upgrade.missing_declared_extras", return_value=[]), \
+         patch("halia.upgrade.repair_extras") as mock_repair:
+        result = runner.invoke(app, ["upgrade"])
+    assert result.exit_code == 0
+    assert "Restoring" not in result.output
+    mock_repair.assert_not_called()
+
+
+def test_upgrade_check_does_not_repair() -> None:
+    """--check is read-only."""
+    with patch("halia.upgrade.fetch_latest_version", return_value=CURRENT_VERSION), \
+         patch("halia.upgrade.missing_declared_extras", return_value=["mcp"]), \
+         patch("halia.upgrade.repair_extras") as mock_repair:
+        result = runner.invoke(app, ["upgrade", "--check"])
+    assert result.exit_code == 0
+    mock_repair.assert_not_called()
+
+
+def test_upgrade_repair_failure_exits_nonzero() -> None:
+    with patch("halia.upgrade.fetch_latest_version", return_value=CURRENT_VERSION), \
+         patch("halia.upgrade.missing_declared_extras", return_value=["mcp"]), \
+         patch("halia.upgrade.repair_extras", return_value=(False, "no network")):
+        result = runner.invoke(app, ["upgrade"])
+    assert result.exit_code == 1
+    assert "Could not restore" in result.output
+    assert "no network" in result.output

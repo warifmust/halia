@@ -1,5 +1,5 @@
 ```
-╭─ v0.31.18 ───────────────────────────────────────────────────────────────────────────────╮
+╭─ v0.31.19 ───────────────────────────────────────────────────────────────────────────────╮
 │                                ██   ██  █████  ██      ██  █████                         │
 │                                ██   ██ ██   ██ ██      ██ ██   ██                        │
 │                                ███████ ███████ ██      ██ ███████                        │
@@ -82,6 +82,107 @@ at the top level of `mcp.json` to load every server at startup instead.
 
 Connecting is best-effort: a broken server or an expired token is reported in the
 session banner and `halia mcp list`. It never blocks a run.
+
+## 🖥️ Computer use (CUA)
+
+CUA needs an optional extra. `halia setup --cua` installs it, and it can also be
+added to an existing tool install — always keep the `cua-driver` pin, because
+`uv tool install --force` rebuilds the environment from the requirement list
+alone and would otherwise pull a driver halia cannot talk to:
+
+```bash
+uv tool install --force "git+https://github.com/warifmust/halia.git@main" \
+  --with mcp --with 'cua-driver==0.29.1'
+# from a source checkout: uv sync --extra cua
+```
+
+You should rarely need that line: `halia` installs its own extras (see
+[Keeping the environment intact](#keeping-the-environment-intact)) and `halia upgrade`
+re-applies them, so the manual form is only for setting an install up by hand.
+
+**Why the pin.** `cua-driver` 0.34.0 made `cursor_motion` a required field on its
+session-start input. halia does not pass it, so *every* `cua_*` tool fails at
+session start with a `StartSessionInput` `TypeError`. The installation is
+therefore pinned to the one driver build halia is validated against, in two
+places that must agree: `CUA_DRIVER_SPEC` in
+[`halia/computer/cua_backend.py`](./halia/computer/cua_backend.py) (read by
+`halia setup --cua` and by `halia upgrade`) and the `cua` extra in
+[`pyproject.toml`](./pyproject.toml).
+
+A separate `CUA_DRIVER_RANGE` (`>=0.29,<0.34`) is the *guard band*, not the
+install pin. It is what a running session tolerates, so a driver you deliberately
+install inside the band still works, and it also lets `halia upgrade` keep
+re-applying the pin to an install that predates it. Anything outside the band is
+refused at session start.
+
+**Staying locked.** Three layers keep CUA from drifting:
+
+- `halia upgrade` re-applies the pin, from halia's own record of what the
+  environment needs (see below).
+- A session refuses to start on a driver outside the guard band, naming the exact
+  repair command instead of surfacing the opaque `cursor_motion` `TypeError`.
+- `halia doctor` reports the installed driver version and flags one that is
+  outside the band, or inside it but not the pinned build.
+
+To adopt a new driver, validate halia against it (the `StartSessionInput` contract
+is the usual breaker), then move `CUA_DRIVER_SPEC` and the `cua` extra together,
+and widen `CUA_DRIVER_RANGE` to include it.
+
+Note that `cua-driver update --apply` does **not** affect halia: it installs the
+standalone driver app, while halia drives the binary bundled inside the
+`cua-driver` wheel. Only changing the installed Python package can break CUA.
+
+### Keeping the environment intact
+
+`uv tool install --force` rebuilds a tool venv from the requirement list it is
+handed *and* rewrites the tool receipt to match. So the receipt cannot be the
+record of what an environment needs: a single bare `uv tool install --force <halia>`
+erases the only trace of `mcp` and `cua-driver`, and nothing afterwards can tell
+they were ever wanted — which is how "`mcp` package not installed" and the CUA
+`cursor_motion` failure kept coming back.
+
+halia therefore records the specs its environment needs in `tool_extras` inside
+`~/.halia/config.json`, which uv never touches, and works from that record:
+
+- `halia setup --cua` installs the pinned driver and records it; the setup wizard's
+  MCP step installs the `mcp` package and records it (it previously wrote server
+  definitions without ever installing the package).
+- `halia mcp …` installs `mcp` on demand rather than telling you to run a uv
+  command.
+- `halia upgrade` re-applies every recorded spec, re-deriving the driver pin from
+  `CUA_DRIVER_SPEC` so an unsupported driver can never be carried forward.
+- When halia is already on the latest version, `halia upgrade` restores any
+  recorded extra that has gone missing instead of just reporting "up to date": an
+  up-to-date version is not a healthy environment, because extras can be stripped
+  without the version changing. Nothing is reinstalled when nothing is missing, and
+  `--check` stays read-only.
+- `halia doctor` reports a recorded extra that has gone missing.
+
+So the only command you need after a mishap is `halia upgrade`. Reinstalling by
+hand with `uv tool install --force` no longer has to be remembered, or repeated,
+to keep `mcp` and CUA working.
+
+Installs of extras use `uv pip install --python <halia's interpreter>`, not
+`uv tool install`, so fetching an extra on demand cannot rewrite the tool receipt
+halia itself was installed with.
+
+To turn an extra off deliberately, drop its spec from `tool_extras` — otherwise
+`halia upgrade` and `halia doctor` will keep treating it as wanted.
+
+**Reaching windows on another display.** `cua_screenshot` captures the primary
+display only — a window on a second monitor, minimized, or hidden is not in
+frame. `cua_desktop` lists *every* top-level window with its `pid` and
+`window_id`, and the window-scoped tools work by window id, not by display:
+
+- `cua_window(pid, window_id)` — that window's controls, each with an
+  `element_token`
+- `cua_window(pid, window_id, screenshot=true)` — see the window itself
+- `cua_click` / `cua_type` / `cua_scroll` / `cua_drag` — pass `pid` + `window_id`
+  (with an `element_token`, or `x`/`y` in that window's own screenshot space)
+  instead of desktop coordinates
+
+Coordinates read from a window's own screenshot are used as-is; only the
+desktop-scoped path is scaled back to screen pixels.
 
 ## 🛠️ Development
 

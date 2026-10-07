@@ -121,6 +121,65 @@ def _cron() -> Check:
     return Check("scheduled jobs", OK, f"{len(jobs)} job(s): {names}")
 
 
+def _cua_driver() -> Check:
+    """cua-driver presence and version — the optional computer-use backend.
+
+    CUA is optional, so a missing driver is fine. An installed one outside halia's
+    supported range is not: 0.34.0+ requires a `cursor_motion` field halia does not
+    pass, which breaks every cua_* tool at session start.
+    """
+    from halia.computer.cua_backend import (
+        CUA_DRIVER_RANGE,
+        CUA_DRIVER_SPEC,
+        cua_driver_supported,
+        runtime_cua_driver_version,
+    )
+
+    version = runtime_cua_driver_version()
+    if version is None:
+        return Check("cua-driver", OK, "not installed (optional backend)")
+    if not cua_driver_supported(version):
+        return Check(
+            "cua-driver",
+            FAIL,
+            f"{version} is outside the supported range "
+            f"({CUA_DRIVER_RANGE}) — run `halia setup --cua` to pin it back",
+        )
+    pinned = CUA_DRIVER_SPEC.lstrip("=")
+    if version != pinned:
+        # In band, so it works — but it is not the build halia is validated against.
+        return Check(
+            "cua-driver",
+            WARN,
+            f"{version} is in the supported range ({CUA_DRIVER_RANGE}) but halia is "
+            f"validated against {pinned}; `halia setup --cua` pins that version",
+        )
+    return Check("cua-driver", OK, f"{version} (pinned {CUA_DRIVER_SPEC})")
+
+
+def _extras() -> Check:
+    """Extras halia recorded as needed that are no longer installed.
+
+    `uv tool install --force` rebuilds a tool venv from its own command line, so a
+    stripped extra is exactly the failure that reads as "`mcp` package not
+    installed" or a `cursor_motion` TypeError later on.
+    """
+    from halia.upgrade import declared_extras, missing_declared_extras, requirement_name
+
+    declared = declared_extras()
+    if not declared:
+        return Check("extras", OK, "none recorded")
+    missing = [requirement_name(spec) for spec in missing_declared_extras()]
+    if missing:
+        return Check(
+            "extras",
+            FAIL,
+            f"{', '.join(missing)} recorded but not installed — "
+            f"run `halia upgrade` to restore",
+        )
+    return Check("extras", OK, ", ".join(requirement_name(spec) for spec in declared))
+
+
 def _snapshots() -> Check:
     """File-write snapshot store (undo). Counted from disk — no DB needed."""
     from halia.store.snapshots import SNAPSHOTS_DIR
@@ -140,6 +199,8 @@ _CHECKS: tuple[Callable[[], Check], ...] = (
     _egress_floor,
     _cron,
     _snapshots,
+    _extras,
+    _cua_driver,
 )
 
 
