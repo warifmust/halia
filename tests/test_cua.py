@@ -1194,9 +1194,38 @@ def test_scroll_result_names_the_step() -> None:
     assert "20 wheel notches" in out
 
 
-def test_desktop_scroll_defaults_to_a_medium_step() -> None:
+def _fake_scroll_sdk(monkeypatch: Any) -> Any:
+    """Inject a fake `cua_driver` so the desktop scroll path is testable without
+    the optional cua-driver package (CI installs only the `mcp` extra)."""
+    sdk = types.ModuleType("cua_driver")
+
+    class ScrollBy:
+        LINE = 0
+        PAGE = 1
+
+    class ScrollDirection:
+        UP = "up"
+        DOWN = "down"
+
+    class DesktopScope:
+        DESKTOP = 0
+
+    class ScrollInput:
+        def __init__(self, **kwargs: Any) -> None:
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+    sdk.ScrollBy = ScrollBy  # type: ignore[attr-defined]
+    sdk.ScrollDirection = ScrollDirection  # type: ignore[attr-defined]
+    sdk.DesktopScope = DesktopScope  # type: ignore[attr-defined]
+    sdk.ScrollInput = ScrollInput  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "cua_driver", sdk)
+    return sdk
+
+
+def test_desktop_scroll_defaults_to_a_medium_step(monkeypatch: Any) -> None:
     """The desktop path defaults to a medium wheel step, not the smallest one."""
-    from cua_driver import ScrollBy
+    sdk = _fake_scroll_sdk(monkeypatch)
 
     driver = _FakeSdkDriver()
     cua = _backend_with(driver)
@@ -1204,13 +1233,13 @@ def test_desktop_scroll_defaults_to_a_medium_step() -> None:
     out = cua.scroll(300, 400, "down")
 
     payload = driver.scrolls[0]
-    assert payload.by == ScrollBy.LINE
+    assert payload.by == sdk.ScrollBy.LINE
     assert payload.amount == 20
     assert "20 wheel notches" in out
 
 
-def test_desktop_scroll_honours_line_granularity() -> None:
-    from cua_driver import ScrollBy
+def test_desktop_scroll_honours_line_granularity(monkeypatch: Any) -> None:
+    sdk = _fake_scroll_sdk(monkeypatch)
 
     driver = _FakeSdkDriver()
     cua = _backend_with(driver)
@@ -1218,8 +1247,21 @@ def test_desktop_scroll_honours_line_granularity() -> None:
     cua.scroll(300, 400, "up", 5, "line")
 
     payload = driver.scrolls[0]
-    assert payload.by == ScrollBy.LINE
+    assert payload.by == sdk.ScrollBy.LINE
     assert payload.amount == 5
+
+
+def test_desktop_scroll_page_granularity_is_one_big_jump(monkeypatch: Any) -> None:
+    sdk = _fake_scroll_sdk(monkeypatch)
+
+    driver = _FakeSdkDriver()
+    cua = _backend_with(driver)
+
+    cua.scroll(300, 400, "down", None, "page")
+
+    payload = driver.scrolls[0]
+    assert payload.by == sdk.ScrollBy.PAGE
+    assert payload.amount == 1
 
 
 def test_cua_scroll_schema_offers_page_and_line() -> None:
