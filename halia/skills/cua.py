@@ -542,6 +542,27 @@ class CuaOpenUrl(Skill):
             return f"error: {exc}"
 
 
+def _region_box(args: dict[str, Any]) -> tuple[float, float, float, float] | None:
+    """Optional (x, y, width, height) crop region in image space, or None.
+
+    All four must be supplied together, in the same pixel space as click/scroll
+    coordinates (the grid on the last screenshot). Zero or negative width/height is
+    an error; coordinates may be partially out of bounds — they are clamped.
+    """
+    x_raw = args.get("x")
+    y_raw = args.get("y")
+    w_raw = args.get("width")
+    h_raw = args.get("height")
+    if x_raw is None and y_raw is None and w_raw is None and h_raw is None:
+        return None
+    if x_raw is None or y_raw is None or w_raw is None or h_raw is None:
+        raise ValueError("region needs all of x, y, width and height together")
+    x, y, width, height = (float(v) for v in (x_raw, y_raw, w_raw, h_raw))
+    if width <= 0 or height <= 0:
+        raise ValueError("region width and height must be positive")
+    return (x, y, width, height)
+
+
 class CuaScreenshot(Skill):
     name = "cua_screenshot"
     description = (
@@ -554,7 +575,12 @@ class CuaScreenshot(Skill):
         "precisely. The full-resolution PNG is also saved to the screenshots "
         "directory. Use this to see what's on screen before clicking or typing. "
         "Use detail:'low' (1024px) for fast, shallow checks like navigation; "
-        "use detail:'high' (1600px) when you need precise visual detail."
+        "use detail:'high' (1600px) when you need precise visual detail. "
+        "For a close-up of ONE part — e.g. a success toast or a status message "
+        "like 'deflected to Human Agent' — pass x, y, width and height to crop to "
+        "that region (coordinates in the grid's pixel space); pass grid:false for "
+        "a clean, evidence-ready capture. A crop is also saved to its own file "
+        "(named …-crop.png), so the saved artifact is the close-up, not the page."
     )
     dangerous = False
     untrusted = False  # screenshots are read-only
@@ -599,6 +625,26 @@ class CuaScreenshot(Skill):
                 "either way and are scaled to the real screen automatically. "
                 "Default: high.",
             },
+            "x": {
+                "type": "number",
+                "description": "Region crop: left edge, in the last screenshot's grid pixel "
+                "space. Provide with y, width and height.",
+            },
+            "y": {
+                "type": "number",
+                "description": "Region crop: top edge, in the last screenshot's grid pixel "
+                "space. Provide with x, width and height.",
+            },
+            "width": {
+                "type": "number",
+                "description": "Region crop: width, in the last screenshot's grid pixel space. "
+                "Provide with x, y and height.",
+            },
+            "height": {
+                "type": "number",
+                "description": "Region crop: height, in the last screenshot's grid pixel space. "
+                "Provide with x, y and width.",
+            },
         },
     }
 
@@ -620,6 +666,7 @@ class CuaScreenshot(Skill):
 
             from PIL import Image
 
+            region = _region_box(args)
             cua = _get_cua()
             dest = _screenshot_dest()
             path = cua.screenshot(str(dest))
@@ -642,19 +689,69 @@ class CuaScreenshot(Skill):
                 if detail == "high"
                 else CuaScreenshot._LOW_JPEG_QUALITY
             )
-            if real_w > max_width:
-                ratio = max_width / real_w
-                img = img.resize(
-                    (max_width, int(real_h * ratio)),
-                    Image.Resampling.LANCZOS,
+            # image space → real screen pixels, before any resize.
+            scale = real_w / max_width if real_w > max_width else 1.0
+
+            region_note = ""
+            is_crop = False
+            if region is not None:
+                # Region coordinates live in the LAST full screenshot's pixel space
+                # (the grid the model read), exactly like click coordinates — so use
+                # the persisted scale, not this call's `detail`. Otherwise a crop
+                # ordered after a 'low' screenshot would be interpreted in 'high'
+                # space and land on the wrong region.
+                crop_scale = CuaScreenshot._scale
+                x, y, w, h = region
+                rx = int(round(x * crop_scale))
+                ry = int(round(y * crop_scale))
+                rw = int(round(w * crop_scale))
+                rh = int(round(h * crop_scale))
+                # Clamp to the real frame so an estimate slightly off-screen still
+                # yields the visible part rather than an empty/error image.
+                rx = max(0, min(rx, real_w - 1))
+                ry = max(0, min(ry, real_h - 1))
+                rw = max(1, min(rw, real_w - rx))
+                rh = max(1, min(rh, real_h - ry))
+                img = img.crop((rx, ry, rx + rw, ry + rh))
+                # Save the crop itself to disk at native resolution — this is the
+                # artifact QA asked for. The full capture stays at `dest`; the
+                # result message reports the crop's path, not the full page's.
+                crop_path = dest.with_name(f"{dest.stem}-crop.png")
+                img.save(crop_path, format="PNG")
+                # Legibility: downscale oversized crops to the cap, upscale small
+                # ones 2x so a tiny toast stays readable. Never exceed max_width.
+                crop_w, crop_h = img.size
+                if crop_w > max_width:
+                    ratio = max_width / crop_w
+                    img = img.resize(
+                        (max_width, int(crop_h * ratio)), Image.Resampling.LANCZOS
+                    )
+                elif crop_w < 800:
+                    img = img.resize(
+                        (crop_w * 2, crop_h * 2), Image.Resampling.LANCZOS
+                    )
+                region_note = (
+                    f"Region crop of ({_short_num(x)},{_short_num(y)}) "
+                    f"{_short_num(w)}x{_short_num(h)} in image space "
+                    f"(≈{rx},{ry} {rw}x{rh} real px). "
                 )
-            # Record how much the image was shrunk so clicks/scrolls can be
-            # mapped from image-space back to real screen coordinates.
-            CuaScreenshot._scale = real_w / img.size[0]
+                is_crop = True
+            else:
+                if real_w > max_width:
+                    ratio = max_width / real_w
+                    img = img.resize(
+                        (max_width, int(real_h * ratio)),
+                        Image.Resampling.LANCZOS,
+                    )
+                # Record how much the image was shrunk so clicks/scrolls can be
+                # mapped from image-space back to real screen coordinates.
+                CuaScreenshot._scale = scale
+
             if img.mode != "RGB":
                 img = img.convert("RGB")
             if grid:
-                img = _overlay_grid(img, step=CuaScreenshot._GRID_STEP)
+                step = 50 if (is_crop and img.size[0] < 800) else CuaScreenshot._GRID_STEP
+                img = _overlay_grid(img, step=step)
 
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=quality, optimize=True)
@@ -662,6 +759,14 @@ class CuaScreenshot(Skill):
                 buf.getvalue()
             ).decode("ascii")
             CuaScreenshot._pending_detail = detail
+            if is_crop:
+                return (
+                    f"{region_note}Captured ({img.size[0]}x{img.size[1]}). "
+                    f"Saved crop to {crop_path}. "
+                    "This is a crop for inspection/evidence — its coordinates are "
+                    "NOT click coordinates. To click or scroll, take a full "
+                    "cua_screenshot first (pass grid:false for a clean capture)."
+                )
             return (
                 f"Screenshot captured ({img.size[0]}x{img.size[1]}). Saved to {dest}. "
                 "Analyze the attached image. Give click/scroll coordinates in "
@@ -1412,9 +1517,12 @@ class CuaType(Skill):
 class CuaScroll(Skill):
     name = "cua_scroll"
     description = (
-        "Scroll via the CUA driver. Window-scoped: pass pid + window_id, with an "
-        "element_token from cua_window or x/y in that window's screenshot space — "
-        "this is how you scroll a specific window, including one on another "
+        "Scroll via the CUA driver. Defaults to a medium step — about 20 lines or "
+        "wheel notches — enough to move the view without skipping content. Use "
+        "by:'page' for a big jump down a long document, by:'line' with a small "
+        "amount to nudge when close to a target. Window-scoped: pass pid + window_id, "
+        "with an element_token from cua_window or x/y in that window's screenshot "
+        "space — this is how you scroll a specific window, including one on another "
         "display or in the background. Desktop-scoped: pass x/y only, scrolling "
         "whatever the desktop has focused."
     )
@@ -1431,9 +1539,23 @@ class CuaScroll(Skill):
                 "enum": ["up", "down", "left", "right"],
                 "description": "Scroll direction (default: down).",
             },
+            "by": {
+                "type": "string",
+                "enum": ["page", "line"],
+                "description": (
+                    "Step size. 'line' (default) is a medium chunk — a few lines or "
+                    "wheel notches. 'page' is a full-viewport jump, for leaping down "
+                    "a long document; it can skip past what you're looking for."
+                ),
+            },
             "amount": {
                 "type": "integer",
-                "description": "Scroll amount (default: 3).",
+                "minimum": 1,
+                "maximum": 50,
+                "description": (
+                    "How many steps. Default 20 (with by='line'), or 1 when "
+                    "by='page'. Clamped to 1-50."
+                ),
             },
             **_window_target_schema(),
         },
@@ -1446,7 +1568,12 @@ class CuaScroll(Skill):
         x = args.get("x")
         y = args.get("y")
         direction = args.get("direction", "down")
-        amount = args.get("amount", 3)
+        from halia.computer.cua_backend import SCROLL_BY_LINE
+
+        by = args.get("by", SCROLL_BY_LINE)
+        # Absent amount lets the backend apply the per-granularity default.
+        amount = args.get("amount")
+        amount = None if amount is None else int(amount)
 
         try:
             cua = _get_cua()
@@ -1461,7 +1588,8 @@ class CuaScroll(Skill):
                     None if x is None else float(x),
                     None if y is None else float(y),
                     direction,
-                    int(amount),
+                    amount,
+                    by,
                     **target,
                 ))
             if x is None or y is None:
@@ -1470,7 +1598,7 @@ class CuaScroll(Skill):
             scale = CuaScreenshot._scale
             rx = float(x) * scale
             ry = float(y) * scale
-            result = cua.scroll(rx, ry, direction, amount)
+            result = cua.scroll(rx, ry, direction, amount, by)
             if scale != 1.0:
                 result += f" [image {x},{y} -> screen {rx:.0f},{ry:.0f}]"
             return str(result)

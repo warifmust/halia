@@ -1117,3 +1117,301 @@ def test_cua_click_reports_a_bad_window_id_as_an_error(monkeypatch: Any) -> None
     out = CuaClick().run({"pid": 1, "window_id": "oops", "element_token": "t"})
     assert out.startswith("error:")
     assert "window_id" in out
+
+
+# ── scroll step size ──────────────────────────────────────────────────────
+# A line-sized scroll moves so little that the view looks unchanged, so the model
+# cannot tell it worked and spends screenshots finding out. The default step must be
+# a page; `line` stays available for fine adjustment.
+
+
+class _FakeSdkDriver:
+    """Records what goes through the typed SDK path (the desktop scope)."""
+
+    def __init__(self) -> None:
+        self.scrolls: list[Any] = []
+
+    async def scroll(self, payload: Any) -> Any:
+        self.scrolls.append(payload)
+        return None
+
+
+def test_scroll_defaults_to_a_medium_step(monkeypatch: Any) -> None:
+    """The default must be a medium chunk, not the driver's smallest step."""
+    driver = _FakeToolDriver()
+    cua = _backend_with(driver)
+
+    cua.scroll(10, 20, "down", pid=1, window_id=2)
+
+    payload = driver.calls[0][1]
+    assert payload["by"] == "line"
+    assert payload["amount"] == 20
+
+
+def test_scroll_without_a_point_repeats_a_medium_chunk(monkeypatch: Any) -> None:
+    """pid + window_id alone repeats keystrokes; the default is a medium line count."""
+    driver = _FakeToolDriver()
+    cua = _backend_with(driver)
+
+    cua.scroll(None, None, "down", pid=1, window_id=2)
+
+    payload = driver.calls[0][1]
+    assert payload["by"] == "line"
+    assert payload["amount"] == 20
+    assert "x" not in payload and "y" not in payload
+
+
+def test_scroll_page_granularity_is_one_big_jump(monkeypatch: Any) -> None:
+    """An explicit by='page' is a single full-viewport jump."""
+    driver = _FakeToolDriver()
+    cua = _backend_with(driver)
+
+    cua.scroll(10, 20, "down", None, "page", pid=1, window_id=2)
+
+    payload = driver.calls[0][1]
+    assert payload["by"] == "page"
+    assert payload["amount"] == 1
+
+
+def test_scroll_clamps_amount_to_the_driver_range() -> None:
+    """The driver rejects amount outside 1..50, so halia must not forward one."""
+    driver = _FakeToolDriver()
+    cua = _backend_with(driver)
+
+    for given, expected in ((0, 1), (-5, 1), (500, 50), (2, 2)):
+        driver.calls.clear()
+        cua.scroll(10, 20, "down", given, pid=1, window_id=2)
+        assert driver.calls[0][1]["amount"] == expected, given
+
+
+def test_scroll_result_names_the_step() -> None:
+    """The observation tells the model what it got, so it can judge the change."""
+    cua = _backend_with(_FakeToolDriver())
+
+    out = cua.scroll(10, 20, "down", pid=1, window_id=2)
+
+    assert "window 2" in out
+    assert "20 wheel notches" in out
+
+
+def test_desktop_scroll_defaults_to_a_medium_step() -> None:
+    """The desktop path defaults to a medium wheel step, not the smallest one."""
+    from cua_driver import ScrollBy
+
+    driver = _FakeSdkDriver()
+    cua = _backend_with(driver)
+
+    out = cua.scroll(300, 400, "down")
+
+    payload = driver.scrolls[0]
+    assert payload.by == ScrollBy.LINE
+    assert payload.amount == 20
+    assert "20 wheel notches" in out
+
+
+def test_desktop_scroll_honours_line_granularity() -> None:
+    from cua_driver import ScrollBy
+
+    driver = _FakeSdkDriver()
+    cua = _backend_with(driver)
+
+    cua.scroll(300, 400, "up", 5, "line")
+
+    payload = driver.scrolls[0]
+    assert payload.by == ScrollBy.LINE
+    assert payload.amount == 5
+
+
+def test_cua_scroll_schema_offers_page_and_line() -> None:
+    """The model can only ask for a page-sized step if the schema exposes it."""
+    from halia.skills.cua import CuaScroll
+
+    props = CuaScroll.parameters["properties"]
+    assert props["by"]["enum"] == ["page", "line"]
+    assert props["amount"]["minimum"] == 1
+    assert props["amount"]["maximum"] == 50
+    # The description must state the default, or the model is guessing at units.
+    assert "20" in CuaScroll.description
+    assert "page" in CuaScroll.description.lower()
+
+
+def test_cua_scroll_passes_granularity_through(monkeypatch: Any) -> None:
+    from halia.skills.cua import CuaScroll
+
+    monkeypatch.setattr("halia.skills.cua._is_cua_enabled", lambda: True)
+    seen: list[tuple[Any, ...]] = []
+
+    class FakeCua:
+        def scroll(self, *a: Any, **k: Any) -> str:
+            seen.append(a)
+            return "Scrolled"
+
+    monkeypatch.setattr("halia.skills.cua._get_cua", lambda: FakeCua())
+
+    CuaScroll().run({"x": 10, "y": 20, "by": "page"})
+    CuaScroll().run({"x": 10, "y": 20, "by": "line", "amount": 8})
+    CuaScroll().run({"x": 10, "y": 20})
+
+    # (x, y, direction, amount, by) — amount None means "backend default".
+    assert seen[0][3] is None and seen[0][4] == "page"
+    assert seen[1][3] == 8 and seen[1][4] == "line"
+    assert seen[2][3] is None and seen[2][4] == "line"
+
+
+def test_cua_prompt_tells_the_model_how_far_to_scroll() -> None:
+    """Without this the model nibbles: a few lines, then another screenshot."""
+    from halia.core.agent import _CUA_PROMPT
+
+    assert "SCROLL:" in _CUA_PROMPT
+    assert "20" in _CUA_PROMPT
+    assert "page" in _CUA_PROMPT.lower()
+
+
+# ── cua_screenshot: region crop ───────────────────────────────────────────
+
+
+def _crop_setup(monkeypatch: Any, tmp_path: Any, size: tuple[int, int]) -> None:
+    """Point cua_screenshot at a solid-colour PNG of the given size."""
+    from halia.skills.cua import CuaScreenshot
+
+    monkeypatch.setattr("halia.skills.cua._is_cua_enabled", lambda: True)
+    monkeypatch.setattr("halia.skills.cua._get_screenshots_dir", lambda: tmp_path / "shots")
+
+    img_path = tmp_path / "screen.png"
+    Image.new("RGB", size, (255, 255, 255)).save(img_path)
+
+    class FakeCua:
+        def screenshot(self, path: str | None = None) -> str:
+            return str(img_path)
+
+    monkeypatch.setattr("halia.skills.cua._get_cua", lambda: FakeCua())
+    return CuaScreenshot
+
+
+def test_cua_screenshot_region_crops_to_the_requested_box(
+    monkeypatch: Any, tmp_path: Any,
+) -> None:
+    """x/y/width/height crop the capture and return only that region."""
+    from halia.skills.cua import CuaScreenshot
+
+    _crop_setup(monkeypatch, tmp_path, (2000, 1000))
+    # Simulate a prior full screenshot: its scale is what the crop must use.
+    CuaScreenshot._scale = 2000 / 1600
+
+    def size_of(b64: str) -> tuple[int, int]:
+        buf = io.BytesIO(base64.b64decode(b64))
+        return Image.open(buf).size
+
+    try:
+        out = CuaScreenshot().run(
+            {"x": 100, "y": 100, "width": 400, "height": 200, "grid": False}
+        )
+        # image space (400x200) → real (500x250 at 2000/1600 scale) → upscaled 2x.
+        assert size_of(CuaScreenshot._pending_image) == (1000, 500)
+        assert "Region crop" in out
+        assert "NOT click coordinates" in out
+        assert CuaScreenshot._scale == 2000 / 1600  # a crop must NOT overwrite it
+    finally:
+        CuaScreenshot._scale = 1.0
+        CuaScreenshot._pending_image = None
+
+
+def test_cua_screenshot_region_uses_the_last_screenshots_scale(
+    monkeypatch: Any, tmp_path: Any,
+) -> None:
+    """A crop ordered after a 'low' screenshot must not read 'high' coordinates."""
+    from halia.skills.cua import CuaScreenshot
+
+    _crop_setup(monkeypatch, tmp_path, (2048, 1024))
+
+    def size_of(b64: str) -> tuple[int, int]:
+        buf = io.BytesIO(base64.b64decode(b64))
+        return Image.open(buf).size
+
+    try:
+        # The model looked at a 'low' (1024px) screenshot, so grid coords are in
+        # 1024-space: _scale = 2048 / 1024 = 2.0.
+        CuaScreenshot().run({"detail": "low", "grid": False})
+        assert CuaScreenshot._scale == 2048 / 1024
+
+        # Crop with the default 'high' detail; coords must still map with the
+        # LOW scale (2.0), not high (2048/1600 = 1.28).
+        CuaScreenshot().run(
+            {"x": 100, "y": 100, "width": 200, "height": 100, "grid": False}
+        )
+        # (100,100,200,100) × 2.0 = real (200,200,400,200) → 2x upscale.
+        assert size_of(CuaScreenshot._pending_image) == (800, 400)
+    finally:
+        CuaScreenshot._scale = 1.0
+        CuaScreenshot._pending_image = None
+
+
+def test_cua_screenshot_region_requires_all_four_corners(monkeypatch: Any, tmp_path: Any) -> None:
+    from halia.skills.cua import CuaScreenshot
+
+    _crop_setup(monkeypatch, tmp_path, (800, 600))
+    out = CuaScreenshot().run({"x": 10, "y": 10, "width": 100})
+    assert out.startswith("error:")
+    assert "x, y, width and height" in out
+    assert "together" in out
+
+
+def test_cua_screenshot_region_rejects_nonpositive_size(monkeypatch: Any, tmp_path: Any) -> None:
+    from halia.skills.cua import CuaScreenshot
+
+    _crop_setup(monkeypatch, tmp_path, (800, 600))
+    out = CuaScreenshot().run({"x": 10, "y": 10, "width": 0, "height": 50})
+    assert out.startswith("error:")
+    assert "positive" in out
+
+
+def test_cua_screenshot_region_clamps_offscreen_estimates(monkeypatch: Any, tmp_path: Any) -> None:
+    """An estimate that overruns the frame crops the visible part, not an error."""
+    from halia.skills.cua import CuaScreenshot
+
+    _crop_setup(monkeypatch, tmp_path, (800, 600))
+
+    def size_of(b64: str) -> tuple[int, int]:
+        buf = io.BytesIO(base64.b64decode(b64))
+        return Image.open(buf).size
+
+    # 800x600 image is already under max_width, so image space == real space.
+    CuaScreenshot._scale = 1.0  # simulate a prior screenshot at 1:1
+    try:
+        out = CuaScreenshot().run(
+            {"x": 700, "y": 500, "width": 500, "height": 500, "grid": False}
+        )
+        assert not out.startswith("error:")
+        assert size_of(CuaScreenshot._pending_image) == (200, 200)  # clamped, then 2x
+    finally:
+        CuaScreenshot._scale = 1.0
+        CuaScreenshot._pending_image = None
+
+
+def test_cua_prompt_describes_region_capture() -> None:
+    """The prompt must teach the model to crop for evidence, not just the schema."""
+    from halia.core.agent import _CUA_PROMPT
+
+    assert "REGION CAPTURE" in _CUA_PROMPT
+    assert "grid:false" in _CUA_PROMPT
+
+
+def test_cua_screenshot_region_saves_the_crop_not_the_full_page(
+    monkeypatch: Any, tmp_path: Any,
+) -> None:
+    """The saved artifact must be the close-up, or QA files the wrong evidence."""
+    from halia.skills.cua import CuaScreenshot
+
+    shots = tmp_path / "shots"
+    _crop_setup(monkeypatch, tmp_path, (800, 600))
+    CuaScreenshot._scale = 1.0
+
+    out = CuaScreenshot().run(
+        {"x": 100, "y": 100, "width": 200, "height": 100, "grid": False}
+    )
+    assert "Saved crop to" in out
+
+    crops = [p for p in shots.iterdir() if p.name.endswith("-crop.png")]
+    assert len(crops) == 1
+    # Native crop size, not the 2x model-facing upscale.
+    assert Image.open(crops[0]).size == (200, 100)

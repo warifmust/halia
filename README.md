@@ -1,5 +1,5 @@
 ```
-╭─ v0.31.19 ───────────────────────────────────────────────────────────────────────────────╮
+╭─ v0.31.20 ───────────────────────────────────────────────────────────────────────────────╮
 │                                ██   ██  █████  ██      ██  █████                         │
 │                                ██   ██ ██   ██ ██      ██ ██   ██                        │
 │                                ███████ ███████ ██      ██ ███████                        │
@@ -183,6 +183,14 @@ frame. `cua_desktop` lists *every* top-level window with its `pid` and
 
 Coordinates read from a window's own screenshot are used as-is; only the
 desktop-scoped path is scaled back to screen pixels.
+
+**Close-ups for evidence.** Pass `x`, `y`, `width` and `height` to
+`cua_screenshot` (in the grid's pixel space) to crop to one region — a success
+toast, a status message, a form field — instead of capturing the whole display.
+The crop is saved to its own `…-crop.png` file (the full capture is kept
+alongside), and it's for inspection/verification — its coordinates are not click
+coordinates, so re-take a full `cua_screenshot` to interact. `grid:false` gives a
+clean capture.
 
 ## 🛠️ Development
 

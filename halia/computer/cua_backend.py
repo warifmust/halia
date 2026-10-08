@@ -40,6 +40,39 @@ CUA_DRIVER_MIN_VERSION = "0.29"
 CUA_DRIVER_MAX_VERSION = "0.34"  # exclusive
 CUA_DRIVER_RANGE = f">={CUA_DRIVER_MIN_VERSION},<{CUA_DRIVER_MAX_VERSION}"
 
+# Scroll granularity, mirroring the driver's `by`: 'page' is a viewport-sized step
+# (PageDown/PageUp), 'line' is a few lines (arrow keys) or wheel notches. The driver
+# documents page as the larger step. Neither is a good default alone: a few lines is
+# so small the view barely changes, and a full page can jump past what the model is
+# looking for — so the everyday default is a medium chunk of lines/notches, with
+# 'page' kept as an explicit big-jump option.
+SCROLL_BY_PAGE = "page"
+SCROLL_BY_LINE = "line"
+# `amount` counts keystroke repetitions (keystroke path) or wheel notches (targeted
+# path). A single page is the natural amount for an explicit big jump; the medium
+# default is 20 — enough to actually move the view, not so much that content skips.
+DEFAULT_SCROLL_AMOUNT = {SCROLL_BY_LINE: 20, SCROLL_BY_PAGE: 1}
+# The driver's own input_schema bounds `amount` to 1..50.
+SCROLL_AMOUNT_MAX = 50
+
+
+def _scroll_step(by: str, amount: int | None) -> int:
+    """Driver-valid scroll step count: the granularity's default, clamped to 1..50."""
+    if amount is None:
+        return DEFAULT_SCROLL_AMOUNT[by]
+    return max(1, min(SCROLL_AMOUNT_MAX, int(amount)))
+
+
+def _scroll_label(step: int, by: str, wheel: bool) -> str:
+    """Human label for a scroll step, so the model sees what it actually asked for."""
+    if wheel:
+        unit = "wheel notch" if step == 1 else "wheel notches"
+    else:
+        unit = "page" if by == SCROLL_BY_PAGE else "line"
+        if step != 1:
+            unit += "s"
+    return f"{step} {unit}"
+
 
 def _version_tuple(text: str) -> tuple[int, ...]:
     """Parse a release version into comparable integers ('0.29.1' → (0, 29, 1))."""
@@ -596,7 +629,8 @@ class CuaComputer:
         x: float | None = None,
         y: float | None = None,
         direction: str = "down",
-        amount: int = 3,
+        amount: int | None = None,
+        by: str = SCROLL_BY_LINE,
         *,
         pid: int | None = None,
         window_id: int | None = None,
@@ -608,14 +642,24 @@ class CuaComputer:
         specific window rather than whatever the desktop has focused: `element_token`
         targets one element, or `x`/`y` roll the wheel at a point in that window's
         screenshot space — the only way to scroll a nested scrollable region.
+
+        `by` picks the step size: 'line' (default) is a medium chunk of lines or
+        wheel notches, 'page' is a full-viewport jump for when the model explicitly
+        wants to leap down a long document. A tiny line count is the reason a scroll
+        can look like it did nothing, which costs a screenshot to discover; a page
+        can jump past the very thing the model is hunting for.
         """
+        by = SCROLL_BY_LINE if by == SCROLL_BY_LINE else SCROLL_BY_PAGE
         if pid is not None and window_id is not None:
+            # A token or a point rolls the wheel; pid + window_id alone repeats keys.
+            wheel = bool(element_token) or (x is not None and y is not None)
+            step = _scroll_step(by, amount)
             arguments: dict[str, Any] = {
                 "pid": int(pid),
                 "window_id": int(window_id),
                 "direction": direction,
-                "amount": amount,
-                "by": "line",
+                "amount": step,
+                "by": by,
             }
             if element_token:
                 arguments["element_token"] = element_token
@@ -623,13 +667,15 @@ class CuaComputer:
                 arguments["x"] = float(x)
                 arguments["y"] = float(y)
             detail = await self._window_action_async("scroll", arguments)
-            result = f"Scrolled {direction} in window {window_id}"
+            result = f"Scrolled {direction} {_scroll_label(step, by, wheel)} in window {window_id}"
             return f"{result} — {detail}" if detail else result
 
         from cua_driver import DesktopScope, ScrollBy, ScrollDirection, ScrollInput
 
         if x is None or y is None:
             x = y = 0.0
+        # The desktop path always carries a point, so the driver rolls the wheel here.
+        step = _scroll_step(by, amount)
 
         async def _op(driver: Any) -> Any:
             return await driver.scroll(
@@ -642,13 +688,13 @@ class CuaComputer:
                     ),
                     target=None,
                     scope=DesktopScope.DESKTOP,
-                    by=ScrollBy.LINE,
-                    amount=amount,
+                    by=ScrollBy.PAGE if by == SCROLL_BY_PAGE else ScrollBy.LINE,
+                    amount=step,
                 )
             )
 
         await self._with_session_retry(_op)
-        return f"Scrolled {direction} at ({x}, {y})"
+        return f"Scrolled {direction} {_scroll_label(step, by, True)} at ({x}, {y})"
 
     async def _drag_async(
         self,
@@ -961,15 +1007,20 @@ class CuaComputer:
         x: float | None = None,
         y: float | None = None,
         direction: str = "down",
-        amount: int = 3,
+        amount: int | None = None,
+        by: str = SCROLL_BY_LINE,
         *,
         pid: int | None = None,
         window_id: int | None = None,
         element_token: str | None = None,
     ) -> str:
-        """Scroll (sync wrapper). Window-scoped when `pid` + `window_id` are given."""
+        """Scroll (sync wrapper). Window-scoped when `pid` + `window_id` are given.
+
+        `by` is 'line' (default, a medium chunk) or 'page' (a full-viewport jump);
+        `amount` defaults per granularity and is clamped to the driver's 1..50.
+        """
         return str(self._run_async(self._scroll_async(
-            x, y, direction, amount,
+            x, y, direction, amount, by,
             pid=pid,
             window_id=window_id,
             element_token=element_token,
